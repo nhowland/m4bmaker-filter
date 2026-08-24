@@ -108,6 +108,72 @@ directions are recorded but neither has been tested:
    disqualified Finding #3 approach) rather than paying the full
    `atrim`+`concat` penalty already shown to be unusable.
 
+## Follow-up round (same session): fade smoothness solved in isolation, but not yet at scale
+
+Two more approaches were tested after the above was written.
+
+### Finding #5 (confirmed working, in isolation): `asplit`+`afade`+`volume`+`amix` gives a genuinely smooth ramp to floor
+
+Splitting one interval's audio into two parallel copies — one faded to
+silence via the purpose-built `afade` filter, one held at a constant
+floor level via `volume` — then recombining with `amix=normalize=0`
+produces a real, gradual, sample-smooth ramp from full volume down to
+the configured floor (not to absolute silence) and holds there:
+measured `-24 → -27 → -31 → -38 → -60 → -81dB` descending smoothly across
+a 0.5s fade-out, confirmed both in isolation and spliced back into a
+20s file via the same `atrim`+`concat` structure as Finding #3's
+disqualified approach. `afade` itself, tested alone, is unambiguously
+sample-accurate (no frame-quantization staircase) — the frame-granularity
+problem in Finding #4 was specific to the generic `enable`+expression
+mechanism, not inherent to gain ramping in ffmpeg generally.
+
+**The catch: this fix requires the same `atrim`+`concat`-per-segment
+structure already disqualified by Finding #3's scaling data.** Smooth
+fades and fast scaling to hundreds of intervals have not yet been
+achieved by the same approach simultaneously. Splicing in only the tiny
+fade edges (5-50ms) rather than the whole interval would reduce data
+volume per segment but not segment *count* — and Finding #3's slowness
+tracked with segment count, not segment duration, so this is not
+expected to help without being tested (not yet tested).
+
+### Finding #6 (promising, unresolved): precomputed sample-accurate envelope + `amultiply`
+
+A structurally different approach was tried: generate the entire gain
+envelope as its own audio signal (a second, separate PCM file the same
+length as the source, valued ~1.0 at baseline and ramping to the floor
+at each interval, computed sample-by-sample in Python — no ffmpeg
+expression involved at all), then multiply it against the source with
+ffmpeg's `amultiply` filter in a single pass. This is structurally
+attractive because it sidesteps all three problems at once: no
+expression for ffmpeg's parser to choke on (Finding #3), no per-interval
+`atrim`/`concat` segment (Finding #3/#5's scaling cost), and the ramp
+shape is exactly whatever was computed in Python, at full sample
+accuracy (no frame quantization).
+
+A first test of this (20s tone, 2 intervals, hand-rolled linear-ramp
+envelope generated with the stdlib `wave`/`struct` modules — no numpy
+available in this environment or currently a project dependency) did
+**not** show a smooth ramp in a fine-grained scan — it jumped from
+partial attenuation to full floor within about 10ms of a 50ms intended
+ramp, similar in shape (though not necessarily the same cause) to the
+`enable`-expression frame-quantization problem. Root cause not yet
+diagnosed — leading candidates, none confirmed: (a) `amultiply`'s two
+inputs (the source and the separately-decoded envelope file) may not be
+sample-aligned by default when read as two independent `-i` inputs with
+independently negotiated frame boundaries, producing a timing offset
+between the two streams rather than a smoothness defect in the envelope
+itself; (b) a measurement-window artifact similar to the earlier
+`astats` false starts in this same investigation, not yet ruled out.
+
+**This is the most promising direction for solving both scaling and
+smoothness together, but it is not proven and must not be assumed
+working.** Recommended next step, not yet done: verify the two
+`amultiply` inputs are frame-aligned (e.g. force identical
+`-ar`/`-ac`/frame-size on both, or read the envelope through the *same*
+input via `asplit`-style routing instead of a second `-i`), then re-run
+the same fine-grained boundary scan used elsewhere in this ADR before
+concluding either way.
+
 ## Recommendation given current evidence
 
 - **Adopt the chained `volume=enable='between(t,...)':volume=FLOOR`
@@ -128,24 +194,41 @@ directions are recorded but neither has been tested:
     until this is re-measured with a forced small frame size at
     real interval-count scale (not just the single-interval precision
     test done here).
-- **Do not claim fade-ramp behavior is solved.** Finding #4 is a genuine
-  open problem, not a detail to paper over. A renderer built on this
-  ADR's gating mechanism today would produce a correct floor/gate
-  (verified) but an audible click instead of a ramp at each interval's
-  edges (not yet fixed) — that gap must stay visible, including in any
-  UI copy, until resolved.
+- **Do not claim fade-ramp behavior is solved at production scale.**
+  Finding #5 proves smooth fades are achievable in ffmpeg at all (real
+  progress — the naive expression-based approach in Finding #4 is not
+  the only option and was the wrong one to keep pursuing), but only via
+  a structure already shown too slow past a few hundred intervals.
+  Finding #6 is the live, most promising lead for solving both problems
+  together, but is unverified. **A renderer must not be built yet
+  claiming both fast, many-interval rendering and smooth fades
+  simultaneously — that combination has not been demonstrated.**
 
 ## What remains before this ADR can be marked fully resolved
 
-1. Re-test boundary precision and fade smoothness at PRD's actual declared
+1. Diagnose and re-test Finding #6 (`amultiply` envelope alignment) —
+   this is the current best lead and the most impactful next step, since
+   it could resolve both the scaling ceiling and the fade-smoothness
+   problem in one mechanism if the alignment issue is fixed.
+2. If Finding #6 doesn't pan out, measure whether splicing only tiny
+   fade-edge slices (Finding #5's approach, narrowed) via `atrim`/
+   `concat` scales any better than whole-interval segments did in
+   Finding #3 — expected not to (segment *count* was the driver, not
+   segment duration), but not yet actually tested.
+3. Re-test boundary precision and fade smoothness at PRD's actual declared
    range extremes (0ms padding, 5ms fade), not just the round numbers
    used in this spike.
-2. Prototype and measure the `afade`-on-short-`atrim`-slices hybrid
-   (Finding #4, direction 2) for both correctness and its own scaling
-   behavior at realistic interval counts.
-3. Re-run the Finding #3 scaling table with a forced small frame size
-   applied throughout (not just at the fade edges) to see whether fixing
-   precision materially worsens the scaling ceiling.
-4. All of the above on a real AAC-encoded M4B source (this spike used
+4. Re-run the Finding #3 scaling table with whichever fade mechanism is
+   ultimately chosen applied throughout, not just the plain gate — the
+   scaling numbers above are for gating alone and may not hold once fade
+   handling is added at every interval.
+5. All of the above on a real AAC-encoded M4B source (this spike used
    raw PCM WAV throughout) — AAC decode/re-encode could plausibly shift
    these numbers in either direction and has not been tested at all yet.
+6. If envelope generation (Finding #6) is the chosen path, its own
+   performance at real scale needs measurement: the spike's envelope was
+   generated with a pure-Python per-sample loop (no numpy currently
+   available or in this project's dependencies) — untested whether that
+   approach is fast enough for a 20-hour, ~3.2 billion-sample envelope,
+   or whether a run-length/sparse-segment generation strategy (the
+   envelope is constant 1.0 almost everywhere) is needed instead.

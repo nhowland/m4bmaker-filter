@@ -122,12 +122,29 @@ Cumulative: 254 tests in `tests/filter/` + 3 in `tests/test_utils.py`,
 suite — 1270 passing, 2 correctly skipped (the two opt-in real-binary
 tests).
 
-Not yet started: renderer and validator (G4, blocked on ADR-0002 approval
-and its own render-correctness spike — the ffmpeg filter-graph scaling
-question flagged in the original repo review is still untested); any UI
-(G5).
+**G4: render spike in progress, one real blocker found and only partly
+resolved.** See [docs/adr/0006-gain-envelope-implementation.md](adr/0006-gain-envelope-implementation.md)
+for the full data. Headline results:
+- The ffmpeg filter-graph scaling risk flagged in the very first repo
+  review is now backed by real measurement, and it **reverses the naive
+  intuition**: the "obviously correct" `atrim`+`concat` approach (exact
+  sample-accurate boundaries) does not finish in 3 minutes at just 300
+  intervals. A single filter with one giant combined boolean expression
+  crashes ffmpeg's parser outright past ~300 terms. Chaining one `volume`
+  filter per interval is the only one of three approaches that survives
+  — fast to several hundred intervals (600 in 58s), degrading non-linearly
+  past that.
+- Smooth fade ramps (PRD §8.4) are proven achievable in ffmpeg at all
+  (`afade`+`amix`, genuinely smooth, verified) — but only via the same
+  structure already shown too slow at scale. A precomputed-envelope
+  approach (`amultiply`) is the live, most promising lead for solving
+  scaling and fade-smoothness together, but has an unresolved alignment
+  bug and is not yet proven.
+- **No renderer code has been written.** Building one now would mean
+  picking between "fast but clicks instead of ramps" and "smooth but
+  doesn't scale past a few hundred hits" — both real regressions from
+  what the PRD requires, so neither has been implemented as if it were a
+  finished decision.
 
-No code in this fork renders audio yet. Everything STT-related through
-this point (engine adapter, Model Manager, chunking, durable pause/resume)
-has now been proven against real binaries and real audio, not left as
-theory — the render path is the next place that same rigor needs to apply.
+Not yet started: the renderer/validator implementation itself (blocked on
+resolving the above); any UI (G5).
