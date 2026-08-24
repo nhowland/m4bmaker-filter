@@ -14,10 +14,13 @@ from m4bmaker.filter.models import (
     FilterProfile,
     FilterProfileSnapshot,
     MediaManifest,
+    RenderInterval,
+    RenderPlan,
     ReviewDecision,
     ReviewStatus,
     ScanHit,
     SchemaValidationError,
+    SnapshotEntry,
     normalize_phrase,
     normalize_token,
 )
@@ -148,6 +151,19 @@ class TestFilterProfile:
         assert p.attenuation == AttenuationSettings()
 
 
+class TestSnapshotEntry:
+    def test_frozen(self) -> None:
+        e = SnapshotEntry(
+            entry_id="e-1",
+            category_id="cat-1",
+            canonical_phrase="darn",
+            normalized_phrase="darn",
+            revision=1,
+        )
+        with pytest.raises(AttributeError):
+            e.revision = 2  # type: ignore[misc]
+
+
 class TestFilterProfileSnapshotIsImmutable:
     def test_frozen(self) -> None:
         snap = FilterProfileSnapshot(
@@ -155,7 +171,15 @@ class TestFilterProfileSnapshotIsImmutable:
             profile_id="p-1",
             profile_revision=1,
             name="Family Friendly",
-            entry_ids=("e-1", "e-2"),
+            entries=(
+                SnapshotEntry(
+                    entry_id="e-1",
+                    category_id="cat-1",
+                    canonical_phrase="darn",
+                    normalized_phrase="darn",
+                    revision=1,
+                ),
+            ),
         )
         with pytest.raises(AttributeError):
             snap.name = "changed"  # type: ignore[misc]
@@ -273,6 +297,57 @@ class TestMediaManifestConstruction:
         assert m.eligible
         assert m.ineligibility_reasons == ()
 
+
+class TestRenderInterval:
+    def test_valid_interval(self) -> None:
+        iv = RenderInterval(
+            start_ms=1000, end_ms=1500, fade_in_ms=15, fade_out_ms=15, hit_ids=("h-1",)
+        )
+        assert iv.hit_ids == ("h-1",)
+
+    def test_end_before_start_rejected(self) -> None:
+        with pytest.raises(SchemaValidationError):
+            RenderInterval(
+                start_ms=1500,
+                end_ms=1000,
+                fade_in_ms=15,
+                fade_out_ms=15,
+                hit_ids=("h-1",),
+            )
+
+    def test_no_hit_ids_rejected(self) -> None:
+        with pytest.raises(SchemaValidationError):
+            RenderInterval(
+                start_ms=1000, end_ms=1500, fade_in_ms=15, fade_out_ms=15, hit_ids=()
+            )
+
+    def test_frozen(self) -> None:
+        iv = RenderInterval(
+            start_ms=1000, end_ms=1500, fade_in_ms=15, fade_out_ms=15, hit_ids=("h-1",)
+        )
+        with pytest.raises(AttributeError):
+            iv.start_ms = 0  # type: ignore[misc]
+
+
+class TestRenderPlan:
+    def test_construction(self) -> None:
+        plan = RenderPlan(
+            intervals=(
+                RenderInterval(
+                    start_ms=1000,
+                    end_ms=1500,
+                    fade_in_ms=15,
+                    fade_out_ms=15,
+                    hit_ids=("h-1",),
+                ),
+            ),
+            attenuation=AttenuationSettings(),
+            source_duration_ms=3_600_000,
+        )
+        assert len(plan.intervals) == 1
+
+
+class TestMediaManifestIneligible:
     def test_ineligible_manifest_carries_reasons(self) -> None:
         m = MediaManifest(
             schema_version=1,

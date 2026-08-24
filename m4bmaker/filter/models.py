@@ -183,21 +183,34 @@ class FilterProfile:
 
 
 @dataclass(frozen=True)
-class FilterProfileSnapshot:
-    """Immutable settings actually used by one scan/render (PRD §14.4).
+class SnapshotEntry:
+    """A catalog entry's data frozen into a profile snapshot at scan time.
 
-    ``catalog_entry_revisions`` records the revision of every referenced
-    entry at snapshot time, so a later catalog edit can never silently
-    change the meaning of a historical scan (PRD §9.3: scans must store
-    "catalog revision IDs").
+    Embedding the resolved phrase/category/revision here (rather than just
+    an ``entry_id`` to look up later) is deliberate: a scan must remain
+    matchable and reproducible even after the live catalog entry is edited
+    or archived (PRD §9.3 requires scans to record "catalog revision IDs"
+    precisely so a later edit can never silently change a historical scan's
+    meaning — embedding the values, not just the revision number, is what
+    actually makes that guarantee hold at match time).
     """
+
+    entry_id: str
+    category_id: str
+    canonical_phrase: str
+    normalized_phrase: str
+    revision: int
+
+
+@dataclass(frozen=True)
+class FilterProfileSnapshot:
+    """Immutable settings actually used by one scan/render (PRD §14.4)."""
 
     snapshot_id: str
     profile_id: str
     profile_revision: int
     name: str
-    entry_ids: tuple[str, ...]
-    catalog_entry_revisions: dict[str, int] = field(default_factory=dict)
+    entries: tuple[SnapshotEntry, ...]
     attenuation: AttenuationSettings = field(default_factory=AttenuationSettings)
     created_at: str = ""  # ISO 8601, set by the caller — no wall-clock read here
 
@@ -288,3 +301,41 @@ class MediaManifest:
     cover_present: bool
     eligible: bool
     ineligibility_reasons: tuple[str, ...] = ()
+
+
+# ── render plan (PRD §8.3, §14.4) ─────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class RenderInterval:
+    """One merged, padded attenuation interval, with provenance back to every
+    raw hit that contributed to it (PRD §8.3 step 6: "Retain a many-to-one
+    mapping from each merged interval to raw hit IDs")."""
+
+    start_ms: int
+    end_ms: int
+    fade_in_ms: int
+    fade_out_ms: int
+    hit_ids: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.end_ms <= self.start_ms:
+            raise SchemaValidationError(
+                f"RenderInterval.end_ms ({self.end_ms}) must be greater than "
+                f"start_ms ({self.start_ms})."
+            )
+        if not self.hit_ids:
+            raise SchemaValidationError(
+                "RenderInterval must carry at least one contributing hit ID."
+            )
+
+
+@dataclass(frozen=True)
+class RenderPlan:
+    """The Interval Planner's output (PRD §14.4): merged intervals ready for
+    the Renderer's gain envelope. Not itself a render — no audio has been
+    touched by the existence of a RenderPlan."""
+
+    intervals: tuple[RenderInterval, ...]
+    attenuation: AttenuationSettings
+    source_duration_ms: int

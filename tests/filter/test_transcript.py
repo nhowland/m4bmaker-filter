@@ -1,0 +1,148 @@
+"""Tests for m4bmaker.filter.transcript — native transcript artifact (PRD §10.3)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from m4bmaker.filter.models import SchemaValidationError
+from m4bmaker.filter.transcript import (
+    SegmentStatus,
+    Transcript,
+    TranscriptEngine,
+    TranscriptSegment,
+    TranscriptSource,
+    TranscriptStatus,
+    TranscriptWord,
+    read_transcript,
+    transcript_from_dict,
+    transcript_to_dict,
+    write_transcript,
+)
+
+
+def _sample_transcript() -> Transcript:
+    return Transcript(
+        schema_version=1,
+        status=TranscriptStatus.COMPLETE,
+        source=TranscriptSource(
+            fingerprint="sha256:abc", duration_ms=3_723_456, selected_audio_stream=0
+        ),
+        engine=TranscriptEngine(
+            name="whisper.cpp",
+            version="pinned-version",
+            model="base.en",
+            model_checksum="sha256:def",
+            parameters={"language": "en"},
+        ),
+        segments=(
+            TranscriptSegment(
+                id="chunk-000000",
+                start_ms=0,
+                end_ms=30_000,
+                status=SegmentStatus.COMPLETED,
+                words=(
+                    TranscriptWord(
+                        text="Hello", normalized="hello", start_ms=100, end_ms=400
+                    ),
+                    TranscriptWord(
+                        text="world",
+                        normalized="world",
+                        start_ms=450,
+                        end_ms=800,
+                        confidence=0.95,
+                    ),
+                ),
+            ),
+            TranscriptSegment(
+                id="chunk-000001",
+                start_ms=30_000,
+                end_ms=60_000,
+                status=SegmentStatus.COMPLETED,
+                words=(
+                    TranscriptWord(
+                        text="again", normalized="again", start_ms=30_100, end_ms=30_500
+                    ),
+                ),
+            ),
+        ),
+    )
+
+
+class TestTranscriptWordValidation:
+    def test_negative_start_rejected(self) -> None:
+        with pytest.raises(SchemaValidationError):
+            TranscriptWord(text="a", normalized="a", start_ms=-1, end_ms=100)
+
+    def test_end_before_start_rejected(self) -> None:
+        with pytest.raises(SchemaValidationError):
+            TranscriptWord(text="a", normalized="a", start_ms=100, end_ms=50)
+
+    def test_confidence_defaults_to_none(self) -> None:
+        w = TranscriptWord(text="a", normalized="a", start_ms=0, end_ms=100)
+        assert w.confidence is None
+
+
+class TestTranscriptWordsAcrossSegments:
+    def test_words_flattens_in_order(self) -> None:
+        t = _sample_transcript()
+        words = t.words()
+        assert [w.text for w in words] == ["Hello", "world", "again"]
+
+    def test_empty_segments_yields_empty_words(self) -> None:
+        t = _sample_transcript()
+        empty = Transcript(
+            schema_version=1,
+            status=TranscriptStatus.DRAFT,
+            source=t.source,
+            engine=t.engine,
+            segments=(),
+        )
+        assert empty.words() == []
+
+
+class TestRoundTrip:
+    def test_to_dict_then_from_dict_preserves_content(self) -> None:
+        t = _sample_transcript()
+        d = transcript_to_dict(t)
+        restored = transcript_from_dict(d)
+        assert restored == t
+
+    def test_to_dict_uses_prd_camel_case_keys(self) -> None:
+        t = _sample_transcript()
+        d = transcript_to_dict(t)
+        assert d["schemaVersion"] == 1
+        assert d["source"]["durationMs"] == 3_723_456
+        assert d["source"]["selectedAudioStream"] == 0
+        assert d["engine"]["modelChecksum"] == "sha256:def"
+        assert d["segments"][0]["startMs"] == 0
+        assert d["segments"][0]["words"][0]["startMs"] == 100
+
+    def test_write_then_read_file_round_trip(self, tmp_path: Path) -> None:
+        t = _sample_transcript()
+        path = tmp_path / "book.m4bt.json"
+        write_transcript(path, t)
+        restored = read_transcript(path)
+        assert restored == t
+
+    def test_null_confidence_round_trips_as_none(self) -> None:
+        t = _sample_transcript()
+        d = transcript_to_dict(t)
+        assert d["segments"][0]["words"][0]["confidence"] is None
+        restored = transcript_from_dict(d)
+        assert restored.segments[0].words[0].confidence is None
+
+
+class TestStatusEnums:
+    def test_transcript_status_values(self) -> None:
+        assert {s.value for s in TranscriptStatus} == {
+            "draft",
+            "partial",
+            "complete",
+            "failed",
+            "incompatible",
+        }
+
+    def test_segment_status_values(self) -> None:
+        assert {s.value for s in SegmentStatus} == {"pending", "completed", "failed"}

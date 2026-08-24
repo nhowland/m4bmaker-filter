@@ -30,19 +30,38 @@ unchanged, and is intentionally left untouched to keep future
 ## Status
 
 **G0 (Repository Discovery): complete.**
-**G1 (Foundations): in progress.** Delivered so far: domain schemas
-(`m4bmaker/filter/models.py`), the job state machine
-(`m4bmaker/filter/jobs.py`), storage-path/atomic-write helpers
-(`m4bmaker/filter/storage.py`), and AAC/M4B eligibility inspection with
-primary-track selection (`m4bmaker/filter/media_inspector.py`) — 86 tests,
-98% coverage on the new code, `black`/`flake8`/`mypy` clean, full existing
-suite (1013 tests) still green.
+**G1 (Foundations): complete.** Domain schemas (`models.py`), the job state
+machine (`jobs.py`), storage-path/atomic-write helpers (`storage.py`), and
+AAC/M4B eligibility inspection with primary-track selection
+(`media_inspector.py`).
 
-Not yet started: catalog CRUD service, matcher, interval planner (G2);
-model manager and transcription engine integration (G3, blocked on ADR-0001
-approval); renderer and validator (G4, blocked on ADR-0002 approval); any
-UI (G5).
+**G2 (Catalog and scan): complete for its PRD-defined scope.** Added:
+- `transcript.py` — native `.m4bt.json` transcript schema (PRD §10.3) and
+  JSON round-trip. Schema only; no STT engine produces one yet.
+- `catalog.py` — `CatalogService`: category/entry/profile CRUD, revisioning,
+  archive-vs-hard-delete-by-reference, category-scoped duplicate detection,
+  and profile snapshotting. In-memory; SQLite-backed persistence (PRD
+  §14.3) is an explicitly deferred decision, not yet made.
+- `matcher.py` — deterministic exact token/phrase matching against a
+  transcript, honoring the 750ms phrase-gap rule (PRD §9.3).
+- `interval_planner.py` — the six-step pad/clamp/sort/merge algorithm from
+  PRD §8.3, with hit-to-interval provenance.
+- `scan.py` — ties the above together: `Scan` (immutable hits + per-scan
+  review decisions), `run_scan()`, and `build_report()` (the PRD §9.4
+  review-screen counts, with attenuated-duration computed from the actual
+  merged render plan rather than a naive sum).
+
+ADR-0001 (STT engine = whisper.cpp as a bundled subprocess binary) is
+**Accepted** by the product owner as of 2026-08-24; its remaining open
+items (exact release pin, build/trust model, CPU-only vs. GPU) are still
+unresolved and gate G3.
+
+Cumulative: 159 tests in `tests/filter/`, 98% coverage, `black`/`flake8`/
+`mypy` clean, full existing suite (1013 tests) still green — 1172 total.
+
+Not yet started: model manager and transcription engine integration (G3,
+blocked on ADR-0001's remaining open items); renderer and validator (G4,
+blocked on ADR-0002 approval); any UI (G5).
 
 No code in this fork downloads a model, calls an STT engine, or renders
-audio yet — by design, per the PRD's own gate protocol (§17.3-§17.4): G1
-is schema/interface work only.
+audio yet — by design, per the PRD's own gate protocol (§17.3-§17.4).

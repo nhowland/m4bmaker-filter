@@ -1,9 +1,13 @@
 # ADR-0001 (O-02): STT engine integration strategy
 
-**Status:** Proposed — options only, no engine/model selected. Requires human
-Contributor approval before any dependency is added (PRD §17.1 rule 5).
+**Status:** **Accepted 2026-08-24.** Product owner confirmed Option A
+(whisper.cpp as a bundled subprocess binary) as the direction. The specific
+open items in the "Open questions" section below (exact release tag/commit
+to pin, vendored-build vs. prebuilt-binary trust model, CPU-only vs.
+GPU-accelerated build) remain unresolved and must still be settled — with
+evidence, not by default — before G3 implementation begins.
 **Decision needed by:** Milestone 1 implementation (G1 exit does not require
-this; G3 cannot start without it)
+this; G3 cannot start without the remaining open items resolved)
 **Related PRD items:** D-10, D-11, D-13, D-14, O-02
 
 ## Context
