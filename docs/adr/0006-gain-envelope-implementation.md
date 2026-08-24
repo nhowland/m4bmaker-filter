@@ -1,10 +1,14 @@
 # ADR-0006 (O-04): Gain-envelope implementation and timing/ramp behavior
 
-**Status:** Partially resolved by direct empirical spike (2026-08-24). The
-gating/attenuation mechanism and its scaling behavior are proven with real
-measurements. **Fade-ramp precision is explicitly unresolved** — this ADR
-reports a real negative finding rather than a guessed solution, per PRD
-§17.1 rule 9.
+**Status:** **Resolved by direct empirical spike (2026-08-24).**
+Recommendation: precomputed sample-accurate gain envelope (generated
+directly, not via ffmpeg expressions) applied via ffmpeg's `amultiply`
+filter in a single pass. This solves gating, fade smoothness, and
+interval-count scaling simultaneously, with real measurements at up to
+~950 intervals on an hour of audio. Getting here required ruling out
+four other approaches first, including two rounds of self-caught
+measurement error — the full trail is kept below because the ruled-out
+approaches and the mistakes are as instructive as the answer.
 **Related PRD items:** §8.1, §8.3, §8.4, §8.5, O-04
 
 ## What was actually tested
@@ -152,83 +156,144 @@ accuracy (no frame quantization).
 
 A first test of this (20s tone, 2 intervals, hand-rolled linear-ramp
 envelope generated with the stdlib `wave`/`struct` modules — no numpy
-available in this environment or currently a project dependency) did
-**not** show a smooth ramp in a fine-grained scan — it jumped from
-partial attenuation to full floor within about 10ms of a 50ms intended
-ramp, similar in shape (though not necessarily the same cause) to the
-`enable`-expression frame-quantization problem. Root cause not yet
-diagnosed — leading candidates, none confirmed: (a) `amultiply`'s two
-inputs (the source and the separately-decoded envelope file) may not be
-sample-aligned by default when read as two independent `-i` inputs with
-independently negotiated frame boundaries, producing a timing offset
-between the two streams rather than a smoothness defect in the envelope
-itself; (b) a measurement-window artifact similar to the earlier
-`astats` false starts in this same investigation, not yet ruled out.
+available in this environment or currently a project dependency)
+appeared **not** to show a smooth ramp in a windowed-RMS scan — it looked
+like it jumped from partial attenuation to full floor within about 10ms
+of a 50ms intended ramp.
 
-**This is the most promising direction for solving both scaling and
-smoothness together, but it is not proven and must not be assumed
-working.** Recommended next step, not yet done: verify the two
-`amultiply` inputs are frame-aligned (e.g. force identical
-`-ar`/`-ac`/frame-size on both, or read the envelope through the *same*
-input via `asplit`-style routing instead of a second `-i`), then re-run
-the same fine-grained boundary scan used elsewhere in this ADR before
-concluding either way.
+**This turned out to be a third instance of the same measurement error
+that produced this investigation's first false start.** Windowed RMS via
+`astats` is a poor tool for judging a linear gain ramp applied to a pure
+440Hz tone: a 5ms measurement window only spans about 2.2 cycles of the
+tone, which is too short and non-integer a window for RMS to give a
+reliable, smooth-looking reading regardless of how smooth the underlying
+gain change actually is — an artifact of the *measurement*, not the
+*signal*. Switching to direct raw-sample comparison (reading both input
+files' actual integer sample values with Python's `wave`/`struct` and
+checking `output[n] == round(source[n] * envelope[n] / 32768)` at every
+sample near a boundary) showed **exact, sample-for-sample agreement with
+no rounding surprises**, and the envelope values themselves descended
+smoothly and monotonically exactly as generated (32767 → 32752 → 32737 →
+32722 → 32708 → ... — a clean linear ramp, confirmed by inspection of
+the actual numbers, not inferred from a derived metric). `amultiply`
+was correct the entire time; the tool used to check it was not.
+**Lesson reinforced a second time: verify audio-processing correctness
+against raw sample data when precision below the tens-of-milliseconds
+range matters, not windowed RMS.**
 
-## Recommendation given current evidence
+### Finding #7 (confirmed, decisive): the envelope approach scales independently of interval count
 
-- **Adopt the chained `volume=enable='between(t,...)':volume=FLOOR`
-  approach as the gating mechanism**, with the following constraints
-  made explicit rather than assumed:
-  - Practical interval-count ceiling: comfortably fast to several hundred
-    (600 in ~1 minute on reference hardware); needs either a batching
-    strategy or a different mechanism if real-world `RenderPlan` interval
-    counts (after PRD §8.3's merge step reduces raw hits to merged
-    intervals) turn out to regularly exceed roughly 600-800. Realistic
-    profanity density in a 20-hour book, after merging nearby hits,
-    seems very likely to land well under this — but that assumption
-    itself needs a real fixture to confirm, not just asserted.
-  - Boundary timing precision is on the order of 100ms at default
-    settings, tunable down via `asetnsamples` at an unmeasured
-    performance cost. PRD §8.3's 0ms-minimum padding value and §8.4's
-    5ms-minimum fade value cannot be honestly claimed as achievable
-    until this is re-measured with a forced small frame size at
-    real interval-count scale (not just the single-interval precision
-    test done here).
-- **Do not claim fade-ramp behavior is solved at production scale.**
-  Finding #5 proves smooth fades are achievable in ffmpeg at all (real
-  progress — the naive expression-based approach in Finding #4 is not
-  the only option and was the wrong one to keep pursuing), but only via
-  a structure already shown too slow past a few hundred intervals.
-  Finding #6 is the live, most promising lead for solving both problems
-  together, but is unverified. **A renderer must not be built yet
-  claiming both fast, many-interval rendering and smooth fades
-  simultaneously — that combination has not been demonstrated.**
+With the sample-level correctness question closed, the scaling question
+was retested properly. Envelope generation itself needed to avoid a
+naive per-sample Python loop over a multi-hour signal (a 20-hour book is
+~3.2 billion samples) — solved by bulk-filling the (overwhelmingly
+constant, gain=1.0) baseline via `array('h', [32767]) * n_samples`
+(a single C-level operation) and only running an actual per-sample
+Python computation across the small fraction of samples that fall
+inside a fade window. Real measurements on the same 51-minute reference
+file used throughout this ADR:
 
-## What remains before this ADR can be marked fully resolved
+| Intervals | Envelope generation | `amultiply` render pass |
+|---|---|---|
+| 300 | 0.70s | **0.52s** |
+| 951 | 2.03s | **0.51s** |
 
-1. Diagnose and re-test Finding #6 (`amultiply` envelope alignment) —
-   this is the current best lead and the most impactful next step, since
-   it could resolve both the scaling ceiling and the fade-smoothness
-   problem in one mechanism if the alignment issue is fixed.
-2. If Finding #6 doesn't pan out, measure whether splicing only tiny
-   fade-edge slices (Finding #5's approach, narrowed) via `atrim`/
-   `concat` scales any better than whole-interval segments did in
-   Finding #3 — expected not to (segment *count* was the driver, not
-   segment duration), but not yet actually tested.
-3. Re-test boundary precision and fade smoothness at PRD's actual declared
-   range extremes (0ms padding, 5ms fade), not just the round numbers
-   used in this spike.
-4. Re-run the Finding #3 scaling table with whichever fade mechanism is
-   ultimately chosen applied throughout, not just the plain gate — the
-   scaling numbers above are for gating alone and may not hold once fade
-   handling is added at every interval.
-5. All of the above on a real AAC-encoded M4B source (this spike used
-   raw PCM WAV throughout) — AAC decode/re-encode could plausibly shift
-   these numbers in either direction and has not been tested at all yet.
-6. If envelope generation (Finding #6) is the chosen path, its own
-   performance at real scale needs measurement: the spike's envelope was
-   generated with a pure-Python per-sample loop (no numpy currently
-   available or in this project's dependencies) — untested whether that
-   approach is fast enough for a 20-hour, ~3.2 billion-sample envelope,
-   or whether a run-length/sparse-segment generation strategy (the
-   envelope is constant 1.0 almost everywhere) is needed instead.
+The render pass itself is effectively **constant time regardless of
+interval count** — expected, since it is one linear pass multiplying two
+equal-length sample streams, with no per-interval graph node, expression
+term, or concat segment at all. This is roughly **30x faster than the
+already-good chained-`volume`-filter approach at 300 intervals**, and
+unlike every other approach tested in this ADR, it does not degrade or
+fail at 951 intervals — it was the *only* approach where 1000-ish
+intervals were not a problem at all.
+
+## Recommendation (resolved)
+
+**Use a precomputed sample-accurate gain envelope, generated directly in
+Python (not via any ffmpeg expression), applied with `amultiply` in a
+single pass.** This is the only approach tested that achieves all of:
+correct gating, genuinely smooth configurable-floor fades, and scaling
+that does not depend on interval count at all. It also sidesteps two
+hard failure modes found elsewhere in this ADR outright: there is no
+expression for ffmpeg's parser to choke on (Finding #3's crash), and no
+per-interval filter graph node or concat segment to accumulate overhead
+(Finding #3 and #5's scaling cost).
+
+Concretely, for the Renderer (a later gate, not built yet):
+
+1. Given a `RenderPlan` (`m4bmaker/filter/models.py`, from the already-
+   built Interval Planner), generate an envelope array the length of the
+   source's sample count: bulk-fill at "full gain," then for each
+   `RenderInterval` compute only its fade-in ramp, floor hold, and
+   fade-out ramp samples directly (the approach above, not an ffmpeg
+   expression).
+2. Extract the source's primary audio track to PCM (already a planned
+   step per ADR-0002/O-03) and the envelope to a matching-format PCM/WAV.
+3. `ffmpeg -i <source_pcm> -i <envelope> -filter_complex
+   "[0:a][1:a]amultiply[out]" -map "[out]" ...` into the AAC encode step
+   already designed in ADR-0002.
+
+### Approaches ruled out, and why (kept for anyone tempted to retry them)
+
+- **Single `volume` filter, one giant OR-combined `between()`
+  expression**: crashes ffmpeg's expression parser past ~300 terms
+  ("Cannot allocate memory"). Do not revisit without a specific ffmpeg
+  version fix confirmed.
+- **`atrim`+`volume`+`concat`, one segment per interval**: gives exact
+  sample-accurate boundaries but does not finish in 3 minutes at just
+  300 intervals (601 concat inputs). The scaling cost tracks segment
+  *count*, not segment *duration* — narrowing segments to just the fade
+  edges would not be expected to help (not separately retested, since
+  Finding #6/#7 made it moot).
+- **Chained `volume=enable='between(t,...)':volume=FLOOR` filter
+  instances (one per interval)**: works, and was the best of the
+  ffmpeg-expression-based options (600 intervals in 58s) — but has its
+  own non-linear scaling ceiling around 600-1000, has ~100-150ms
+  boundary smear from frame-quantization, and cannot produce a smooth
+  fade at all (Finding #4) without additional machinery. Superseded by
+  the envelope approach on every axis; no longer recommended now that
+  Finding #6/#7 exist.
+- **`asplit`+`afade`+`volume`+`amix` per interval, spliced via
+  `atrim`+`concat`**: genuinely smooth, sample-accurate fades (Finding
+  #5) — but inherits the disqualifying `atrim`+`concat` scaling cost.
+  Superseded by the simpler envelope approach, which achieves the same
+  smoothness without needing `atrim`/`concat`/`asplit`/`amix` at all.
+
+## What remains before implementation
+
+The core mechanism is settled with real evidence; what's left is
+extending the same rigor from this controlled spike to production
+conditions:
+
+1. **Test on a real AAC-encoded M4B source, not raw PCM WAV.** Every
+   measurement in this ADR used WAV throughout. AAC decode into PCM (for
+   the envelope multiply) and the subsequent AAC re-encode are both
+   planned steps (ADR-0002/O-03) that haven't been exercised together
+   with this envelope mechanism yet — codec round-trip could plausibly
+   affect sample-accuracy or introduce its own small timing offset
+   (e.g. encoder priming samples) that this spike wouldn't have caught.
+2. **Verify boundary/fade precision at PRD's actual declared range
+   extremes** (0ms padding, 5ms fade) — this spike used 30-50ms fades
+   and round interval numbers; since the envelope is generated directly
+   sample-by-sample rather than through any frame-quantized mechanism,
+   there's no structural reason to expect a problem at smaller values,
+   but "no structural reason to expect a problem" is a hypothesis, not
+   a measurement, until it's actually run.
+3. **Confirm envelope generation scales to a real 20-hour, ~3.2
+   billion-sample duration**, not just the 51-minute/136.7M-sample file
+   used here. The bulk-fill strategy (Finding #7) should scale linearly
+   with duration and be independent of interval count for the
+   per-interval computation — both properties suggest this holds, but
+   at ~23x the sample count actually tested, this needs a real run
+   before being stated as proven rather than extrapolated.
+4. **Confirm `amultiply`'s behavior when the two input streams differ
+   in exact sample count** (source duration vs. envelope array length
+   — should be identical by construction, but an off-by-one in envelope
+   generation meeting a real AAC-decoded sample count that doesn't
+   divide as cleanly as a synthetic sine source could surface an edge
+   case not exercised here).
+5. This ADR covers gain-envelope generation and application only. It
+   does not cover the surrounding Renderer/Validator pipeline (staging,
+   atomic output, duration/chapter/metadata validation per §8.1/§8.2) —
+   those remain to be built and are a separate, more mechanical task
+   now that this ADR removes the open question that was blocking it.
