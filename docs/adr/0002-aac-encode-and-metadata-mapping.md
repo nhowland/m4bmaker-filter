@@ -95,11 +95,17 @@ not "invent."
    be confirmed or revised against real AAC encode/decode round-trip
    fixtures (lossy AAC frame boundaries may not hit 10ms exactly — this is
    an honest unknown, not a guess dressed as a number).
-2. **Interval-count scaling** — whether the `volume`+`between()` filter
-   chain remains performant at realistic hit counts (tens to low hundreds
-   across a 20-hour book) or whether the `asendcmd` alternative is required.
-   This directly affects render throughput and must be measured, not
-   assumed, before G4 sign-off.
+2. ~~**Interval-count scaling**~~ — **measured in ADR-0006's G4 spike**:
+   a single filter with one giant OR-combined `between()` expression
+   crashes ffmpeg's expression parser outright past ~300 terms; chaining
+   one `volume` filter instance per interval works and scales to
+   several hundred intervals in well under a minute, but degrades
+   non-linearly and becomes impractical past roughly 600-1000. The
+   `atrim`+`concat` alternative (not `asendcmd`, which was never actually
+   tested) was tried and disqualified — it didn't finish in 3 minutes at
+   300 intervals despite giving exact sample-accurate boundaries. See
+   ADR-0006 for the full data and the still-open fade-ramp precision
+   problem this uncovered.
 3. Exact rounding/timebase policy for chapter start-time equality (§8.2) —
    proposed: canonical millisecond integer comparison, matching the
    transcript artifact's own `startMs`/`endMs` integer-millisecond
