@@ -111,6 +111,37 @@ class Transcript:
         return result
 
 
+def shift_segment(segment: TranscriptSegment, offset_ms: int) -> TranscriptSegment:
+    """Return a copy of *segment* with every word's timestamps shifted by
+    *offset_ms*.
+
+    Needed because the STT engine only ever sees one chunk's audio slice at
+    a time and reports timestamps relative to that slice's own start (0) —
+    not the source file's global timeline. This maps a chunk's raw output
+    back onto the source timeline before it's persisted or matched against.
+    The segment's own ``start_ms``/``end_ms`` are left untouched, since
+    callers set those directly from the chunk plan already, in global
+    terms.
+    """
+    shifted_words = tuple(
+        TranscriptWord(
+            text=w.text,
+            normalized=w.normalized,
+            start_ms=w.start_ms + offset_ms,
+            end_ms=w.end_ms + offset_ms,
+            confidence=w.confidence,
+        )
+        for w in segment.words
+    )
+    return TranscriptSegment(
+        id=segment.id,
+        start_ms=segment.start_ms,
+        end_ms=segment.end_ms,
+        status=segment.status,
+        words=shifted_words,
+    )
+
+
 # ── (de)serialization ──────────────────────────────────────────────────────
 
 

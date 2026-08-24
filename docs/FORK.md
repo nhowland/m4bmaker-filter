@@ -86,24 +86,48 @@ findings" section.
   it. Documented in the ADR as concrete motivation, not just a synthetic
   test case.
 
-**Still not built, and these modules should not be mistaken for it:** the
-durable orchestration around chunking — persisting each committed chunk,
-wiring pause/resume through the `JobState` machine, compatibility
-re-verification on resume — needs the SQLite persistence contract from PRD
-§14.3, which is still an explicitly undecided item (§14.3: "Before
-implementation, define one authoritative source for each entity..."). No
-Model Manager UI exists either — only the backend service. No
-throughput/memory benchmarking has been run.
+**G3: the durable pause/resume path is real and proven.** Made the
+SQLite/JSON persistence decision explicit (ADR-0005 — SQLite for job
+state/transition history/chunk-durability tracking; JSON artifacts stay
+authoritative for transcript content) and built on it:
+- `job_store.py` — SQLite-backed `JobStore`: job CRUD, state transitions
+  re-validated against `jobs.py`'s transition matrix at the persistence
+  boundary (an invalid transition is rejected and writes nothing), a
+  `job_events` audit trail, and per-chunk commit tracking.
+- `transcription_orchestrator.py` — the actual `TranscriptionJob`: chunks
+  a source via `chunking.py`, extracts each chunk's audio with ffmpeg,
+  transcribes it, trims each chunk down to its *owned* word range before
+  persisting (so the stored transcript is already deduplicated — the
+  Matcher needs no extra dedup pass), commits durably (JSON write, then
+  SQLite row), and honors a pause request by stopping before the next
+  chunk and leaving the job `PAUSED`.
 
-Cumulative: 217 tests in `tests/filter/` + 3 in `tests/test_utils.py`,
-99% coverage on `m4bmaker/filter/`, `black`/`flake8`/`mypy` clean, full
-suite — 1233 passing, 1 correctly skipped (the opt-in real-binary test).
+**This was proven end-to-end for real, not just against mocks**: a real
+~4.5s speech fixture, split into two real overlapping whisper.cpp calls,
+paused after the first chunk, resumed via a **brand-new `JobStore` backed
+by a fresh SQLite connection** (simulating an actual app restart, not just
+reusing the same Python object) — and the resulting transcript correctly
+contains "hell" exactly once, despite it sitting in the real overlap
+window transcribed independently by both chunks
+(`TestRealPauseResume::test_real_chunked_transcription_with_pause_and_resume`,
+opt-in via `M4BMAKER_WHISPER_MODEL`, passing).
 
-Not yet started: the durable Job Orchestrator + SQLite persistence
-(blocks finishing G3's pause/resume requirement); renderer and validator
-(G4, blocked on ADR-0002 approval and its own render-correctness spike);
-any UI (G5).
+**Still not built:** a Model Manager UI (only the backend service exists);
+throughput/memory benchmarking; multi-instance database locking (ADR-0005
+flags this as an open gap for G5); render-side persistence (PRD O-05,
+separate from this transcription-durability work, a G4 concern).
 
-No code in this fork renders audio yet, and the one real STT path that
-exists is a proof spike, not a production job — by design, per the PRD's
-own gate protocol (§17.3-§17.4).
+Cumulative: 254 tests in `tests/filter/` + 3 in `tests/test_utils.py`,
+98% coverage on `m4bmaker/filter/`, `black`/`flake8`/`mypy` clean, full
+suite — 1270 passing, 2 correctly skipped (the two opt-in real-binary
+tests).
+
+Not yet started: renderer and validator (G4, blocked on ADR-0002 approval
+and its own render-correctness spike — the ffmpeg filter-graph scaling
+question flagged in the original repo review is still untested); any UI
+(G5).
+
+No code in this fork renders audio yet. Everything STT-related through
+this point (engine adapter, Model Manager, chunking, durable pause/resume)
+has now been proven against real binaries and real audio, not left as
+theory — the render path is the next place that same rigor needs to apply.

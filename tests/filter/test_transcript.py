@@ -16,6 +16,7 @@ from m4bmaker.filter.transcript import (
     TranscriptStatus,
     TranscriptWord,
     read_transcript,
+    shift_segment,
     transcript_from_dict,
     transcript_to_dict,
     write_transcript,
@@ -132,6 +133,66 @@ class TestRoundTrip:
         assert d["segments"][0]["words"][0]["confidence"] is None
         restored = transcript_from_dict(d)
         assert restored.segments[0].words[0].confidence is None
+
+
+class TestShiftSegment:
+    def test_shifts_all_word_timestamps(self) -> None:
+        seg = TranscriptSegment(
+            id="chunk-1",
+            start_ms=25_000,
+            end_ms=55_000,
+            status=SegmentStatus.COMPLETED,
+            words=(
+                TranscriptWord(text="hi", normalized="hi", start_ms=100, end_ms=400),
+                TranscriptWord(
+                    text="there", normalized="there", start_ms=500, end_ms=900
+                ),
+            ),
+        )
+        shifted = shift_segment(seg, offset_ms=25_000)
+        assert [w.start_ms for w in shifted.words] == [25_100, 25_500]
+        assert [w.end_ms for w in shifted.words] == [25_400, 25_900]
+
+    def test_preserves_text_and_confidence(self) -> None:
+        seg = TranscriptSegment(
+            id="chunk-1",
+            start_ms=0,
+            end_ms=1000,
+            status=SegmentStatus.COMPLETED,
+            words=(
+                TranscriptWord(
+                    text="Hi", normalized="hi", start_ms=0, end_ms=100, confidence=0.9
+                ),
+            ),
+        )
+        shifted = shift_segment(seg, offset_ms=5_000)
+        assert shifted.words[0].text == "Hi"
+        assert shifted.words[0].confidence == 0.9
+
+    def test_zero_offset_is_a_no_op_value_wise(self) -> None:
+        seg = TranscriptSegment(
+            id="chunk-1",
+            start_ms=0,
+            end_ms=1000,
+            status=SegmentStatus.COMPLETED,
+            words=(TranscriptWord(text="a", normalized="a", start_ms=10, end_ms=20),),
+        )
+        shifted = shift_segment(seg, offset_ms=0)
+        assert shifted == seg
+
+    def test_segment_container_bounds_are_untouched(self) -> None:
+        seg = TranscriptSegment(
+            id="chunk-1", start_ms=25_000, end_ms=55_000, status=SegmentStatus.COMPLETED
+        )
+        shifted = shift_segment(seg, offset_ms=25_000)
+        assert shifted.start_ms == 25_000
+        assert shifted.end_ms == 55_000
+
+    def test_empty_words_shifts_to_empty(self) -> None:
+        seg = TranscriptSegment(
+            id="chunk-1", start_ms=0, end_ms=1000, status=SegmentStatus.COMPLETED
+        )
+        assert shift_segment(seg, offset_ms=500).words == ()
 
 
 class TestStatusEnums:
