@@ -198,6 +198,29 @@ fixture evidence" section above, now joined by G3-specific ones below):**
   storage/removal) — none of it exists; this spike downloaded its model
   with a bare `curl` command outside the app.
 
+## Chunking algorithm validated against real output (2026-08-24)
+
+`m4bmaker/filter/chunking.py`'s `plan_chunks()`/`merge_segment_words()`
+(timestamp-ownership overlap deduplication, PRD §11.3) is unit-tested
+against synthetic data, but was also sanity-checked against a real
+boundary-cutting failure: the G3 spike's `speech.wav` was split into two
+overlapping chunks (`[0, 3.52s)` and `[2.0s, 4.54s)`, a ~1.5s overlap) and
+each transcribed independently with `whisper-cli`.
+
+The first chunk's transcription cut off mid-sentence — "Go to." — losing
+"hell" entirely, because the chunk boundary landed inside that word's
+audio. The second, overlapping chunk transcribed the same region with more
+trailing context and produced "go to hell and back, my friend." in full.
+This is precisely the failure mode chunk overlap exists to prevent, and
+confirms the ownership-handoff design (the *later* chunk wins the overlap
+region, since it has trailing context the earlier one lacked) is the right
+call — a naive non-overlapping split would have silently dropped a target
+word from the transcript, which for this feature specifically means a
+profanity hit gets missed. No numeric merge assertions are drawn from this
+manual run (that precision lives in the unit tests); it exists as
+real-world motivation and confirms the algorithm's design intent holds up
+outside synthetic fixtures.
+
 ## Open questions for Contributor decision
 
 1. Exact whisper.cpp release tag/commit to pin, and its own dependency

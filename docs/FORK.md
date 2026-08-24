@@ -68,21 +68,42 @@ checksum verification at all; `--no-gpu` is a runtime flag, not a separate
 build), are in `docs/adr/0001-stt-engine-integration.md`'s "G3 spike
 findings" section.
 
-**Still not built, and this module should not be mistaken for it:** audio
-chunking for multi-hour sources (PRD §11.3 durability/pause-resume), the
-Model Manager (download/checksum/storage UI), and any throughput/memory
-benchmarking. `transcribe_short_audio()` makes exactly one whisper.cpp call
-per file — real transcription of a 20-hour book needs chunking design that
-does not exist yet.
+**G3 continued: Model Manager and chunking algorithm added.**
+- `model_manager.py` — the known-model catalog (`base.en`/`small.en`, PRD
+  §10.1) with **real** SHA-256 checksums this project computed itself (both
+  models were actually downloaded from Hugging Face and hashed during the
+  spike — see the ADR; whisper.cpp's own download script does no checksum
+  verification of its own, so these values exist nowhere upstream).
+  Checksum-verified, atomically-staged download over stdlib `urllib`
+  (no new HTTP dependency), install-state checks, and removal — all with
+  mocked-network tests plus real captured checksums as ground truth.
+- `chunking.py` — `plan_chunks()`/`merge_segment_words()`: the pure
+  timestamp-ownership algorithm for splitting a long source into
+  overlapping chunks and deduplicating the overlap deterministically (PRD
+  §11.3). Sanity-checked against **real** whisper.cpp output: a naive
+  non-overlapping split of the spike's speech fixture silently dropped the
+  word "hell" at a chunk boundary; the overlapping second chunk recovered
+  it. Documented in the ADR as concrete motivation, not just a synthetic
+  test case.
 
-Cumulative: 165 tests in `tests/filter/` + 3 new in `tests/test_utils.py`,
-`black`/`flake8`/`mypy` clean, full suite — 1192 passing, 1 correctly
-skipped (the opt-in real-binary test).
+**Still not built, and these modules should not be mistaken for it:** the
+durable orchestration around chunking — persisting each committed chunk,
+wiring pause/resume through the `JobState` machine, compatibility
+re-verification on resume — needs the SQLite persistence contract from PRD
+§14.3, which is still an explicitly undecided item (§14.3: "Before
+implementation, define one authoritative source for each entity..."). No
+Model Manager UI exists either — only the backend service. No
+throughput/memory benchmarking has been run.
 
-Not yet started: full transcription chunking/durability and the Model
-Manager (rest of G3); renderer and validator (G4, blocked on ADR-0002
-approval); any UI (G5).
+Cumulative: 217 tests in `tests/filter/` + 3 in `tests/test_utils.py`,
+99% coverage on `m4bmaker/filter/`, `black`/`flake8`/`mypy` clean, full
+suite — 1233 passing, 1 correctly skipped (the opt-in real-binary test).
 
-No code in this fork renders audio yet, and the one real STT call that
+Not yet started: the durable Job Orchestrator + SQLite persistence
+(blocks finishing G3's pause/resume requirement); renderer and validator
+(G4, blocked on ADR-0002 approval and its own render-correctness spike);
+any UI (G5).
+
+No code in this fork renders audio yet, and the one real STT path that
 exists is a proof spike, not a production job — by design, per the PRD's
 own gate protocol (§17.3-§17.4).
