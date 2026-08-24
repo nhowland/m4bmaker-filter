@@ -75,6 +75,139 @@ class TestPlanChunksCoverage:
         assert plans[-1].end_ms == 75_000
 
 
+class TestChapterAwarePlanning:
+    def test_no_chapter_data_falls_back_to_uniform(self) -> None:
+        with_chapters = plan_chunks(
+            100_000, chunk_ms=30_000, overlap_ms=5_000, chapter_start_times_ms=None
+        )
+        without = plan_chunks(100_000, chunk_ms=30_000, overlap_ms=5_000)
+        assert with_chapters == without
+
+    def test_empty_chapter_list_falls_back_to_uniform(self) -> None:
+        with_chapters = plan_chunks(
+            100_000, chunk_ms=30_000, overlap_ms=5_000, chapter_start_times_ms=[]
+        )
+        without = plan_chunks(100_000, chunk_ms=30_000, overlap_ms=5_000)
+        assert with_chapters == without
+
+    def test_short_chapters_each_become_one_chunk(self) -> None:
+        # Four chapters of 10/20/20/10 minutes; chunk_ms budget is 15 minutes.
+        chapters = [0, 600_000, 1_800_000, 3_000_000]
+        duration = 3_600_000
+        plans = plan_chunks(
+            duration,
+            chunk_ms=900_000,
+            overlap_ms=5_000,
+            chapter_start_times_ms=chapters,
+        )
+        # Chapter 1 (10min) and chapter 4 (10min) fit in one chunk each;
+        # chapters 2 and 3 (20min each) exceed the 15min budget and split.
+        owned_ranges = [(p.owned_start_ms, p.owned_end_ms) for p in plans]
+        assert owned_ranges[0] == (0, 600_000)  # chapter 1, whole
+        assert owned_ranges[-1] == (3_000_000, 3_600_000)  # chapter 4, whole
+
+    def test_long_chapter_is_subdivided(self) -> None:
+        # One 40-minute chapter, 15-minute chunk budget -> must split.
+        chapters = [0]
+        duration = 2_400_000  # 40 min
+        plans = plan_chunks(
+            duration,
+            chunk_ms=900_000,
+            overlap_ms=5_000,
+            chapter_start_times_ms=chapters,
+        )
+        assert len(plans) > 1
+        for p in plans:
+            assert p.owned_end_ms - p.owned_start_ms <= 900_000
+
+    def test_coverage_is_contiguous_with_no_gaps(self) -> None:
+        chapters = [0, 600_000, 1_800_000, 3_000_000]
+        duration = 3_600_000
+        plans = plan_chunks(
+            duration,
+            chunk_ms=900_000,
+            overlap_ms=5_000,
+            chapter_start_times_ms=chapters,
+        )
+        assert plans[0].owned_start_ms == 0
+        assert plans[-1].owned_end_ms == duration
+        for i in range(len(plans) - 1):
+            assert plans[i].owned_end_ms == plans[i + 1].owned_start_ms
+
+    def test_overlap_still_applied_at_chapter_boundary(self) -> None:
+        # Two short chapters, each well under the chunk budget — still
+        # expect the first chapter's audio slice to extend past its own
+        # owned end by overlap_ms, per the "safety margin, not an
+        # assumption" rationale in the module docstring.
+        chapters = [0, 300_000]
+        duration = 600_000
+        plans = plan_chunks(
+            duration,
+            chunk_ms=900_000,
+            overlap_ms=5_000,
+            chapter_start_times_ms=chapters,
+        )
+        assert len(plans) == 2
+        assert plans[0].owned_end_ms == 300_000
+        assert plans[0].end_ms == 305_000  # padded past the chapter boundary
+
+    def test_leading_span_before_first_chapter_is_not_dropped(self) -> None:
+        # First declared chapter starts at 10s, implying a 10s preamble.
+        chapters = [10_000, 300_000]
+        duration = 600_000
+        plans = plan_chunks(
+            duration,
+            chunk_ms=900_000,
+            overlap_ms=5_000,
+            chapter_start_times_ms=chapters,
+        )
+        assert plans[0].owned_start_ms == 0
+        assert plans[0].owned_end_ms == 10_000
+
+    def test_out_of_range_and_duplicate_chapter_starts_are_dropped_defensively(
+        self,
+    ) -> None:
+        duration = 600_000
+        chapters = [
+            0,
+            300_000,
+            300_000,
+            900_000,
+            -50,
+        ]  # dup + beyond duration + negative
+        plans = plan_chunks(
+            duration,
+            chunk_ms=900_000,
+            overlap_ms=5_000,
+            chapter_start_times_ms=chapters,
+        )
+        # Must not raise, and must still cover the full duration with no gaps.
+        assert plans[0].owned_start_ms == 0
+        assert plans[-1].owned_end_ms == duration
+        for i in range(len(plans) - 1):
+            assert plans[i].owned_end_ms == plans[i + 1].owned_start_ms
+
+    def test_single_chapter_covering_whole_short_file(self) -> None:
+        plans = plan_chunks(
+            10_000, chunk_ms=30_000, overlap_ms=5_000, chapter_start_times_ms=[0]
+        )
+        assert len(plans) == 1
+        assert plans[0] == ChunkPlan(
+            index=0, start_ms=0, end_ms=10_000, owned_start_ms=0, owned_end_ms=10_000
+        )
+
+    def test_all_invalid_chapter_starts_falls_back_to_uniform(self) -> None:
+        # Every entry is out of range for this duration.
+        with_chapters = plan_chunks(
+            100_000,
+            chunk_ms=30_000,
+            overlap_ms=5_000,
+            chapter_start_times_ms=[500_000, -1],
+        )
+        without = plan_chunks(100_000, chunk_ms=30_000, overlap_ms=5_000)
+        assert with_chapters == without
+
+
 class TestMergeSegmentWords:
     def _segment(self, seg_id: str, words: list[TranscriptWord]) -> TranscriptSegment:
         return TranscriptSegment(

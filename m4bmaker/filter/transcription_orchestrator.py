@@ -141,6 +141,7 @@ def run_transcription_job(
     overlap_ms: int,
     ffmpeg: str,
     *,
+    chapter_start_times_ms: list[int] | None = None,
     language: str = "en",
     whisper_cli: str | None = None,
     should_pause: Callable[[], bool] | None = None,
@@ -152,6 +153,17 @@ def run_transcription_job(
     overwritten from scratch. Returns the final, ``COMPLETE`` transcript
     when every planned chunk is done; raises :class:`TranscriptionPaused`
     if *should_pause* signals a pause before that point.
+
+    *chapter_start_times_ms*, when supplied, is passed straight through to
+    :func:`~m4bmaker.filter.chunking.plan_chunks` — the natural source is
+    ``MediaManifest.chapters`` (each ``ChapterInfo.start_ms``) from the
+    Media Inspector (PRD §6.1). Chunk boundaries then follow chapter
+    breaks (a real chapter break is almost always at a natural pause,
+    unlike an arbitrary fixed-duration cut) instead of uniform windows,
+    falling back to uniform windows automatically wherever chapter data is
+    absent or a chapter runs longer than *chunk_ms* — see ``chunking.py``
+    for the full rationale. Passing ``None`` (the default) preserves the
+    original uniform-windowing behavior exactly.
 
     The job must already exist in *store*, in a state from which
     ``RUNNING`` is reachable (``PREPARING`` after initial creation, or
@@ -167,7 +179,9 @@ def run_transcription_job(
     if job.state in (JobState.PREPARING, JobState.RESUMING):
         store.transition(job_id, JobState.RUNNING)
 
-    plans = plan_chunks(source.duration_ms, chunk_ms, overlap_ms)
+    plans = plan_chunks(
+        source.duration_ms, chunk_ms, overlap_ms, chapter_start_times_ms
+    )
     committed = _load_committed_segments(transcript_path, plans, store, job_id)
     committed_indices = {plan.index for _, plan in committed}
     engine_version = get_whisper_version(whisper_cli) or "unknown"

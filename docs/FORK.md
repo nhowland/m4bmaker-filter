@@ -117,34 +117,49 @@ throughput/memory benchmarking; multi-instance database locking (ADR-0005
 flags this as an open gap for G5); render-side persistence (PRD O-05,
 separate from this transcription-durability work, a G4 concern).
 
-Cumulative: 254 tests in `tests/filter/` + 3 in `tests/test_utils.py`,
-98% coverage on `m4bmaker/filter/`, `black`/`flake8`/`mypy` clean, full
-suite — 1270 passing, 2 correctly skipped (the two opt-in real-binary
+Cumulative: 266 tests in `tests/filter/` + 3 in `tests/test_utils.py`,
+97%+ coverage on `m4bmaker/filter/`, `black`/`flake8`/`mypy` clean, full
+suite — 1282 passing, 2 correctly skipped (the two opt-in real-binary
 tests).
 
-**G4: render spike in progress, one real blocker found and only partly
-resolved.** See [docs/adr/0006-gain-envelope-implementation.md](adr/0006-gain-envelope-implementation.md)
-for the full data. Headline results:
-- The ffmpeg filter-graph scaling risk flagged in the very first repo
-  review is now backed by real measurement, and it **reverses the naive
-  intuition**: the "obviously correct" `atrim`+`concat` approach (exact
-  sample-accurate boundaries) does not finish in 3 minutes at just 300
-  intervals. A single filter with one giant combined boolean expression
-  crashes ffmpeg's parser outright past ~300 terms. Chaining one `volume`
-  filter per interval is the only one of three approaches that survives
-  — fast to several hundred intervals (600 in 58s), degrading non-linearly
-  past that.
-- Smooth fade ramps (PRD §8.4) are proven achievable in ffmpeg at all
-  (`afade`+`amix`, genuinely smooth, verified) — but only via the same
-  structure already shown too slow at scale. A precomputed-envelope
-  approach (`amultiply`) is the live, most promising lead for solving
-  scaling and fade-smoothness together, but has an unresolved alignment
-  bug and is not yet proven.
-- **No renderer code has been written.** Building one now would mean
-  picking between "fast but clicks instead of ramps" and "smooth but
-  doesn't scale past a few hundred hits" — both real regressions from
-  what the PRD requires, so neither has been implemented as if it were a
-  finished decision.
+**G4: gain-envelope mechanism resolved by direct empirical spike.** See
+[docs/adr/0006-gain-envelope-implementation.md](adr/0006-gain-envelope-implementation.md)
+for the full trail — five approaches tested, four ruled out with hard
+data, two rounds of self-caught measurement error along the way.
+**Resolution:** generate the gain envelope as its own sample-accurate PCM
+signal directly in Python (never via an ffmpeg expression), apply with a
+single `amultiply` pass. Real measurements: this solves gating, genuinely
+smooth configurable-floor fades, *and* interval-count scaling all at
+once — ~30x faster than the next-best approach, and the only one of five
+tested that didn't degrade or fail approaching 1000 intervals (effectively
+constant-time regardless of interval count). The naive-seeming
+`atrim`+`concat` approach (exact sample-accurate boundaries) turned out to
+be operationally unusable past ~300 intervals — exactly the kind of
+reversed intuition a real spike exists to catch before it's built into
+production code.
 
-Not yet started: the renderer/validator implementation itself (blocked on
-resolving the above); any UI (G5).
+Still not built: the Renderer/Validator implementation itself (now
+comparatively mechanical, not open technical risk) and its testing against
+real AAC (this spike used raw PCM throughout); any UI (G5).
+
+**Chapter-aware transcription chunking** (`chunking.py`, `transcription_orchestrator.py`):
+the base project already has a proven pattern for chapter-based audio
+splitting — `gui/worker.py`'s `SplitWorker` extracts each chapter via
+`ffmpeg -ss/-to -c copy`, using `chapter[i].start` → `chapter[i+1].start`
+(or total duration for the last chapter) as the boundary rule. `plan_chunks()`
+now reuses that exact boundary logic when chapter start times are
+supplied (the natural source is `MediaManifest.chapters` from the Media
+Inspector, G1) — a real chapter break is almost always a natural pause,
+so splitting there is far less likely to cut a word than an arbitrary
+fixed-duration cut. This isn't a replacement for fixed-duration
+planning: a chapter longer than the pause-latency budget (PRD §11.3's
+≤30s target) is subdivided using the same fixed-step logic the no-chapter
+path already used, and a source with sparse/no chapter markers (common
+for the non-DRM, possibly self-produced M4Bs this app targets) falls back
+to it entirely. Overlap padding is still applied at chapter boundaries
+too — there's no verified evidence a real-world chapter marker never
+lands mid-word, so this stays a safety margin, not an assumption.
+`run_transcription_job()` takes an optional `chapter_start_times_ms` and
+passes it straight through; omitting it preserves the original
+uniform-windowing behavior exactly (10 new chunking tests + 2 orchestrator
+tests confirm both the chapter-aware paths and that fallback).

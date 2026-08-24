@@ -6,6 +6,28 @@ deterministic *algorithm* half of §11.3: how to split a long source into
 overlapping windows, and how to merge each window's transcribed words back
 into one deduplicated timeline. It has no I/O and touches no job state.
 
+**Chapter-aware planning.** The base project already has a proven pattern
+for turning an M4B's chapter markers into audio-slice boundaries —
+``gui/worker.py``'s ``SplitWorker`` computes each chapter's
+``[start, next_chapter_start)`` and extracts it via ``ffmpeg -ss/-to``.
+:func:`plan_chunks` reuses that same boundary logic (chapter *i* ends where
+chapter *i+1* starts, the last chapter ends at the source duration) when
+chapter start times are supplied, because a real chapter break is almost
+always at a natural pause in the narration — splitting there is far less
+likely to land mid-word than an arbitrary fixed-duration cut. This does
+**not** replace fixed-duration planning, for two reasons that make chapter
+boundaries alone insufficient: a chapter can run far longer than the
+pause-latency budget (PRD §11.3's ≤30s target — an hour-long chapter would
+make Pause take up to an hour to land), and plenty of real non-DRM M4Bs
+(exactly what this app targets) have sparse or no chapter markers at all.
+So a chapter longer than *chunk_ms* is subdivided internally using the same
+fixed-step logic the no-chapter path already uses, and a source with no
+usable chapter data falls back to plain fixed-duration planning entirely.
+Overlap padding is still applied at chapter boundaries, not skipped —
+there is no verified evidence that a real-world chapter break never lands
+mid-word (self-produced or messily-tagged files could easily have an
+imprecise marker), so this stays a safety margin rather than an assumption.
+
 **Not yet built** (a separate, larger slice of work): the durable,
 resumable *orchestration* around this algorithm — persisting each
 committed chunk atomically via ``storage.write_json_atomic``, wiring pause
@@ -48,15 +70,129 @@ class ChunkPlan:
     owned_end_ms: int
 
 
-def plan_chunks(duration_ms: int, chunk_ms: int, overlap_ms: int) -> list[ChunkPlan]:
+def _plans_from_owned_segments(
+    segments: list[tuple[int, int]], overlap_ms: int, duration_ms: int
+) -> list[ChunkPlan]:
+    """Build padded :class:`ChunkPlan`\\ s from *segments* — a list of
+    non-overlapping ``(owned_start, owned_end)`` pairs that already exactly
+    partition ``[0, duration_ms)`` with no gaps, in order.
+
+    Each segment's *audio slice* extends *overlap_ms* past its own owned
+    end (clamped to *duration_ms*) — matching the trailing-only padding
+    documented on :class:`ChunkPlan`: a chunk gets extra trailing context
+    beyond what it owns, while its neighbor independently transcribes that
+    same region with better leading context and wins ownership there.
+    """
+    plans: list[ChunkPlan] = []
+    for i, (owned_start, owned_end) in enumerate(segments):
+        end = (
+            min(duration_ms, owned_end + overlap_ms)
+            if duration_ms > 0
+            else owned_end + overlap_ms
+        )
+        plans.append(
+            ChunkPlan(
+                index=i,
+                start_ms=owned_start,
+                end_ms=end,
+                owned_start_ms=owned_start,
+                owned_end_ms=owned_end,
+            )
+        )
+    return plans
+
+
+def _uniform_segments(
+    duration_ms: int, chunk_ms: int, overlap_ms: int
+) -> list[tuple[int, int]]:
+    """Owned-segment boundaries spaced by ``step = chunk_ms - overlap_ms``,
+    the no-chapter-data fallback (and the whole-file behavior when no
+    chapter subdivides more finely than this already would)."""
+    step = chunk_ms - overlap_ms
+    segments: list[tuple[int, int]] = []
+    start = 0
+    while start < duration_ms:
+        end = min(start + chunk_ms, duration_ms)
+        is_last = end >= duration_ms
+        owned_end = end if is_last else min(start + step, end)
+        segments.append((start, owned_end))
+        if is_last:
+            break
+        start += step
+    return segments
+
+
+def _chapter_segments(
+    chapter_start_times_ms: list[int],
+    duration_ms: int,
+    chunk_ms: int,
+    overlap_ms: int,
+) -> list[tuple[int, int]]:
+    """Owned-segment boundaries derived from chapter start times.
+
+    Chapter *i* spans ``[start[i], start[i+1])``, or ``[start[i],
+    duration_ms)`` for the last one — the exact boundary rule
+    ``gui/worker.py``'s ``SplitWorker`` already uses for extracting chapter
+    files. If the first chapter doesn't start at 0 (a preamble/intro before
+    chapter markers begin), that leading span is treated as an implicit
+    chapter so no audio is silently dropped. A chapter longer than
+    *chunk_ms* — too long to respect the pause-latency budget as a single
+    transcription call — is subdivided using the same fixed-step logic
+    :func:`_uniform_segments` uses, scoped to that chapter's own span.
+    Degenerate entries (duplicates, out-of-range, non-increasing) are
+    dropped defensively rather than raised, since chapter metadata on a
+    real-world file is exactly the kind of input this app must not crash
+    on (PRD §12.5 treats embedded metadata as untrusted input).
+    """
+    starts = sorted({s for s in chapter_start_times_ms if 0 <= s < duration_ms})
+    if not starts:
+        return []
+    if starts[0] > 0:
+        starts.insert(0, 0)
+
+    chapter_bounds: list[tuple[int, int]] = []
+    for i, s in enumerate(starts):
+        e = starts[i + 1] if i + 1 < len(starts) else duration_ms
+        if e > s:
+            chapter_bounds.append((s, e))
+
+    step = chunk_ms - overlap_ms
+    segments: list[tuple[int, int]] = []
+    for chapter_start, chapter_end in chapter_bounds:
+        if chapter_end - chapter_start <= chunk_ms:
+            segments.append((chapter_start, chapter_end))
+            continue
+        cursor = chapter_start
+        while cursor < chapter_end:
+            owned_end = min(cursor + step, chapter_end)
+            is_last_piece = owned_end >= chapter_end
+            segments.append((cursor, chapter_end if is_last_piece else owned_end))
+            if is_last_piece:
+                break
+            cursor += step
+    return segments
+
+
+def plan_chunks(
+    duration_ms: int,
+    chunk_ms: int,
+    overlap_ms: int,
+    chapter_start_times_ms: list[int] | None = None,
+) -> list[ChunkPlan]:
     """Split ``[0, duration_ms)`` into overlapping chunks.
 
-    Consecutive chunks overlap by *overlap_ms*: chunk *i* starts at
-    ``i * step`` where ``step = chunk_ms - overlap_ms``. Ownership
+    Without *chapter_start_times_ms* (or when it's empty): chunk *i* starts
+    at ``i * step`` where ``step = chunk_ms - overlap_ms``. Ownership
     boundaries fall exactly on multiples of *step*, so every millisecond of
     the source is owned by exactly one chunk with no gap and no double
     ownership — the last chunk owns everything remaining up to
     *duration_ms* (there is no next chunk to hand its tail off to).
+
+    With *chapter_start_times_ms* supplied: ownership boundaries follow
+    chapter breaks instead (see :func:`_chapter_segments`), each chapter
+    longer than *chunk_ms* subdivided the same way. Every chunk, chapter-
+    aligned or not, still gets *overlap_ms* of trailing padding — a chapter
+    break is a strong signal for a natural pause, not a guarantee.
 
     Raises :class:`ValueError` if *overlap_ms* is not smaller than
     *chunk_ms* (a non-positive or zero step would never advance, or would
@@ -68,29 +204,17 @@ def plan_chunks(duration_ms: int, chunk_ms: int, overlap_ms: int) -> list[ChunkP
         raise ValueError(
             f"overlap_ms ({overlap_ms}) must be smaller than chunk_ms ({chunk_ms})."
         )
-    step = chunk_ms - overlap_ms
 
-    plans: list[ChunkPlan] = []
-    index = 0
-    start = 0
-    while start < duration_ms:
-        end = min(start + chunk_ms, duration_ms)
-        is_last = end >= duration_ms
-        owned_end = end if is_last else min(start + step, end)
-        plans.append(
-            ChunkPlan(
-                index=index,
-                start_ms=start,
-                end_ms=end,
-                owned_start_ms=start,
-                owned_end_ms=owned_end,
-            )
+    if chapter_start_times_ms:
+        segments = _chapter_segments(
+            chapter_start_times_ms, duration_ms, chunk_ms, overlap_ms
         )
-        if is_last:
-            break
-        index += 1
-        start += step
-    return plans
+    else:
+        segments = []
+    if not segments:
+        segments = _uniform_segments(duration_ms, chunk_ms, overlap_ms)
+
+    return _plans_from_owned_segments(segments, overlap_ms, duration_ms)
 
 
 def merge_segment_words(

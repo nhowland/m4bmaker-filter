@@ -167,6 +167,89 @@ class TestHappyPath:
             )
 
 
+class TestChapterAwareChunking:
+    def test_chapter_start_times_change_extracted_chunk_boundaries(
+        self, store: JobStore, tmp_path: Path
+    ) -> None:
+        # duration=50000, chunk_ms=30000, overlap_ms=5000: uniform planning
+        # would produce exactly 2 chunks at [0,25000)/[25000,50000). A
+        # chapter break at 10000 that isn't a uniform-planning boundary
+        # forces a different split into 3 chunks instead, proving the
+        # chapter data actually reached plan_chunks rather than being
+        # silently ignored.
+        store.create_job("job-1", JobType.TRANSCRIPTION)
+        store.transition("job-1", JobState.PREPARING)
+
+        captured_boundaries: list[tuple[int, int]] = []
+
+        def _fake_extract(source_path, start_ms, end_ms, ffmpeg, dest_path):
+            captured_boundaries.append((start_ms, end_ms))
+            dest_path.touch()
+
+        responses = [
+            _raw_whisper_json([]),
+            _raw_whisper_json([]),
+            _raw_whisper_json([]),
+        ]
+        with (
+            patch(f"{_ORCH}._extract_chunk_wav", side_effect=_fake_extract),
+            patch(f"{_ORCH}.run_whisper", side_effect=lambda *a, **k: responses.pop(0)),
+            patch(f"{_ORCH}.get_whisper_version", return_value="1.9.2"),
+        ):
+            run_transcription_job(
+                "job-1",
+                store,
+                tmp_path / "source.wav",
+                tmp_path / "model.bin",
+                "sha256:model",
+                _make_source(50_000),
+                tmp_path / "book.m4bt.json",
+                chunk_ms=30_000,
+                overlap_ms=5_000,
+                ffmpeg="ffmpeg",
+                chapter_start_times_ms=[0, 10_000],
+            )
+
+        # Chapter-aware plan (owned): (0,10000), (10000,35000), (35000,50000)
+        # -- the 40s second chapter exceeds the 30000ms budget and splits at
+        # step=25000. Each audio *slice* extends owned_end by overlap_ms
+        # (clamped to duration), matching ChunkPlan's trailing-padding rule.
+        assert captured_boundaries == [(0, 15_000), (10_000, 40_000), (35_000, 50_000)]
+
+    def test_no_chapter_data_uses_uniform_boundaries(
+        self, store: JobStore, tmp_path: Path
+    ) -> None:
+        store.create_job("job-1", JobType.TRANSCRIPTION)
+        store.transition("job-1", JobState.PREPARING)
+
+        captured_boundaries: list[tuple[int, int]] = []
+
+        def _fake_extract(source_path, start_ms, end_ms, ffmpeg, dest_path):
+            captured_boundaries.append((start_ms, end_ms))
+            dest_path.touch()
+
+        _, p2, p3 = _patched([CHUNK0_JSON, CHUNK1_JSON])
+        with (
+            patch(f"{_ORCH}._extract_chunk_wav", side_effect=_fake_extract),
+            p2,
+            p3,
+        ):
+            run_transcription_job(
+                "job-1",
+                store,
+                tmp_path / "source.wav",
+                tmp_path / "model.bin",
+                "sha256:model",
+                _make_source(),
+                tmp_path / "book.m4bt.json",
+                chunk_ms=30_000,
+                overlap_ms=5_000,
+                ffmpeg="ffmpeg",
+            )
+
+        assert captured_boundaries == [(0, 30_000), (25_000, 50_000)]
+
+
 class TestPauseAndResume:
     def test_pause_before_second_chunk_persists_first_and_stops(
         self, store: JobStore, tmp_path: Path
