@@ -116,6 +116,88 @@ by whom (Contributor sign-off gate), and against what (G3 named fixtures).
 - Offline-after-install test: network disabled, transcription still
   succeeds once model+engine are verified present.
 
+## G3 spike findings (2026-08-24)
+
+A narrow spike was run to prove the integration end-to-end before writing
+any more of it on assumption. Scope, as agreed with the product owner:
+prove the mechanism on a short synthetic fixture with the smallest model;
+do **not** run the base.en/small.en benchmark suite yet.
+
+**What was done:**
+1. Installed `whisper-cpp` 1.9.2 via Homebrew (`brew install whisper-cpp`,
+   MIT license, confirms the assumption above) for local dev-environment
+   proof — this is *not* the shipping distribution mechanism, which stays
+   "pinned prebuilt binaries bundled via PyInstaller" per the decision
+   below; Homebrew was only the fastest way to get a real binary to spike
+   against.
+2. Downloaded `ggml-tiny.en.bin` (74MB) directly from
+   `https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin`
+   and computed its SHA-256 myself: `921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f`.
+3. Generated a synthetic speech fixture via macOS `say` (legally clean, no
+   copyrighted audio) — "This is a test of the darn filtering system. Go
+   to hell and back, my friend." — converted to 16kHz mono PCM WAV via
+   ffmpeg (whisper.cpp's required input format).
+4. Ran `whisper-cli -m ggml-tiny.en.bin -f speech.wav -oj -ojf --no-gpu`
+   and inspected the real JSON output structure directly.
+5. Implemented `m4bmaker/filter/transcript_engine.py` against that real
+   structure (not the docs, which don't describe the JSON schema in this
+   level of detail) and verified it end-to-end with both a mocked test
+   suite and one real-binary, real-model integration test
+   (`tests/filter/test_transcript_engine.py::TestRealWhisperIntegration`,
+   opt-in via `M4BMAKER_WHISPER_MODEL` env var, skipped by default/in CI
+   since no model file is committed to the repo per D-11) — **that real
+   test passed**, correctly recognizing both target words ("darn" at
+   1060–1250ms, confidence 0.75; "hell" at 2900–3200ms, confidence 0.47).
+
+**What this found that wasn't knowable without running it:**
+
+- **whisper.cpp's own model-download script does no checksum verification
+  at all** (`models/download-ggml-model.sh` relies purely on HTTP status
+  codes). This matters directly for PRD D-11/§10.1's checksum-verification
+  requirement: the future Model Manager cannot delegate to or mirror
+  upstream's download script and call the requirement satisfied — it must
+  compute and verify its own checksum against a value *this project* pins
+  and records, independent of anything whisper.cpp ships. The checksum
+  above is this project's own, not one whisper.cpp published.
+- **`--no-gpu` is a plain runtime flag, not a separate build.** The same
+  Homebrew binary auto-detects and uses Metal on Apple Silicon unless told
+  not to. This resolves a concern raised in ADR-0003: shipping "CPU-only
+  for v1" does not require sourcing/building a different binary — it's one
+  flag, always passed, on every platform. Simplifies the packaging story.
+- **whisper.cpp's full-JSON output (`-ojf`) is token-level, not strictly
+  word-level**, and mixes non-word marker tokens into the same list as real
+  words: a `[_BEG_]` sentinel at the start, punctuation as standalone
+  tokens (`"."`, `","`) with their own (often zero-width) timestamps, and
+  an internal `[_TT_N]` timestamp token at the end. None of this is
+  documented anywhere findable — `whisper_result_to_segment()` filters all
+  three categories out, verified against the real captured shape (now a
+  test fixture, so a future whisper.cpp upgrade that changes this shape
+  will fail loudly rather than silently miscount words).
+- **Per-token confidence (`p`) is a real, variable signal**, not a
+  formality: 0.75 for "darn" (a less common word to a `tiny.en` model) vs.
+  0.47 for "hell" in this run — worth preserving as-is in the transcript
+  schema rather than discarding or normalizing away.
+- **Token text carries a leading space** (`" darn"`, not `"darn"`) that
+  must be stripped before normalization — an easy silent-bug source if
+  missed (would make every word fail to match its catalog entry, since
+  `normalize_token(" darn")` and `normalize_token("darn")` differ only by
+  whether the leading space survives into the stored `text` field; the
+  `normalized` field is unaffected since normalization strips whitespace,
+  but the raw `text` field displayed to the User in scan review, PRD §9.4,
+  would show a stray leading space on every single word without this).
+
+**What remains explicitly unresolved (see the "Open items requiring G4
+fixture evidence" section above, now joined by G3-specific ones below):**
+- Chunking strategy for multi-hour sources (PRD §11.3) — this spike proved
+  the single-call mechanism works; it says nothing about how to split a
+  20-hour book into durable, resumable chunks with correct
+  overlap/deduplication at boundaries.
+- Throughput/memory benchmarking of `base.en`/`small.en` on named reference
+  hardware (PRD §13.1) — deliberately deferred, not started.
+- The Model Manager itself (download UI, checksum verification wiring,
+  storage/removal) — none of it exists; this spike downloaded its model
+  with a bare `curl` command outside the app.
+
 ## Open questions for Contributor decision
 
 1. Exact whisper.cpp release tag/commit to pin, and its own dependency

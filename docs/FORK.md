@@ -56,12 +56,33 @@ ADR-0001 (STT engine = whisper.cpp as a bundled subprocess binary) is
 items (exact release pin, build/trust model, CPU-only vs. GPU) are still
 unresolved and gate G3.
 
-Cumulative: 159 tests in `tests/filter/`, 98% coverage, `black`/`flake8`/
-`mypy` clean, full existing suite (1013 tests) still green — 1172 total.
+**G3 (Transcription): narrow spike complete.** Product owner confirmed:
+pinned prebuilt whisper.cpp binaries (not a vendored build), CPU-only for
+v1. Added `transcript_engine.py` — a whisper.cpp subprocess adapter proven
+against a real `tiny.en` model and a real (synthetic, via macOS `say`)
+speech fixture, including one real-binary integration test (opt-in via
+`M4BMAKER_WHISPER_MODEL`, skipped by default/CI — no model file is
+committed to the repo). Full findings, including two things that weren't
+knowable without running it (whisper.cpp's own download script does no
+checksum verification at all; `--no-gpu` is a runtime flag, not a separate
+build), are in `docs/adr/0001-stt-engine-integration.md`'s "G3 spike
+findings" section.
 
-Not yet started: model manager and transcription engine integration (G3,
-blocked on ADR-0001's remaining open items); renderer and validator (G4,
-blocked on ADR-0002 approval); any UI (G5).
+**Still not built, and this module should not be mistaken for it:** audio
+chunking for multi-hour sources (PRD §11.3 durability/pause-resume), the
+Model Manager (download/checksum/storage UI), and any throughput/memory
+benchmarking. `transcribe_short_audio()` makes exactly one whisper.cpp call
+per file — real transcription of a 20-hour book needs chunking design that
+does not exist yet.
 
-No code in this fork downloads a model, calls an STT engine, or renders
-audio yet — by design, per the PRD's own gate protocol (§17.3-§17.4).
+Cumulative: 165 tests in `tests/filter/` + 3 new in `tests/test_utils.py`,
+`black`/`flake8`/`mypy` clean, full suite — 1192 passing, 1 correctly
+skipped (the opt-in real-binary test).
+
+Not yet started: full transcription chunking/durability and the Model
+Manager (rest of G3); renderer and validator (G4, blocked on ADR-0002
+approval); any UI (G5).
+
+No code in this fork renders audio yet, and the one real STT call that
+exists is a proof spike, not a production job — by design, per the PRD's
+own gate protocol (§17.3-§17.4).

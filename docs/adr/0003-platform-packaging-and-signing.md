@@ -80,9 +80,11 @@ Extend the existing artifacts directly:
    from the base project's current floor (no evidence found that they
    need to be — recommend keeping them unchanged unless G3/G4 benchmarking
    finds a hard dependency on a newer OS API).
-2. Whether GPU-accelerated whisper.cpp builds (Metal on macOS, CUDA/DirectML
-   on Windows) are worth the packaging/testing-matrix cost for v1, or
-   whether a CPU-only build is the right v1 scope (ADR-0001 recommends
-   CPU-only for v1; this ADR concurs for packaging-matrix simplicity, but
-   final call is a Contributor decision balancing throughput against
-   testing surface).
+2. ~~Whether GPU-accelerated whisper.cpp builds are worth the
+   packaging/testing-matrix cost for v1~~ — **resolved by the ADR-0001 G3
+   spike**: `--no-gpu` is a plain runtime flag on the standard whisper.cpp
+   build, not a separate binary. There is no separate CPU-only build to
+   source or maintain — every platform ships the one standard build and
+   the app always passes `--no-gpu` at invocation time per the product
+   owner's CPU-only-for-v1 decision. This removes an entire axis from the
+   packaging/testing matrix that this ADR originally worried about.

@@ -97,6 +97,21 @@ def find_ffprobe() -> str:
     return path
 
 
+def find_binary(name: str) -> str | None:
+    """Return the path to executable *name* via the same PyInstaller-bundle-
+    aware, PATH-then-Homebrew discovery :func:`_which` already uses for
+    ffmpeg/ffprobe, or ``None`` if not found.
+
+    Unlike :func:`find_ffmpeg`/:func:`find_ffprobe`, this does **not** call
+    :func:`sys.exit` on failure. Those two exist for the CLI, where exiting
+    the process on a missing tool is correct. The filtering feature
+    (``m4bmaker/filter/``) needs to report a missing binary (e.g.
+    whisper-cli) as a recoverable job state instead of crashing the whole
+    app, so it calls this directly and handles ``None`` itself.
+    """
+    return _which(name)
+
+
 def subprocess_flags() -> dict[str, Any]:
     """Return kwargs that suppress console windows on Windows frozen builds."""
     if sys.platform == "win32" and getattr(sys, "frozen", False):

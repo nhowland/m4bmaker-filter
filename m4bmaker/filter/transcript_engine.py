@@ -1,0 +1,255 @@
+"""whisper.cpp subprocess adapter (PRD §10.1, O-02; ADR-0001).
+
+**G3 spike scope.** This proves the whisper.cpp integration end-to-end
+against a real ``tiny.en`` model and a short synthetic speech fixture — see
+``docs/adr/0001-stt-engine-integration.md``'s "G3 spike findings" section
+for the full narrative, the real captured JSON shape this module's parsing
+was built against, and what it revealed that wasn't knowable from
+whisper.cpp's docs alone (e.g. that its own model-download script does no
+checksum verification at all, contrary to what a casual read of PRD D-11
+might lead you to assume is "whatever whisper.cpp already does").
+
+**Explicitly not implemented here** — do not mistake this module for a
+finished TranscriptionJob:
+
+- **Chunking.** :func:`transcribe_short_audio` makes exactly one whisper.cpp
+  call and produces exactly one :class:`~m4bmaker.filter.transcript.TranscriptSegment`.
+  A 20-hour source needs the file split into durable, independently
+  resumable chunks (PRD §11.3) with atomic per-chunk persistence — that is
+  real design work (chunk boundary strategy, overlap/dedup at boundaries,
+  pause/resume wiring through the Job Orchestrator) that does not exist yet.
+- **The Model Manager.** No download/checksum/storage/removal UI exists.
+  The G3 spike downloaded its model manually (see the ADR) and passes a
+  local model path straight into this module.
+- **Benchmarking.** No throughput/memory measurement across `base.en` /
+  `small.en` on named reference hardware (PRD §13.1) has been done —
+  deferred by explicit product-owner choice when this spike was scoped.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+import tempfile
+from pathlib import Path
+from typing import Any
+
+from m4bmaker.utils import find_binary, subprocess_flags
+
+from .models import normalize_token
+from .transcript import (
+    SegmentStatus,
+    Transcript,
+    TranscriptEngine,
+    TranscriptSegment,
+    TranscriptSource,
+    TranscriptStatus,
+    TranscriptWord,
+)
+
+_BINARY_NAME = "whisper-cli"
+
+
+class WhisperNotFoundError(Exception):
+    """Raised when the whisper-cli binary cannot be located. A caller built
+    on the future Job Orchestrator should catch this and transition the job
+    to ``NEEDS_ATTENTION`` (PRD §11.2), not let it propagate as a crash."""
+
+
+class WhisperTranscriptionError(Exception):
+    """Raised when whisper-cli runs but exits non-zero."""
+
+
+def find_whisper_cli() -> str | None:
+    """Return the path to the whisper-cli binary, or ``None`` if not found."""
+    return find_binary(_BINARY_NAME)
+
+
+def get_whisper_version(whisper_cli: str | None = None) -> str | None:
+    """Return whisper.cpp's self-reported version string (e.g. ``"1.9.2"``),
+    or ``None`` if the binary can't be found or its output doesn't match
+    the expected ``"whisper.cpp version: X.Y.Z"`` line. Checked against both
+    stdout and stderr — the real binary was observed printing this after
+    several backend-initialization lines on stderr, not on stdout alone."""
+    binary = whisper_cli or find_whisper_cli()
+    if binary is None:
+        return None
+    result = subprocess.run(
+        [binary, "--version"],
+        capture_output=True,
+        encoding="utf-8",
+        **subprocess_flags(),
+    )
+    for line in (result.stdout + result.stderr).splitlines():
+        stripped = line.strip()
+        if stripped.lower().startswith("whisper.cpp version:"):
+            return str(stripped.split(":", 1)[1].strip())
+    return None
+
+
+def _is_special_token(text: str) -> bool:
+    """whisper.cpp emits non-word marker tokens like ``[_BEG_]`` and
+    ``[_TT_225]`` (an internal timestamp token) interleaved with real words
+    in its token list — confirmed against real output in the G3 spike, not
+    assumed from documentation."""
+    stripped = text.strip()
+    return stripped.startswith("[_") and stripped.endswith("]")
+
+
+def _is_punctuation_only(text: str) -> bool:
+    return not any(ch.isalnum() for ch in text)
+
+
+def run_whisper(
+    audio_path: Path,
+    model_path: Path,
+    *,
+    language: str = "en",
+    whisper_cli: str | None = None,
+) -> dict[str, Any]:
+    """Run whisper.cpp against *audio_path* and return its parsed
+    "full JSON" output (whisper.cpp's own schema — see
+    :func:`whisper_result_to_segment` for the mapping into ours).
+
+    *audio_path* must already be 16kHz mono PCM WAV; whisper.cpp requires
+    this input format. Converting from the source M4B's AAC track is the
+    Media Inspector/Renderer's job (an ffmpeg extraction step), not this
+    function's — kept as a hard boundary so this adapter has exactly one
+    responsibility.
+
+    Always runs with ``--no-gpu``: CPU-only for v1 per ADR-0001/ADR-0003
+    (confirmed in the G3 spike that this is a plain runtime flag, not a
+    separate build — the same Homebrew binary auto-uses Metal without it).
+    """
+    binary = whisper_cli or find_whisper_cli()
+    if binary is None:
+        raise WhisperNotFoundError(
+            f"{_BINARY_NAME} not found on PATH or in a bundled location."
+        )
+
+    with tempfile.TemporaryDirectory() as tmp:
+        out_stem = str(Path(tmp) / "result")
+        cmd = [
+            binary,
+            "-m",
+            str(model_path),
+            "-f",
+            str(audio_path),
+            "-l",
+            language,
+            "--no-gpu",
+            "-oj",
+            "-ojf",
+            "-of",
+            out_stem,
+            "-np",
+        ]
+        result = subprocess.run(
+            cmd, capture_output=True, encoding="utf-8", **subprocess_flags()
+        )
+        if result.returncode != 0:
+            stderr_tail = result.stderr.strip()[-2000:]
+            raise WhisperTranscriptionError(
+                f"whisper-cli exited with code {result.returncode}: {stderr_tail}"
+            )
+        out_path = Path(out_stem + ".json")
+        parsed: dict[str, Any] = json.loads(out_path.read_text(encoding="utf-8"))
+        return parsed
+
+
+def whisper_result_to_segment(
+    raw: dict[str, Any],
+    segment_id: str,
+    segment_start_ms: int,
+    segment_end_ms: int,
+) -> TranscriptSegment:
+    """Map one whisper.cpp full-JSON result (from :func:`run_whisper`) into
+    one :class:`~m4bmaker.filter.transcript.TranscriptSegment`.
+
+    Confidence is whisper.cpp's per-token ``p`` (probability) value, passed
+    through unchanged — real spike output showed this varies meaningfully
+    (0.75 for a clearly-spoken uncommon word, 0.47 for a word whose
+    surrounding context made it less predictable), so it is a real signal
+    worth preserving, not a constant to special-case around.
+
+    Special tokens (``[_BEG_]``, ``[_TT_N]``, etc.) and punctuation-only
+    tokens are dropped — they carry timestamps in whisper.cpp's output but
+    are not spoken words, and PRD §9.3 matching operates on recognized
+    words.
+    """
+    words: list[TranscriptWord] = []
+    for entry in raw.get("transcription", []):
+        for token in entry.get("tokens", []):
+            text = token.get("text", "")
+            if _is_special_token(text) or _is_punctuation_only(text):
+                continue
+            stripped = text.strip()
+            if not stripped:
+                continue
+            offsets = token.get("offsets", {})
+            start_ms = offsets.get("from")
+            end_ms = offsets.get("to")
+            if start_ms is None or end_ms is None or end_ms <= start_ms:
+                # Observed occasionally at segment boundaries in real
+                # output — skip rather than construct an invalid
+                # TranscriptWord (whose own validation would reject it).
+                continue
+            words.append(
+                TranscriptWord(
+                    text=stripped,
+                    normalized=normalize_token(stripped),
+                    start_ms=start_ms,
+                    end_ms=end_ms,
+                    confidence=token.get("p"),
+                )
+            )
+    return TranscriptSegment(
+        id=segment_id,
+        start_ms=segment_start_ms,
+        end_ms=segment_end_ms,
+        status=SegmentStatus.COMPLETED,
+        words=tuple(words),
+    )
+
+
+def transcribe_short_audio(
+    audio_path: Path,
+    model_path: Path,
+    model_checksum: str,
+    source: TranscriptSource,
+    *,
+    language: str = "en",
+    whisper_cli: str | None = None,
+    engine_version: str | None = None,
+) -> Transcript:
+    """Transcribe one short audio file in a single whisper.cpp call and
+    wrap the result as a one-segment, ``COMPLETE`` :class:`Transcript`.
+
+    **Spike-only convenience, not the production TranscriptionJob.** Real
+    transcription of a multi-hour source must chunk audio into durable,
+    independently resumable segments (PRD §11.3); this function proves the
+    engine call and JSON mapping are correct end-to-end, nothing more.
+    """
+    raw = run_whisper(
+        audio_path, model_path, language=language, whisper_cli=whisper_cli
+    )
+    segment = whisper_result_to_segment(
+        raw,
+        segment_id="chunk-000000",
+        segment_start_ms=0,
+        segment_end_ms=source.duration_ms,
+    )
+    resolved_version = engine_version or get_whisper_version(whisper_cli) or "unknown"
+    return Transcript(
+        schema_version=1,
+        status=TranscriptStatus.COMPLETE,
+        source=source,
+        engine=TranscriptEngine(
+            name="whisper.cpp",
+            version=resolved_version,
+            model=model_path.stem,
+            model_checksum=model_checksum,
+            parameters={"language": language, "gpu": "false"},
+        ),
+        segments=(segment,),
+    )

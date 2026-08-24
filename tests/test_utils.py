@@ -9,6 +9,7 @@ import pytest
 
 from m4bmaker.errors import M4BError
 from m4bmaker.utils import (
+    find_binary,
     find_ffmpeg,
     find_ffprobe,
     get_temp_root,
@@ -53,6 +54,21 @@ class TestFindFfprobe:
             with pytest.raises(SystemExit) as exc_info:
                 find_ffprobe()
         assert "ffmpeg" in str(exc_info.value)
+
+
+class TestFindBinary:
+    def test_returns_path_when_found(self) -> None:
+        with patch("m4bmaker.utils._which", return_value="/usr/local/bin/whisper-cli"):
+            assert find_binary("whisper-cli") == "/usr/local/bin/whisper-cli"
+
+    def test_returns_none_when_not_found_instead_of_exiting(self) -> None:
+        with patch("m4bmaker.utils._which", return_value=None):
+            assert find_binary("whisper-cli") is None
+
+    def test_delegates_to_which_with_the_given_name(self) -> None:
+        with patch("m4bmaker.utils._which", return_value=None) as mock_which:
+            find_binary("some-tool")
+        mock_which.assert_called_once_with("some-tool")
 
 
 class TestLog:
