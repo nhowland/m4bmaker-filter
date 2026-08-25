@@ -151,6 +151,32 @@ class TestHappyPath:
         chunks = store.list_committed_chunks("job-1")
         assert [c.chunk_index for c in chunks] == [0, 1]
 
+    def test_progress_callback_receives_same_values_as_store(
+        self, store: JobStore, tmp_path: Path
+    ) -> None:
+        store.create_job("job-1", JobType.TRANSCRIPTION)
+        store.transition("job-1", JobState.PREPARING)
+        calls: list[tuple[str, float]] = []
+        p1, p2, p3 = _patched([CHUNK0_JSON, CHUNK1_JSON])
+        with p1, p2, p3:
+            run_transcription_job(
+                "job-1",
+                store,
+                tmp_path / "source.wav",
+                tmp_path / "model.bin",
+                "sha256:model",
+                _make_source(),
+                tmp_path / "book.m4bt.json",
+                chunk_ms=30_000,
+                overlap_ms=5_000,
+                ffmpeg="ffmpeg",
+                progress_callback=lambda msg, frac: calls.append((msg, frac)),
+            )
+        assert calls == [
+            ("Transcribed chunk 1/2", 0.5),
+            ("Transcribed chunk 2/2", 1.0),
+        ]
+
     def test_unknown_job_raises(self, store: JobStore, tmp_path: Path) -> None:
         with pytest.raises(KeyError):
             run_transcription_job(

@@ -16,13 +16,18 @@ chapter start times are supplied, because a real chapter break is almost
 always at a natural pause in the narration — splitting there is far less
 likely to land mid-word than an arbitrary fixed-duration cut. This does
 **not** replace fixed-duration planning, for two reasons that make chapter
-boundaries alone insufficient: a chapter can run far longer than the
-pause-latency budget (PRD §11.3's ≤30s target — an hour-long chapter would
-make Pause take up to an hour to land), and plenty of real non-DRM M4Bs
-(exactly what this app targets) have sparse or no chapter markers at all.
-So a chapter longer than *chunk_ms* is subdivided internally using the same
-fixed-step logic the no-chapter path already uses, and a source with no
-usable chapter data falls back to plain fixed-duration planning entirely.
+boundaries alone insufficient: a chapter can run long enough that
+subdividing it still matters (revised 2026-08-25, ADR-0001 — no longer
+for pause-latency: pause responsiveness is explicitly deprioritized in
+favor of chapter-aligned chunking's efficiency and durability benefits,
+so a chapter is only subdivided past ``PRODUCTION_CHAPTER_CHUNK_MS``,
+real headroom above the longest real chapter this fork has actually
+tested end-to-end, not a tight pause-latency ceiling), and plenty of real
+non-DRM M4Bs (exactly what this app targets) have sparse or no chapter
+markers at all. So a chapter longer than *chunk_ms* is subdivided
+internally using the same fixed-step logic the no-chapter path already
+uses, and a source with no usable chapter data falls back to plain
+fixed-duration planning entirely (``PRODUCTION_CHAPTERLESS_CHUNK_MS``).
 Overlap padding is still applied at chapter boundaries, not skipped —
 there is no verified evidence that a real-world chapter break never lands
 mid-word (self-produced or messily-tagged files could easily have an
@@ -45,7 +50,34 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .models import ChapterInfo
 from .transcript import TranscriptSegment, TranscriptWord
+
+#: Production chunk-planning defaults (ADR-0001, "Chunking strategy",
+#: 2026-08-25). Chapter-aligned chunking is chosen for transcription
+#: efficiency (whisper-cli reloads its full model from disk on every
+#: invocation, so fewer/larger chunks meaningfully reduce wasted time —
+#: real measurement, not a guess) and durability granularity (bounding a
+#: crash's lost work to roughly one chunk), not pause-click responsiveness
+#: — that target is explicitly deprioritized (PRD D-16, revised).
+
+#: A chapter longer than this still gets subdivided. Real headroom above
+#: the ~29-minute longest chapter this fork has actually run through
+#: whisper-cli end-to-end (ADR-0001) — not itself benchmarked, since
+#: durability still wants *some* bound on how much one crash can lose,
+#: and whisper-cli's behavior well beyond the tested range is genuinely
+#: unknown, not assumed safe.
+PRODUCTION_CHAPTER_CHUNK_MS = 45 * 60 * 1000
+
+#: Fallback chunk size for sources with no usable chapter markers, chosen
+#: to land in the same rough durability-loss range chapter-aligned
+#: chunking gives on this fork's own real reference book (mean chapter
+#: ~16 minutes) — not independently benchmarked.
+PRODUCTION_CHAPTERLESS_CHUNK_MS = 15 * 60 * 1000
+
+#: Trailing overlap padding, used in both the chapter-aligned and
+#: chapterless cases above.
+PRODUCTION_OVERLAP_MS = 10 * 1000
 
 
 @dataclass(frozen=True)
@@ -215,6 +247,53 @@ def plan_chunks(
         segments = _uniform_segments(duration_ms, chunk_ms, overlap_ms)
 
     return _plans_from_owned_segments(segments, overlap_ms, duration_ms)
+
+
+def default_chunk_params(chapters: tuple[ChapterInfo, ...]) -> tuple[int, int]:
+    """``(chunk_ms, overlap_ms)`` for this fork's production defaults
+    (ADR-0001, 2026-08-25): the 45-minute chapter-subdivision ceiling when
+    *chapters* is non-empty, else the 15-minute chapterless fallback —
+    both with 10s overlap. Shared by :func:`default_chunk_plan` and by
+    real callers (e.g. a transcription worker) that need the raw
+    parameters to pass to ``transcription_orchestrator.run_transcription_job``
+    directly, not just a plan."""
+    if chapters:
+        return PRODUCTION_CHAPTER_CHUNK_MS, PRODUCTION_OVERLAP_MS
+    return PRODUCTION_CHAPTERLESS_CHUNK_MS, PRODUCTION_OVERLAP_MS
+
+
+def default_chunk_plan(
+    duration_ms: int, chapters: tuple[ChapterInfo, ...]
+) -> list[ChunkPlan]:
+    """:func:`plan_chunks` using this fork's production defaults — see
+    :func:`default_chunk_params`. The one call site every real caller
+    should use instead of picking constants themselves, so the production
+    defaults live in exactly one place."""
+    chunk_ms, overlap_ms = default_chunk_params(chapters)
+    chapter_starts = [c.start_ms for c in chapters] if chapters else None
+    return plan_chunks(duration_ms, chunk_ms, overlap_ms, chapter_starts)
+
+
+def chapter_for_chunk(
+    chunk: ChunkPlan, chapters: tuple[ChapterInfo, ...]
+) -> ChapterInfo | None:
+    """Return the chapter *chunk*'s owned range falls within, or ``None``
+    if *chapters* is empty or nothing matches.
+
+    Well-defined and unambiguous whenever *chapters* was the same list used
+    to plan *chunk* in the first place: :func:`_chapter_segments` scopes
+    each chapter's own subdivision strictly to that chapter's
+    ``[start, end)`` span, so a chunk's owned range never straddles two
+    chapters. This is what makes a friendly "Chapter N of M" progress
+    label a direct lookup rather than a fuzzy correlation problem (PRD
+    §7.2 stage 3; see ADR-0015 for the full reasoning)."""
+    for i, chapter in enumerate(chapters):
+        next_start = chapters[i + 1].start_ms if i + 1 < len(chapters) else None
+        if chunk.owned_start_ms >= chapter.start_ms and (
+            next_start is None or chunk.owned_start_ms < next_start
+        ):
+            return chapter
+    return None
 
 
 def merge_segment_words(

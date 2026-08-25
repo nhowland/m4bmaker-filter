@@ -785,23 +785,70 @@
     {
       id: "transcribe", label: "Transcribe", eyebrow: "Step 3 · Transcribe",
       title: "Transcribe",
-      sub: "Durable and resumable — progress persists across app restarts, picking up chapter by chapter via the SQLite Job Orchestrator.",
-      body: `
+      sub: "Durable and resumable — progress persists across app restarts, picking up from the first uncommitted chunk via the SQLite Job Orchestrator (ADR-0005), not a re-run from zero.",
+      scenarios: [
+        {
+          id: "ready", label: "Ready to start",
+          html: `
         <div class="sketch">
-          <p class="sketch-label">progress</p>
+          <p class="sketch-label">plan</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Nothing runs until this is confirmed — Start is its own explicit action, same as every other commit-point in this wizard (Source's eligibility gate, Transcript's explicit reuse-or-transcribe choice).</p>
+          <dl class="kv">
+            <dt>Model</dt><dd>base.en (whisper.cpp) <span class="chip ok">GPU: Apple M4 Pro (Metal)</span></dd>
+            <dt>Chunks planned</dt><dd>50 — one per chapter, chapter-aligned by default (chunk sizing is chosen for efficiency/durability, not pause speed — chunk_ms/overlap_ms revised 2026-08-25; no chapter in this book exceeds the 45-minute subdivision ceiling)</dd>
+          </dl>
+          <div class="row" style="margin-top:14px;"><button class="btn primary">▶ Start Transcription</button></div>
+        </div>`
+        },
+        {
+          id: "running", label: "Running",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">progress <span class="chip ok">RUNNING</span></p>
           <div class="row"><div class="grow"><div class="progress"><i style="width:42%"></i></div></div><span class="chip">42%</span></div>
+          <p style="font-size:.78rem;color:var(--muted);margin:6px 0 0;">Real <code>JobRecord.progress_message</code>/<code>.progress_fraction</code>, written by <code>run_transcription_job()</code> after every committed chunk: “Transcribed chunk 21/50” — with chapter-aligned chunking (revised 2026-08-25), chunk 21 <em>is</em> chapter 21 in the common case, no separate correlation needed except for the rare chapter over the 45-minute ceiling.</p>
           <div class="row" style="margin-top:12px;">
             <dl class="kv" style="grid-template-columns:auto 1fr;">
-              <dt>Chapter</dt><dd>21 / 50</dd>
+              <dt>Chapter</dt><dd>21 / 50 <span class="chip warn">friendly label still not built in code</span></dd>
               <dt>Elapsed</dt><dd>6m 12s</dd>
-              <dt>Est. remaining</dt><dd>~8m 40s</dd>
+              <dt>Est. remaining</dt><dd style="color:var(--muted);">— <span class="chip warn">not yet decided</span></dd>
             </dl>
           </div>
-          <div class="row" style="margin-top:14px;">
+          <p style="font-size:.78rem;color:var(--muted);margin:0 0 8px;">Pause is no longer latency-optimized (PRD D-16, revised) — it takes effect at the next chapter boundary, which may be a while into a long chapter, not within 30 seconds.</p>
+          <div class="row">
             <button class="btn">⏸ Pause</button>
+            <button class="btn ghost">✕ Cancel</button>
             <span class="chip ok">safe to close — resumes on reopen</span>
           </div>
         </div>`
+        },
+        {
+          id: "paused", label: "Paused",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">progress <span class="chip warn">PAUSED</span></p>
+          <div class="row"><div class="grow"><div class="progress"><i style="width:42%"></i></div></div><span class="chip">42%</span></div>
+          <p style="font-size:.85rem;color:var(--prose);margin:8px 0 0;">Paused at a committed chunk boundary (PRD §11.3 — never mid-chunk). Every chunk transcribed so far is durably written; nothing is redone on Resume.</p>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn primary">▶ Resume</button>
+            <button class="btn ghost">✕ Cancel</button>
+          </div>
+        </div>`
+        },
+        {
+          id: "needs-attention", label: "Needs attention",
+          html: `
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">progress <span class="chip warn">NEEDS_ATTENTION</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 8px;">PRD §11.2: every recoverable state needs a User action, not a dead end. Real <code>JobState.NEEDS_ATTENTION</code> — e.g. a compatibility re-check failed. 21 chapters already committed stay durable either way.</p>
+          <div class="row"><span class="chip warn">whisper-cli not found on PATH — reinstall and retry</span></div>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn primary">↻ Retry</button>
+            <button class="btn ghost">✕ Cancel Job</button>
+          </div>
+        </div>`
+        }
+      ]
     },
     {
       id: "profile", label: "Profile", eyebrow: "Step 4 · Select profile",
@@ -1367,7 +1414,15 @@
     },
     {
       tag: "Transcribe",
-      html: "<strong>Transcribe is durable.</strong> Progress is written through the existing SQLite Job Orchestrator (ADR-0005) on every committed chunk, so closing the wizard here and reopening later resumes rather than restarting."
+      html: "<strong>Transcribe is durable.</strong> Progress is written through the existing SQLite Job Orchestrator (ADR-0005) on every committed chunk (real fields: <code>JobRecord.progress_message</code>/<code>.progress_fraction</code>, via <code>JobStore.update_progress()</code> — <code>transcription_orchestrator.run_transcription_job()</code> already calls this after every chunk it commits, so this screen has real data to bind to, not a value that needs inventing), so closing the wizard here and reopening later resumes rather than restarting. Start is its own explicit action (a new “ready to start” state, not in the original ADR-0010 sketch) — nothing about a compatible-model choice on the Transcript step should be read as consent to immediately start a long-running, resource-intensive job."
+    },
+    {
+      tag: "Chunking strategy — superseded, then re-decided with real data",
+      html: "<strong>Chapter-sized chunks now, not 30s/5s — pause-latency deliberately deprioritized.</strong> The 30s/5s default shown in this mockup until 2026-08-25 was itself a reasonable provisional call (see the struck-through reasoning it replaced, preserved in ADR-0001) — but investigating it surfaced that <code>run_whisper()</code> reloads its full model from disk on every chunk invocation, so a small pause-latency-driven chunk size multiplies that fixed cost nearly 2,000 times over a long book. The product owner's call: User-initiated pause is an edge case, not worth that cost — PRD D-16/§11.3/§15.3 are revised accordingly (first edits to <code>docs/PRD.md</code> itself since this fork's initial commit). Chunk boundaries now follow chapter markers by default (one chunk per chapter, a 45-minute ceiling for the rare oversized one, a 15-minute fallback for chapterless sources) — validated by actually running three real chapters from this book (17.4s, 18.2min, 28.8min) through <code>whisper-cli</code> as single calls: stable RTF, sublinear memory growth, clean accurate output throughout. Crash durability (a separate PRD D-17 concern) isn't deprioritized — it's just re-bounded to roughly one chapter's worth of lost work instead of one small chunk's, an explicitly accepted trade. Full rationale and the real numbers: ADR-0001's \"Chunking strategy\" section."
+    },
+    {
+      tag: "Transcribe — still open",
+      html: "<strong>One gap got easier, one is unchanged.</strong> (1) The “Chapter N / M” label still needs a real correlation helper that doesn't exist in code yet — <code>ChunkPlan</code> (chunking.py) carries no chapter reference, just <code>owned_start_ms</code>/<code>owned_end_ms</code> — but chapter-sized chunking (see above) means chunk index equals chapter index in the common case now, so this is closer to “label the chunk index directly” than the correlation-lookup problem it was against 30s chunks, where a chapter was ~39 chunks and the two numbers had nothing to do with each other. Still not built, just simpler to build. (2) “Est. remaining” still has no throughput data to compute it from without inventing an assumption — shown here as explicitly blank rather than a guess dressed up as a measurement."
     },
     {
       tag: "Auto-skip",
@@ -1379,7 +1434,7 @@
     },
     {
       tag: "Progress label",
-      html: "<strong>“Chapter” when it's true, “Section” when it isn't.</strong> Chunking is chapter-<em>aware</em>, not chapter-equivalent (<code>chunking.py</code>): a chapter longer than the pause-latency budget gets subdivided, and a source with sparse/no chapter markers falls back to fixed-duration chunks entirely. Progress shows real chapter numbers only when a chapter maps to exactly one processing chunk — true for this well-chaptered demo book, shown here as “Chapter 21 / 50.” Otherwise it reads “Section X of Y” instead, so the label never claims chapter-level precision the source doesn't have."
+      html: "<strong>“Chapter” when it's true, “Section” when it isn't — intent unchanged, implementation still open.</strong> Chunking is chapter-<em>aware</em>, not chapter-equivalent (<code>chunking.py</code>): a chapter longer than the pause-latency budget gets subdivided, and a source with sparse/no chapter markers falls back to fixed-duration chunks entirely. The design intent is unchanged from the original shell review — chapter numbers only when a chapter maps to exactly one processing chunk, “Section X of Y” otherwise, so the label never claims chapter-level precision the source doesn't have — but see “Transcribe — open questions”: the correlation code that would actually decide which label applies doesn't exist yet, so the Running scenario shown here flags it rather than asserting it."
     },
     {
       tag: "Profile",

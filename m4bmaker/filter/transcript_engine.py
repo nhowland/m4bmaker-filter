@@ -117,9 +117,15 @@ def run_whisper(
     function's — kept as a hard boundary so this adapter has exactly one
     responsibility.
 
-    Always runs with ``--no-gpu``: CPU-only for v1 per ADR-0001/ADR-0003
-    (confirmed in the G3 spike that this is a plain runtime flag, not a
-    separate build — the same Homebrew binary auto-uses Metal without it).
+    Uses whichever backend ``ggml`` selects by default: GPU (Metal/CUDA/
+    etc.) if the standard build finds a compatible device, CPU otherwise
+    — reversed 2026-08-25 (ADR-0001) from the original CPU-only-for-v1
+    call. ``--no-gpu`` is a plain runtime flag on the one standard build
+    already shipped (confirmed in the G3 spike), so this needed no
+    packaging change: real benchmarking against this fork's own reference
+    audiobook measured a 4.1-5.6x speedup with no accuracy loss before this
+    reversal, on both approved models (ADR-0001's "GPU acceleration"
+    section has the full figures).
     """
     binary = whisper_cli or find_whisper_cli()
     if binary is None:
@@ -137,7 +143,6 @@ def run_whisper(
             str(audio_path),
             "-l",
             language,
-            "--no-gpu",
             "-oj",
             "-ojf",
             "-of",

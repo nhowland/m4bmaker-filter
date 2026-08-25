@@ -44,7 +44,11 @@ unchanged, and is intentionally left untouched to keep future
      the Transcript step's real implementation (reuse-a-transcript vs.
      choose-a-model, inline model download), plus the shared
      `DownloadCoordinator` it needed once download moved inline rather
-     than linking out to Model Manager.
+     than linking out to Model Manager; `0015` — the Transcribe step's
+     real implementation (chapter-aligned chunking and GPU acceleration
+     put into real code for the first time, real pause/resume/retry via
+     the job state machine), live-verified with a real GPU-accelerated
+     transcription that actually completed.
 3. **`docs/TESTING.md`** — test conventions specific to the new code.
 
 ## Status
@@ -73,12 +77,13 @@ AAC/M4B eligibility inspection with primary-track selection
 
 ADR-0001 (STT engine = whisper.cpp as a bundled subprocess binary) is
 **Accepted** by the product owner as of 2026-08-24; its remaining open
-items (exact release pin, build/trust model, CPU-only vs. GPU) are still
-unresolved and gate G3.
+items (exact release pin, build/trust model) are still unresolved and gate
+G3. CPU-only vs. GPU was resolved 2026-08-25 — see below.
 
 **G3 (Transcription): narrow spike complete.** Product owner confirmed:
-pinned prebuilt whisper.cpp binaries (not a vendored build), CPU-only for
-v1. Added `transcript_engine.py` — a whisper.cpp subprocess adapter proven
+pinned prebuilt whisper.cpp binaries (not a vendored build). (CPU-only for
+v1 was the original call here — reversed 2026-08-25, see below.) Added
+`transcript_engine.py` — a whisper.cpp subprocess adapter proven
 against a real `tiny.en` model and a real (synthetic, via macOS `say`)
 speech fixture, including one real-binary integration test (opt-in via
 `M4BMAKER_WHISPER_MODEL`, skipped by default/CI — no model file is
@@ -620,3 +625,157 @@ flagged here since it's become more disruptive, not less.
 Not yet decided: how `TranscriptStep.chosen_model`/`.compatible_transcript`
 will feed the not-yet-built Transcribe step; Transcribe's own real
 design, which hasn't had a wireframe pass.
+
+## GPU acceleration reverses ADR-0001's CPU-only-for-v1 call (2026-08-25)
+
+While designing Transcribe's real progress/chunking behavior (still
+pre-implementation — see ADR-0014's "not yet decided" above), a
+provisional `chunk_ms`/`overlap_ms` question led to a real question about
+whisper.cpp throughput, which the product owner used to revisit ADR-0001's
+original CPU-only-for-v1 recommendation — always flagged there as
+provisional ("keep the benchmark story simple, revisit post-MVP"), not a
+technical requirement.
+
+Real benchmark, not estimated: two real chapters from the actual 13.5-hour
+reference book (18.2 min and 28.8 min — the book's median and longest
+chapter respectively), `base.en`, this dev machine (Apple M4 Pro/Metal),
+CPU (`--no-gpu`) vs. GPU (flag omitted). **4.1-4.2x speedup** (RTF ~0.05 →
+~0.013), and GPU peak memory came in *lower* than CPU, not higher.
+Extrapolated to the full book: ~40 minutes CPU-only vs. ~10-11 minutes
+with GPU. Full figures, method, and disclosed limits (Apple Silicon only —
+Windows/CUDA and Linux paths unverified; `small.en` benchmarked
+separately, see below) are in
+`docs/adr/0001-stt-engine-integration.md`'s "GPU acceleration — reversed
+with real benchmark evidence" section; ADR-0003's corresponding packaging
+note is updated to match.
+
+**Decision:** stop always passing `--no-gpu`. GPU is used when `ggml`
+finds a compatible backend, CPU is the automatic fallback — no new
+detection code needed, no packaging change (still one binary per
+platform), since `--no-gpu` was already established as a plain runtime
+flag on the standard build, not a separate build to source.
+
+Not yet decided at the time: whether/how to surface which backend is
+active in the UI (a diagnostics nicety, not required for the speedup
+itself); verification on non-Metal hardware. None of this is implemented
+in code yet — Transcribe itself hasn't been built — this round is the
+requirements/ADR decision the eventual implementation will follow.
+
+## small.en added to the GPU/CPU benchmark (2026-08-25)
+
+Same method, same two real chapters, extended to the other approved
+model:
+
+| Model | Backend | RTF (avg) | Peak mem (avg) | Full book (13.5h) |
+|---|---|---|---|---|
+| base.en | CPU | 0.054 (≈18.5x) | ~779 MB | ~44 min |
+| base.en | GPU | 0.013 (≈77x) | ~625 MB | ~11 min |
+| small.en | CPU | 0.153 (≈6.5x) | ~1.3 GB | ~2h 4m |
+| small.en | GPU | 0.027 (≈37x) | ~1.08 GB | ~22 min |
+
+Two findings worth keeping: **GPU speedup is larger for the bigger model**
+(5.6x for `small.en` vs. 4.1-4.2x for `base.en`) — more compute to
+offload means the fixed per-call overhead matters proportionally less.
+And `small.en`'s real cost relative to `base.en` shrinks on GPU (~2.8x
+slower on CPU, ~2.1x slower on GPU) — on this machine, `small.en` on GPU
+(~22 min for the full book) finishes faster than `base.en` did on
+CPU-only (~44 min). Full figures and method in
+`docs/adr/0001-stt-engine-integration.md`'s "GPU acceleration" section,
+which now covers both models.
+
+Still open: verification on non-Metal hardware. Nothing implemented in
+code yet — same status as the rest of Transcribe's design work.
+
+## Chunking strategy revised: chapter-sized, pause-latency deprioritized (2026-08-25)
+
+The same investigation that led to the GPU reversal above also surfaced a
+real architectural fact: `run_whisper()` reloads the full model from disk
+on every chunk invocation, no persistent model across chunks. A small,
+pause-latency-driven chunk size (30s, this fork's own provisional default
+until today) multiplies that fixed cost nearly 2,000 times over for the
+13.5-hour reference book. Product owner's call: User-initiated pause
+mid-transcription is an edge case, not worth optimizing chunk size around
+at that cost — durability against a *crash* (a separate PRD D-17 concern)
+isn't being deprioritized, just re-bounded to roughly one chapter's worth
+of lost work instead of one small chunk's, explicitly accepted as an
+acceptable trade.
+
+**PRD D-16, §11.3, and §15.3's pause-latency acceptance criterion are
+revised** in `docs/PRD.md` — the first edits to that file since the fork's
+initial commit, since these are decisions stated directly in the PRD's
+own text (unlike the GPU choice above, which was always deferred to ADR
+O-02 and never asserted as PRD text in the first place). Full rationale in
+`docs/adr/0001-stt-engine-integration.md`'s "Chunking strategy" section.
+
+**Empirically validated with the same real chapters** already extracted
+for the GPU benchmark — the median (18.2 min) and longest (28.8 min)
+chapters in the actual reference book, plus the shortest (17.4s front
+matter) — each run as one whisper-cli call, no external subdivision. All
+three completed cleanly: stable ~0.05 RTF across the full range, memory
+growing sublinearly (not proportionally) with duration, and spot-checked
+transcript accuracy holding up through an 18-minute single call. One test
+serving two decisions, not duplicated effort.
+
+Two provisional constants (not yet implemented — Transcribe isn't built
+yet): a **45-minute chapter-subdivision ceiling** (headroom above the
+~29-minute longest chapter actually tested, not itself tested) and a
+**15-minute/10s-overlap chapterless-source fallback** (matched to this
+book's own mean chapter length, not independently benchmarked). Same
+provisional status the original 30s default had — real data narrowed
+them, not a formal G3 benchmark sign-off.
+
+## G5: Transcribe step — real PySide6 code (2026-08-25)
+
+The Transcribe step (PRD §7.2 stage 3) moves from placeholder to real,
+working code — the wizard's fourth fully-built step, and the one that
+puts ADR-0001's chapter-aligned chunking and GPU-acceleration decisions
+into real code for the first time. Full rationale in
+[docs/adr/0015-transcribe-step-implementation.md](adr/0015-transcribe-step-implementation.md).
+
+`chunking.py` gains the production constants (45-min chapter ceiling,
+15-min chapterless fallback, 10s overlap) and two pure helpers:
+`default_chunk_params()`/`default_chunk_plan()` (the one place those
+constants get used) and `chapter_for_chunk()` (the "Chapter N of M"
+correlation the Transcript-round wireframe needed — unambiguous by
+construction, since a chunk's owned range never straddles two chapters).
+`transcript_engine.py` stops always passing `--no-gpu` — ADR-0001's GPU
+reversal, real code now, not just a decision on paper.
+`transcription_orchestrator.run_transcription_job()` gains an optional
+`progress_callback` so a GUI worker gets live progress without polling
+the job store from a second connection.
+
+New `TranscribeWorker` (three start modes — fresh/resume/retry, each
+doing the specific `JobState` transition PRD §11.2's matrix requires
+before calling the orchestrator) and `TranscribeStep` (four real
+states — Ready/Running/Paused/Needs attention — plus Completed, wired
+directly to Transcript's own output). Checks the real job store for an
+existing incomplete job on entry, so a resumed session actually resumes
+instead of offering to start fresh — the real substance behind "durable
+across app restarts." A re-entry guard (own tests caught this): calling
+the entry point again with the same source while already running or
+completed is a no-op, not a silent reset of real in-flight progress.
+
+41 new tests, `black`/`flake8`/`mypy` clean. Full suite: **1587 passing,
+2 correctly skipped**, project-wide.
+
+**Visually verified against the live app with a real GPU-accelerated
+transcription that actually completed.** First attempt, against this
+fork's existing tiny eligibility fixture, surfaced a genuine unexpected
+error (`whisper-cli` produced no output against that fixture's
+near-empty encoded audio, a known artifact already documented in
+ADR-0013) — the **Needs Attention** state handled it exactly as
+designed: real error message, Retry and Cancel Job both present, no
+crash, and Retry genuinely re-ran (a fresh temp path each time) rather
+than replaying a stale result. Built a second, real-speech `.m4b` (macOS
+`say`, same approach ADR-0001's own G3 spike used) with two real
+chapters and ran it start to finish: real chapter-aligned chunking, real
+`ffmpeg` extraction, real GPU-accelerated `whisper-cli` inference, a real
+`.m4bt.json` written and read back — `status: complete`,
+`whisper.cpp 1.9.2`, and transcribed text matching the real spoken audio
+almost exactly. Continue enabled immediately on completion.
+
+Not yet decided: how `TranscribeStep.transcript` feeds the not-yet-built
+Profile step; Profile's own real design; UI surfacing of which backend
+(CPU/GPU) is active during a run (a diagnostics nicety, still not
+built); verification of the GPU/chunking decisions on non-Apple-Silicon
+hardware.

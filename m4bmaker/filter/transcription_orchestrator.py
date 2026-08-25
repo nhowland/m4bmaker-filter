@@ -145,6 +145,7 @@ def run_transcription_job(
     language: str = "en",
     whisper_cli: str | None = None,
     should_pause: Callable[[], bool] | None = None,
+    progress_callback: Callable[[str, float], None] | None = None,
 ) -> Transcript:
     """Run (or resume) TranscriptionJob *job_id* to completion or pause.
 
@@ -172,6 +173,12 @@ def run_transcription_job(
     §11.3's "Verify source fingerprint, selected track, engine
     version/model checksum... before resume"), are the caller's
     responsibility, not this function's.
+
+    *progress_callback*, if given, is called with the same
+    ``(message, fraction)`` this function already writes via
+    ``store.update_progress()`` after every committed chunk — a GUI
+    worker thread's hook to also emit a Qt signal, without needing to poll
+    the job store from a second connection to get live progress.
     """
     job = store.get_job(job_id)
     if job is None:
@@ -260,11 +267,11 @@ def run_transcription_job(
                 plan.owned_start_ms,
                 plan.owned_end_ms,
             )
-            store.update_progress(
-                job_id,
-                f"Transcribed chunk {plan.index + 1}/{len(plans)}",
-                (plan.index + 1) / len(plans) if plans else 1.0,
-            )
+            progress_message = f"Transcribed chunk {plan.index + 1}/{len(plans)}"
+            progress_fraction = (plan.index + 1) / len(plans) if plans else 1.0
+            store.update_progress(job_id, progress_message, progress_fraction)
+            if progress_callback is not None:
+                progress_callback(progress_message, progress_fraction)
 
     final_transcript = _write(TranscriptStatus.COMPLETE)
     store.transition(job_id, JobState.COMPLETED, "Transcription complete.")

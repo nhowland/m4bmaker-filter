@@ -179,7 +179,10 @@ class TestRunWhisper:
             )
         assert result == {"ok": True}
 
-    def test_command_includes_no_gpu_flag(self, tmp_path: Path) -> None:
+    def test_command_omits_no_gpu_flag(self, tmp_path: Path) -> None:
+        """ADR-0001 (2026-08-25): GPU is used when ggml finds a compatible
+        backend, CPU is the automatic fallback — reversed from the
+        original CPU-only-for-v1 call, so --no-gpu is no longer passed."""
         captured_cmd = {}
 
         def _side_effect(cmd, **kwargs):
@@ -196,7 +199,7 @@ class TestRunWhisper:
                 tmp_path / "model.bin",
                 whisper_cli="/bin/whisper-cli",
             )
-        assert "--no-gpu" in captured_cmd["cmd"]
+        assert "--no-gpu" not in captured_cmd["cmd"]
 
     def test_raises_transcription_error_on_nonzero_exit(self, tmp_path: Path) -> None:
         result = MagicMock()

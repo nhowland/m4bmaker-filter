@@ -23,11 +23,21 @@ from m4bmaker.filter.model_manager import (
     ModelDownloadError,
     ModelSpec,
 )
+from m4bmaker.filter.job_store import JobStore, connect
+from m4bmaker.filter.jobs import JobState, JobType
 from m4bmaker.filter.models import MediaManifest
+from m4bmaker.filter.transcript import (
+    Transcript,
+    TranscriptEngine,
+    TranscriptSource,
+    TranscriptStatus,
+)
+from m4bmaker.filter.transcription_orchestrator import TranscriptionPaused
 from m4bmaker.gui.filter.workers import (
     DownloadCoordinator,
     MediaInspectWorker,
     ModelDownloadWorker,
+    TranscribeWorker,
 )
 
 _SPEC = ModelSpec(
@@ -262,3 +272,275 @@ class TestDownloadCoordinator:
         coordinator.release()
         coordinator.release()
         assert coordinator.active_name is None
+
+
+def _transcribe_source() -> TranscriptSource:
+    return TranscriptSource(
+        fingerprint="sha256:x", duration_ms=10_000, selected_audio_stream=0
+    )
+
+
+def _make_transcript() -> Transcript:
+    return Transcript(
+        schema_version=1,
+        status=TranscriptStatus.COMPLETE,
+        source=_transcribe_source(),
+        engine=TranscriptEngine(
+            name="whisper.cpp",
+            version="1.9.2",
+            model="base.en",
+            model_checksum="abc",
+        ),
+        segments=(),
+    )
+
+
+class TestTranscribeWorker:
+    def _worker(
+        self, tmp_path: Path, mode: str, job_id: str = "job-1"
+    ) -> TranscribeWorker:
+        return TranscribeWorker(
+            job_id,
+            tmp_path / "filter.db",
+            tmp_path / "source.m4b",
+            tmp_path / "model.bin",
+            "sha256:model",
+            _transcribe_source(),
+            tmp_path / "book.m4bt.json",
+            900_000,
+            10_000,
+            None,
+            mode,  # type: ignore[arg-type]
+        )
+
+    def _patched_binaries(self):
+        return (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                return_value="/usr/bin/ffmpeg",
+            ),
+            patch(
+                "m4bmaker.gui.filter.workers.find_whisper_cli",
+                return_value="/usr/bin/whisper-cli",
+            ),
+        )
+
+    def test_fresh_mode_creates_job_and_emits_result(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        p1, p2 = self._patched_binaries()
+        with (
+            p1,
+            p2,
+            patch(
+                "m4bmaker.gui.filter.workers.run_transcription_job",
+                return_value=_make_transcript(),
+            ) as mock_run,
+        ):
+            worker = self._worker(tmp_path, "fresh")
+            results: list[Transcript] = []
+            worker.result_ready.connect(results.append)
+            worker.start()
+            worker.wait(3000)
+        qapp.processEvents()
+        assert len(results) == 1
+        assert results[0].status == TranscriptStatus.COMPLETE
+        mock_run.assert_called_once()
+
+        store = JobStore(connect(tmp_path / "filter.db"))
+        job = store.get_job("job-1")
+        assert job is not None
+        assert job.job_type == JobType.TRANSCRIPTION
+        assert job.resource == {"fingerprint": "sha256:x", "model": "model"}
+
+    def test_progress_signal_relayed_from_orchestrator_callback(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        def fake_run(*args, **kwargs):
+            kwargs["progress_callback"]("Transcribed chunk 1/2", 0.5)
+            return _make_transcript()
+
+        p1, p2 = self._patched_binaries()
+        with (
+            p1,
+            p2,
+            patch(
+                "m4bmaker.gui.filter.workers.run_transcription_job",
+                side_effect=fake_run,
+            ),
+        ):
+            worker = self._worker(tmp_path, "fresh")
+            progresses: list[tuple[str, float]] = []
+            worker.progress.connect(lambda msg, frac: progresses.append((msg, frac)))
+            worker.start()
+            worker.wait(3000)
+        qapp.processEvents()
+        assert progresses == [("Transcribed chunk 1/2", 0.5)]
+
+    def test_resume_mode_transitions_paused_job_to_resuming(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        store = JobStore(connect(tmp_path / "filter.db"))
+        store.create_job("job-1", JobType.TRANSCRIPTION)
+        store.transition("job-1", JobState.PREPARING)
+        store.transition("job-1", JobState.RUNNING)
+        store.transition("job-1", JobState.PAUSING)
+        store.transition("job-1", JobState.PAUSED)
+
+        p1, p2 = self._patched_binaries()
+        with (
+            p1,
+            p2,
+            patch(
+                "m4bmaker.gui.filter.workers.run_transcription_job",
+                return_value=_make_transcript(),
+            ),
+        ):
+            worker = self._worker(tmp_path, "resume")
+            worker.start()
+            worker.wait(3000)
+        qapp.processEvents()
+
+        job = store.get_job("job-1")
+        assert job is not None
+        assert job.state == JobState.RESUMING
+
+    def test_retry_mode_transitions_needs_attention_through_queued_to_preparing(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        store = JobStore(connect(tmp_path / "filter.db"))
+        store.create_job("job-1", JobType.TRANSCRIPTION)
+        store.transition("job-1", JobState.PREPARING)
+        store.transition("job-1", JobState.RUNNING)
+        store.transition("job-1", JobState.NEEDS_ATTENTION)
+
+        p1, p2 = self._patched_binaries()
+        with (
+            p1,
+            p2,
+            patch(
+                "m4bmaker.gui.filter.workers.run_transcription_job",
+                return_value=_make_transcript(),
+            ),
+        ):
+            worker = self._worker(tmp_path, "retry")
+            worker.start()
+            worker.wait(3000)
+        qapp.processEvents()
+
+        job = store.get_job("job-1")
+        assert job is not None
+        assert job.state == JobState.PREPARING
+
+    def test_paused_via_transcription_paused_emits_paused_signal(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        p1, p2 = self._patched_binaries()
+        with (
+            p1,
+            p2,
+            patch(
+                "m4bmaker.gui.filter.workers.run_transcription_job",
+                side_effect=TranscriptionPaused("paused"),
+            ),
+        ):
+            worker = self._worker(tmp_path, "fresh")
+            paused: list[None] = []
+            cancelled: list[None] = []
+            worker.paused.connect(lambda: paused.append(None))
+            worker.cancelled.connect(lambda: cancelled.append(None))
+            worker.start()
+            worker.wait(3000)
+        qapp.processEvents()
+        assert len(paused) == 1
+        assert len(cancelled) == 0
+
+    def test_cancel_requested_then_paused_transitions_to_cancelled(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        p1, p2 = self._patched_binaries()
+        with (
+            p1,
+            p2,
+            patch(
+                "m4bmaker.gui.filter.workers.run_transcription_job",
+                side_effect=TranscriptionPaused("paused"),
+            ),
+        ):
+            worker = self._worker(tmp_path, "fresh")
+            cancelled: list[None] = []
+            worker.cancelled.connect(lambda: cancelled.append(None))
+            worker.request_cancel()
+            worker.start()
+            worker.wait(3000)
+        qapp.processEvents()
+        assert len(cancelled) == 1
+
+        store = JobStore(connect(tmp_path / "filter.db"))
+        job = store.get_job("job-1")
+        assert job is not None
+        assert job.state == JobState.CANCELLED
+
+    def test_unexpected_exception_transitions_to_needs_attention(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        p1, p2 = self._patched_binaries()
+        with (
+            p1,
+            p2,
+            patch(
+                "m4bmaker.gui.filter.workers.run_transcription_job",
+                side_effect=RuntimeError("whisper-cli crashed"),
+            ),
+        ):
+            worker = self._worker(tmp_path, "fresh")
+            messages: list[str] = []
+            worker.needs_attention.connect(messages.append)
+            worker.start()
+            worker.wait(3000)
+        qapp.processEvents()
+        assert messages == ["whisper-cli crashed"]
+
+        store = JobStore(connect(tmp_path / "filter.db"))
+        job = store.get_job("job-1")
+        assert job is not None
+        assert job.state == JobState.NEEDS_ATTENTION
+        assert job.error_message == "whisper-cli crashed"
+
+    def test_missing_ffmpeg_emits_error_without_touching_job_store(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        with patch("m4bmaker.gui.filter.workers.find_binary", return_value=None):
+            worker = self._worker(tmp_path, "fresh")
+            errors: list[str] = []
+            worker.error.connect(errors.append)
+            worker.start()
+            worker.wait(3000)
+        qapp.processEvents()
+        assert len(errors) == 1
+        assert "ffmpeg" in errors[0]
+
+        store = JobStore(connect(tmp_path / "filter.db"))
+        assert store.get_job("job-1") is None
+
+    def test_missing_whisper_cli_emits_error_without_touching_job_store(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        with (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                return_value="/usr/bin/ffmpeg",
+            ),
+            patch("m4bmaker.gui.filter.workers.find_whisper_cli", return_value=None),
+        ):
+            worker = self._worker(tmp_path, "fresh")
+            errors: list[str] = []
+            worker.error.connect(errors.append)
+            worker.start()
+            worker.wait(3000)
+        qapp.processEvents()
+        assert len(errors) == 1
+        assert "whisper-cli" in errors[0]
+
+        store = JobStore(connect(tmp_path / "filter.db"))
+        assert store.get_job("job-1") is None

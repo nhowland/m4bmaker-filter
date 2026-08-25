@@ -82,9 +82,15 @@ Extend the existing artifacts directly:
    finds a hard dependency on a newer OS API).
 2. ~~Whether GPU-accelerated whisper.cpp builds are worth the
    packaging/testing-matrix cost for v1~~ — **resolved by the ADR-0001 G3
-   spike**: `--no-gpu` is a plain runtime flag on the standard whisper.cpp
-   build, not a separate binary. There is no separate CPU-only build to
-   source or maintain — every platform ships the one standard build and
-   the app always passes `--no-gpu` at invocation time per the product
-   owner's CPU-only-for-v1 decision. This removes an entire axis from the
-   packaging/testing matrix that this ADR originally worried about.
+   spike, decision reversed 2026-08-25 with real benchmark evidence**:
+   `--no-gpu` is a plain runtime flag on the standard whisper.cpp build,
+   not a separate binary. There is no separate CPU-only build, and — as of
+   ADR-0001's 2026-08-25 update — no separate GPU build either: every
+   platform ships the one standard build, and the app no longer always
+   passes `--no-gpu`; GPU is used when `ggml` finds a compatible backend,
+   CPU is the automatic fallback otherwise. This still removes the
+   packaging/testing-matrix axis this ADR originally worried about — the
+   reversal changed which runtime flag ships, not the "one binary per
+   platform" story. See ADR-0001 for the real Metal-vs-CPU benchmark
+   (4.1-4.2x speedup) this reversal is based on, and its disclosed limits
+   (Apple Silicon only — Windows/CUDA and Linux GPU paths are unverified).

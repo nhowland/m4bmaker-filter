@@ -11,9 +11,12 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
+from typing import Literal
 
 from PySide6.QtCore import QThread, Signal
 
+from m4bmaker.filter.job_store import JobStore, connect
+from m4bmaker.filter.jobs import JobState, JobType, is_terminal
 from m4bmaker.filter.media_inspector import inspect
 from m4bmaker.filter.model_manager import (
     ModelChecksumMismatchError,
@@ -21,6 +24,12 @@ from m4bmaker.filter.model_manager import (
     ModelDownloadError,
     ModelSpec,
     download_model,
+)
+from m4bmaker.filter.transcript import Transcript, TranscriptSource
+from m4bmaker.filter.transcript_engine import find_whisper_cli
+from m4bmaker.filter.transcription_orchestrator import (
+    TranscriptionPaused,
+    run_transcription_job,
 )
 from m4bmaker.utils import find_binary
 
@@ -142,3 +151,141 @@ class MediaInspectWorker(QThread):
             self.error.emit(str(exc))
             return
         self.result_ready.emit(manifest)
+
+
+TranscribeStartMode = Literal["fresh", "resume", "retry"]
+
+
+class TranscribeWorker(QThread):
+    """Run (or resume, or retry) one TranscriptionJob off the UI thread,
+    via :func:`transcription_orchestrator.run_transcription_job` (PRD
+    §11.3; ADR-0015).
+
+    Opens its own :class:`JobStore` connection in :meth:`run` rather than
+    sharing one from the UI thread — SQLite connections aren't safe to
+    use across threads, and this worker is the only place that touches
+    the job's row while it runs.
+
+    *mode* governs the state transition this worker performs before
+    calling ``run_transcription_job`` (whose own docstring makes those
+    transitions the caller's responsibility, not its own):
+
+    - ``"fresh"``: creates the job, ``QUEUED`` -> ``PREPARING``.
+    - ``"resume"``: an existing ``PAUSED`` job, -> ``RESUMING``.
+    - ``"retry"``: an existing ``NEEDS_ATTENTION`` job, -> ``QUEUED`` ->
+      ``PREPARING`` (the only transitions PRD §11.2's allowed-transition
+      matrix permits out of ``NEEDS_ATTENTION``).
+
+    Pause and Cancel share one underlying stop mechanism (the same
+    ``should_pause`` callback `run_transcription_job` already checks at
+    each chunk boundary) — Cancel just means "and transition to
+    ``CANCELLED``, not ``PAUSED``, once it actually stops."
+    """
+
+    progress = Signal(str, float)  # message, 0.0-1.0
+    paused = Signal()
+    cancelled = Signal()
+    result_ready = Signal(object)  # Transcript
+    needs_attention = Signal(str)  # job exists, now NEEDS_ATTENTION
+    error = Signal(str)  # failed before any job state was touched
+
+    def __init__(
+        self,
+        job_id: str,
+        db_path: Path,
+        source_audio_path: Path,
+        model_path: Path,
+        model_checksum: str,
+        source: TranscriptSource,
+        transcript_path: Path,
+        chunk_ms: int,
+        overlap_ms: int,
+        chapter_start_times_ms: list[int] | None,
+        mode: TranscribeStartMode,
+    ) -> None:
+        super().__init__()
+        self._job_id = job_id
+        self._db_path = db_path
+        self._source_audio_path = source_audio_path
+        self._model_path = model_path
+        self._model_checksum = model_checksum
+        self._source = source
+        self._transcript_path = transcript_path
+        self._chunk_ms = chunk_ms
+        self._overlap_ms = overlap_ms
+        self._chapter_start_times_ms = chapter_start_times_ms
+        self._mode = mode
+        self._stop_requested = threading.Event()
+        self._cancel_requested = False
+
+    def request_pause(self) -> None:
+        self._stop_requested.set()
+
+    def request_cancel(self) -> None:
+        self._cancel_requested = True
+        self._stop_requested.set()
+
+    def run(self) -> None:
+        ffmpeg = find_binary("ffmpeg")
+        if ffmpeg is None:
+            self.error.emit(
+                "ffmpeg not found. Install ffmpeg and make sure it's on " "your PATH."
+            )
+            return
+        whisper_cli = find_whisper_cli()
+        if whisper_cli is None:
+            self.error.emit(
+                "whisper-cli not found. Install whisper.cpp and make sure "
+                "it's on your PATH."
+            )
+            return
+
+        store = JobStore(connect(self._db_path))
+        try:
+            if self._mode == "fresh":
+                store.create_job(
+                    self._job_id,
+                    JobType.TRANSCRIPTION,
+                    resource={
+                        "fingerprint": self._source.fingerprint,
+                        "model": self._model_path.stem,
+                    },
+                )
+                store.transition(self._job_id, JobState.PREPARING, "Preparing…")
+            elif self._mode == "resume":
+                store.transition(self._job_id, JobState.RESUMING, "Resuming…")
+            else:  # "retry"
+                store.transition(self._job_id, JobState.QUEUED, "Retrying…")
+                store.transition(self._job_id, JobState.PREPARING, "Preparing…")
+
+            transcript: Transcript = run_transcription_job(
+                self._job_id,
+                store,
+                self._source_audio_path,
+                self._model_path,
+                self._model_checksum,
+                self._source,
+                self._transcript_path,
+                self._chunk_ms,
+                self._overlap_ms,
+                ffmpeg,
+                chapter_start_times_ms=self._chapter_start_times_ms,
+                whisper_cli=whisper_cli,
+                should_pause=self._stop_requested.is_set,
+                progress_callback=self.progress.emit,
+            )
+        except TranscriptionPaused:
+            if self._cancel_requested:
+                store.transition(self._job_id, JobState.CANCELLED, "Cancelled by User.")
+                self.cancelled.emit()
+            else:
+                self.paused.emit()
+            return
+        except Exception as exc:  # noqa: BLE001
+            job = store.get_job(self._job_id)
+            if job is not None and not is_terminal(job.state):
+                store.set_error(self._job_id, "transcription_error", str(exc))
+                store.transition(self._job_id, JobState.NEEDS_ATTENTION, str(exc))
+            self.needs_attention.emit(str(exc))
+            return
+        self.result_ready.emit(transcript)

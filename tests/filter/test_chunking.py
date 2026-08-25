@@ -4,7 +4,18 @@ from __future__ import annotations
 
 import pytest
 
-from m4bmaker.filter.chunking import ChunkPlan, merge_segment_words, plan_chunks
+from m4bmaker.filter.chunking import (
+    PRODUCTION_CHAPTER_CHUNK_MS,
+    PRODUCTION_CHAPTERLESS_CHUNK_MS,
+    PRODUCTION_OVERLAP_MS,
+    ChunkPlan,
+    chapter_for_chunk,
+    default_chunk_params,
+    default_chunk_plan,
+    merge_segment_words,
+    plan_chunks,
+)
+from m4bmaker.filter.models import ChapterInfo
 from m4bmaker.filter.transcript import SegmentStatus, TranscriptSegment, TranscriptWord
 
 
@@ -303,3 +314,96 @@ class TestMergeSegmentWords:
         )
         merged = merge_segment_words([(seg0, plans[0]), (seg1, plans[1])])
         assert [w.text for w in merged] == ["a", "boundary", "b"]
+
+
+def _chapter(index: int, title: str, start_ms: int) -> ChapterInfo:
+    return ChapterInfo(index=index, title=title, start_ms=start_ms)
+
+
+class TestDefaultChunkPlan:
+    def test_chapterless_uses_chapterless_production_default(self) -> None:
+        plans = default_chunk_plan(duration_ms=3_600_000, chapters=())
+        expected = plan_chunks(
+            3_600_000, PRODUCTION_CHAPTERLESS_CHUNK_MS, PRODUCTION_OVERLAP_MS
+        )
+        assert plans == expected
+
+    def test_chaptered_uses_chapter_production_ceiling(self) -> None:
+        chapters = (
+            _chapter(1, "Chapter 1", 0),
+            _chapter(2, "Chapter 2", 1_000_000),
+        )
+        plans = default_chunk_plan(duration_ms=2_000_000, chapters=chapters)
+        expected = plan_chunks(
+            2_000_000,
+            PRODUCTION_CHAPTER_CHUNK_MS,
+            PRODUCTION_OVERLAP_MS,
+            [c.start_ms for c in chapters],
+        )
+        assert plans == expected
+
+    def test_short_chapters_each_become_exactly_one_chunk(self) -> None:
+        # Both chapters are far under the 45-minute ceiling, so each is one
+        # whole chunk -- the common case chapter_for_chunk relies on.
+        chapters = (
+            _chapter(1, "Chapter 1", 0),
+            _chapter(2, "Chapter 2", 600_000),
+        )
+        plans = default_chunk_plan(duration_ms=1_200_000, chapters=chapters)
+        assert len(plans) == 2
+
+    def test_chapter_over_ceiling_is_subdivided(self) -> None:
+        long_chapter_ms = PRODUCTION_CHAPTER_CHUNK_MS * 3
+        chapters = (_chapter(1, "Chapter 1", 0),)
+        plans = default_chunk_plan(duration_ms=long_chapter_ms, chapters=chapters)
+        assert len(plans) > 1
+
+
+class TestChapterForChunk:
+    def test_finds_containing_chapter(self) -> None:
+        chapters = (
+            _chapter(1, "Chapter 1", 0),
+            _chapter(2, "Chapter 2", 600_000),
+            _chapter(3, "Chapter 3", 1_200_000),
+        )
+        plans = default_chunk_plan(duration_ms=1_800_000, chapters=chapters)
+        # Each short chapter is exactly one chunk here.
+        assert chapter_for_chunk(plans[0], chapters) == chapters[0]
+        assert chapter_for_chunk(plans[1], chapters) == chapters[1]
+        assert chapter_for_chunk(plans[2], chapters) == chapters[2]
+
+    def test_subdivided_chapter_all_sub_chunks_map_to_same_chapter(self) -> None:
+        long_chapter_ms = PRODUCTION_CHAPTER_CHUNK_MS * 3
+        chapters = (_chapter(1, "Chapter 1", 0),)
+        plans = default_chunk_plan(duration_ms=long_chapter_ms, chapters=chapters)
+        assert len(plans) > 1
+        for plan in plans:
+            assert chapter_for_chunk(plan, chapters) == chapters[0]
+
+    def test_no_chapters_returns_none(self) -> None:
+        plans = default_chunk_plan(duration_ms=100_000, chapters=())
+        assert chapter_for_chunk(plans[0], ()) is None
+
+    def test_last_chapter_extends_to_duration_end(self) -> None:
+        chapters = (
+            _chapter(1, "Chapter 1", 0),
+            _chapter(2, "Chapter 2", 500_000),
+        )
+        plans = default_chunk_plan(duration_ms=900_000, chapters=chapters)
+        last_plan = plans[-1]
+        assert chapter_for_chunk(last_plan, chapters) == chapters[1]
+
+
+class TestDefaultChunkParams:
+    def test_chapterless_returns_chapterless_default(self) -> None:
+        assert default_chunk_params(()) == (
+            PRODUCTION_CHAPTERLESS_CHUNK_MS,
+            PRODUCTION_OVERLAP_MS,
+        )
+
+    def test_chaptered_returns_chapter_ceiling(self) -> None:
+        chapters = (_chapter(1, "Chapter 1", 0),)
+        assert default_chunk_params(chapters) == (
+            PRODUCTION_CHAPTER_CHUNK_MS,
+            PRODUCTION_OVERLAP_MS,
+        )

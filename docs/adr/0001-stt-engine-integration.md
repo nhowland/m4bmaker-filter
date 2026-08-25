@@ -1,11 +1,13 @@
 # ADR-0001 (O-02): STT engine integration strategy
 
 **Status:** **Accepted 2026-08-24.** Product owner confirmed Option A
-(whisper.cpp as a bundled subprocess binary) as the direction. The specific
-open items in the "Open questions" section below (exact release tag/commit
-to pin, vendored-build vs. prebuilt-binary trust model, CPU-only vs.
-GPU-accelerated build) remain unresolved and must still be settled — with
-evidence, not by default — before G3 implementation begins.
+(whisper.cpp as a bundled subprocess binary) as the direction. **GPU vs.
+CPU-only resolved 2026-08-25** (see "GPU acceleration — reversed with real
+benchmark evidence" below): use GPU when available, CPU as automatic
+fallback — reversing this ADR's original CPU-only-for-v1 recommendation.
+The remaining open items (exact release tag/commit to pin, vendored-build
+vs. prebuilt-binary trust model) are still unresolved and must still be
+settled — with evidence, not by default — before G3 implementation begins.
 **Decision needed by:** Milestone 1 implementation (G1 exit does not require
 this; G3 cannot start without the remaining open items resolved)
 **Related PRD items:** D-10, D-11, D-13, D-14, O-02
@@ -99,10 +101,22 @@ packaging code paths near-verbatim, and matches D-03 most closely.
 Per PRD §13.1 and §17.4 G3 exit evidence, the following must be *measured*
 on named reference hardware before this ADR can close, not estimated:
 peak memory for `base.en` and `small.en`, transcription throughput
-(real-time factor) for both models, disk footprint per model, and pause
-latency achievability at the chunk duration chosen in §11.3. No numbers are
-asserted here — this section exists to record that the benchmark is owed,
-by whom (Contributor sign-off gate), and against what (G3 named fixtures).
+(real-time factor) for both models, and disk footprint per model. (Pause
+latency achievability at the chosen chunk duration was originally listed
+here too — no longer applicable in the same way now that pause latency
+is not a chunk-sizing constraint, PRD D-16 revised 2026-08-25; actual
+pause latency is still recorded in diagnostics, just not benchmarked
+against a target.) No numbers were asserted here originally — this
+section existed to record that the benchmark was owed, by whom
+(Contributor sign-off gate), and against what (G3 named fixtures).
+
+**Partially measured now** (see "GPU acceleration" above for the full
+figures): peak memory and RTF for **both** `base.en` and `small.en`,
+both CPU and GPU, on one real machine (Apple M4 Pro) against real
+chapters from the actual reference book. Still genuinely open: any
+measurement on non-Apple-Silicon hardware, and formal sign-off against
+named reference hardware per §13.1's original bar, which one dev machine
+doesn't satisfy on its own even though it's real data rather than none.
 
 ## Test plan
 
@@ -221,13 +235,169 @@ manual run (that precision lives in the unit tests); it exists as
 real-world motivation and confirms the algorithm's design intent holds up
 outside synthetic fixtures.
 
+## GPU acceleration — reversed with real benchmark evidence (2026-08-25)
+
+**This ADR originally recommended CPU-only for v1** ("keep the benchmark
+story simple, revisit post-MVP" — see the superseded open question below,
+struck through). The product owner revisited that call once real benchmark
+data existed to decide it on, rather than by default — the thing this ADR
+itself said should happen before settling it.
+
+**What was measured:** the same real 13.5-hour reference audiobook used
+throughout this fork (ADR-0007), two real chapters extracted directly from
+it (18.2 min, near the book's own median chapter length of ~16.25 min
+across all 50 real chapters; and 28.8 min, the longest chapter in the
+book), **both approved models** (`base.en` and `small.en`), this dev
+machine (Apple M4 Pro, Metal backend), CPU run (`--no-gpu`) vs. GPU run
+(flag omitted) on identical audio:
+
+| Model | Backend | 18.2 min chapter | 28.8 min chapter | RTF (avg) | Peak mem (avg) |
+|---|---|---|---|---|---|
+| base.en | CPU | 57.7s | 95.5s | 0.054 (≈18.5x) | ~779 MB |
+| base.en | GPU | 14.1s | 22.6s | 0.013 (≈77x) | ~625 MB |
+| small.en | CPU | 164.1s | 267.5s | 0.153 (≈6.5x) | ~1.3 GB |
+| small.en | GPU | 29.4s | 47.4s | 0.027 (≈37x) | ~1.08 GB |
+
+Extrapolated to the full 13.5-hour book:
+
+| Model | CPU | GPU |
+|---|---|---|
+| base.en | ~44 min | ~11 min |
+| small.en | ~2h 4m | ~22 min |
+
+Two things worth calling out beyond the raw numbers. First, **GPU
+speedup is larger for the bigger model, not smaller** — 4.1-4.2x for
+`base.en`, 5.6x for `small.en` on both chapters — more compute to offload
+means the fixed per-call overhead matters proportionally less, so GPU is
+if anything *more* valuable for the heavier model. Second, **`small.en`'s
+real CPU-vs-GPU cost relative to `base.en` isn't fixed** — about 2.8x
+slower than `base.en` on CPU, but only ~2.1x slower on GPU — so "Higher
+recognition effort" costs meaningfully less than its CPU-only number
+alone would suggest once GPU is available. On this machine, `small.en` on
+GPU (~22 min for the full book) finishes faster than `base.en` did on CPU
+alone (~44 min) in the original round.
+
+In all four combinations, peak memory scaled with model size as expected
+(~1.3GB for `small.en` vs. ~780MB for `base.en`, CPU) and GPU runs used
+*less* memory than CPU runs for both models, not more. Transcript text
+between CPU and GPU runs is not byte-identical for either model (e.g.
+177 vs. 191 segments on `small.en`'s 18.2-minute chapter) — the same
+expected floating-point/backend variance already noted for `base.en`, not
+a quality regression; all four runs were spot-checked directly and read as
+clean, accurate, coherent transcriptions of the real content.
+
+**The decision:** use GPU acceleration when available; CPU remains the
+automatic fallback, not a separate mode the User picks. Mechanically, this
+needs no new detection code and no packaging change — exactly the finding
+that unblocks it: `--no-gpu` is (per this ADR's own G3 spike) a plain
+runtime flag on the one standard whisper.cpp build already being shipped.
+The concrete change is to **stop always passing `--no-gpu`** and let
+`ggml`'s own backend selection do what it already does by default —
+initialize a compatible GPU backend if one exists, fall back to CPU
+transparently if not. `whisper-cli` already prints a real, checkable
+device-probe line to stderr confirming which backend initialized (e.g.
+`ggml_metal_device_init: GPU name: MTL0 (Apple M4 Pro)`) — the same
+"parse the CLI's own output for a fact it doesn't document elsewhere"
+pattern `get_whisper_version()` already uses, useful if the UI later wants
+to surface which backend is active (diagnostics/Model Manager), but not
+required just to get the speedup.
+
+**What this evidence does not cover, disclosed rather than assumed away:**
+Apple Silicon/Metal only, one machine. Both approved models are now
+covered (`small.en` benchmarked 2026-08-25, same method as `base.en`
+above). Windows (CUDA) and Linux GPU paths are architecturally supported
+by whisper.cpp but completely unverified here — ggml's graceful CPU
+fallback when no compatible GPU exists is a well-established pattern for
+this tool family, not something untested-and-assumed, but it hasn't been
+confirmed on non-Metal hardware within this project. That verification is
+the natural next real test before this is trusted across every supported
+platform — flagged as follow-up, not blocking this decision, which
+already has real evidence behind it (both models now) where the original
+recommendation had none.
+
+## Chunking strategy: chapter-sized chunks, pause-latency deprioritized (2026-08-25)
+
+**The decision:** chunk boundaries follow chapter markers by default — one
+chunk per chapter — rather than a small fixed duration chosen to keep
+pause-click response fast. PRD D-16, §11.3, and §15.3's pause-latency
+acceptance criterion are all revised in `docs/PRD.md` accordingly; this
+section is the rationale record for that revision, the same relationship
+this ADR already has with D-16's original text.
+
+**Why:** designing Transcribe's real progress/chunking behavior surfaced
+an architectural fact — `run_whisper()` shells out to `whisper-cli` as a
+fresh subprocess per chunk, reloading the full model from disk every
+single invocation, with no persistent/resident model across chunks. A
+small, pause-latency-driven chunk size (the 30s this ADR was working
+toward before this revision) multiplies that fixed reload cost by a large
+factor — nearly 2,000 invocations for this fork's 13.5-hour reference
+book. The product owner's call: User-initiated pause mid-transcription is
+an edge case, not worth optimizing chunk size around at the cost of that
+much redundant overhead. Durability against a *crash* (PRD D-17) is a
+separate concern that isn't being deprioritized — chapter-sized chunks
+still bound how much committed work a crash can lose, just to roughly one
+chapter's worth instead of one small fixed-duration chunk's worth, a
+trade-off the product owner explicitly accepted as acceptable ("likely an
+edge case that won't happen often").
+
+**Empirical validation — the same real book, not a synthetic guess:**
+three real chapters extracted directly from the actual 13.5-hour reference
+audiobook (ADR-0007) — the shortest (17.4s, front-matter "Opening
+Credits"), one near the book's own median chapter length (1,089.7s /
+18.2 min), and the longest chapter in the book (1,730.6s / 28.8 min) —
+each run as a single `whisper-cli` call, `base.en`, no external
+subdivision. All three completed cleanly: RTF held stable at ~0.05 across
+the full 100x range of input length (not degrading at the long end),
+peak memory grew sublinearly (~350MB → ~831MB, nowhere near proportional
+to the 100x duration increase), and the transcript text itself was spot-
+checked as coherent and accurate throughout an 18-minute single call, no
+drift or repetition artifacts. (The 18.2-min and 28.8-min chapters are the
+same two the GPU benchmark above reused as its CPU baseline — one real
+test serving both decisions, not two separate efforts.) Real per-chapter
+durations across all 50 chapters in this book: 17.4s to 1,730.6s, mean and
+median both ~975s (~16.25 min) — confirming meaningful real variance, not
+a uniform assumption.
+
+**No technical barrier found** to chapter-sized single calls, up to the
+longest length actually tested (~29 minutes). That's the basis for the
+decision; it is not proof for chapters longer than that, which is why the
+subdivision ceiling below is set with headroom rather than assumed
+unbounded.
+
+**Two provisional constants, needed to fully specify this and not yet
+implemented in code** (Transcribe itself hasn't been built — this is the
+same "decide now, implement when the step is built" status the chunk_ms
+default and the GPU decision both have):
+
+- **Chapter-subdivision ceiling: 45 minutes.** A chapter longer than this
+  still gets subdivided (using the existing fixed-step logic in
+  `chunking.py`, unchanged) rather than sent as one call. Set with real
+  headroom above the ~29-minute longest chapter actually tested — not
+  because 45 minutes itself has been tested, but because durability still
+  wants *some* upper bound on how much work one crash can lose, and
+  whisper-cli's behavior well beyond the tested range is genuinely
+  unknown, not assumed safe.
+- **Chapterless-source fallback: 15 minutes, 10s overlap.** Sources
+  without chapter markers still fall back to `_uniform_segments()`
+  (`chunking.py`, unchanged) — this is that fallback's duration, chosen to
+  land in the same rough durability-loss range chapter-aligned chunking
+  gives on this real book (mean chapter ~16 min), not independently
+  benchmarked.
+
+Both are explicitly provisional defaults, the same status `chunk_ms`
+already had before this revision — real data narrowed them, but neither
+is a formal G3 benchmark sign-off.
+
 ## Open questions for Contributor decision
 
-1. Exact whisper.cpp release tag/commit to pin, and its own dependency
+1. ~~Exact whisper.cpp release tag/commit to pin, and its own dependency
    footprint (some builds use Core ML/Metal on macOS or CUDA on Windows —
    must decide whether to ship a CPU-only build for predictability or a
    GPU-accelerated build with a CPU fallback; recommend CPU-only for v1 to
-   keep the benchmark story simple, revisit post-MVP).
+   keep the benchmark story simple, revisit post-MVP).~~ **GPU-vs-CPU
+   resolved above (2026-08-25).** The release tag/commit to pin is still
+   open — no separate GPU build to source, since it's the same standard
+   binary either way.
 2. Whether to vendor a build script (project builds whisper.cpp from source
    as part of CI) vs. downloading prebuilt release binaries and pinning
    their checksums. Vendoring the build is more auditable but adds CI

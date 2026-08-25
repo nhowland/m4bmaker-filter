@@ -11,20 +11,23 @@ Qt's layout system handles this natively — ``QStackedWidget`` already
 sizes itself to its largest child, so every step shares one window size
 for free, with no measurement workaround needed.
 
-Source, Transcript, and Review have real step widgets; the other five
-are :class:`~.placeholder_step.PlaceholderStep` stand-ins, since only
-those three have been through a wireframe review so far. The wizard is
-still fully navigable end-to-end today — Back/Continue and the
+Source, Transcript, Transcribe, and Review have real step widgets; the
+other four are :class:`~.placeholder_step.PlaceholderStep` stand-ins,
+since only those four have been through a wireframe review so far. The
+wizard is still fully navigable end-to-end today — Back/Continue and the
 stepper's click-to-revisit all work against the placeholders exactly as
 they will once each step gets built for real.
 
-Source and Transcript are wired together for real (ADR-0014): advancing
-past Source hands its ``MediaManifest`` straight to
-:meth:`~.transcript_step.TranscriptStep.set_source`, and choosing to
-reuse a compatible saved transcript there skips Transcribe entirely —
-:attr:`~.transcript_step.TranscriptStep.reuse_requested` drives that
-jump, and ``StepperWidget.set_progress()``'s already-existing (if
-previously unused) ``skipped`` parameter renders the "»" glyph for it.
+Source, Transcript, and Transcribe are wired together for real
+(ADR-0014, ADR-0015): advancing past Source hands its ``MediaManifest``
+straight to :meth:`~.transcript_step.TranscriptStep.set_source`; advancing
+past Transcript hands its manifest and chosen model to
+:meth:`~.transcribe_step.TranscribeStep.set_transcript_choice`. Choosing
+to reuse a compatible saved transcript on the Transcript step skips
+Transcribe entirely — :attr:`~.transcript_step.TranscriptStep.reuse_requested`
+drives that jump, and ``StepperWidget.set_progress()``'s already-existing
+(if previously unused, until ADR-0014) ``skipped`` parameter renders the
+"»" glyph for it.
 """
 
 from __future__ import annotations
@@ -46,6 +49,7 @@ from .review_step import ReviewStep
 from .source_step import SourceStep
 from .step_base import WizardStep
 from .stepper import STEP_LABELS, StepperWidget
+from .transcribe_step import TranscribeStep
 from .transcript_step import TranscriptStep
 
 _SOURCE_INDEX = STEP_LABELS.index("Source")
@@ -55,8 +59,6 @@ _PROFILE_INDEX = STEP_LABELS.index("Profile")
 _REVIEW_INDEX = STEP_LABELS.index("Review")
 
 _PLACEHOLDER_SUBTITLES: dict[int, str] = {
-    2: "Durable and resumable — progress persists across app restarts, "
-    "picking up chapter by chapter.",
     3: "Pick a saved filter profile, or manage the underlying word "
     "catalog without leaving the wizard.",
     4: "Matches the transcript against an immutable snapshot of the "
@@ -73,18 +75,23 @@ class WizardWindow(QMainWindow):
         self,
         parent: QWidget | None = None,
         models_dest_dir: Path | None = None,
+        transcripts_dest_dir: Path | None = None,
+        db_path: Path | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Filter Audiobook")
         self.setMinimumSize(760, 560)
         self.resize(900, 640)
 
-        # None (the real-app default) means TranscriptStep falls back to
-        # storage.models_dir() itself — this param exists so tests can
-        # point it at a tmp_path instead of touching the real,
-        # user-wide models directory (mirrors ModelManagerWindow's own
-        # dest_dir constructor param, same reason).
+        # None (the real-app default) means TranscriptStep/TranscribeStep
+        # fall back to storage.models_dir()/.transcripts_dir()/
+        # .database_path() themselves — these params exist so tests can
+        # point them at a tmp_path instead of touching real, user-wide
+        # state (mirrors ModelManagerWindow's own dest_dir constructor
+        # param, same reason).
         self._models_dest_dir = models_dest_dir
+        self._transcripts_dest_dir = transcripts_dest_dir
+        self._db_path = db_path
 
         self._active = 0
         self._furthest = 0
@@ -147,6 +154,12 @@ class WizardWindow(QMainWindow):
                 step = SourceStep()
             elif i == _TRANSCRIPT_INDEX:
                 step = TranscriptStep(dest_dir=self._models_dest_dir)
+            elif i == _TRANSCRIBE_INDEX:
+                step = TranscribeStep(
+                    models_dest_dir=self._models_dest_dir,
+                    transcripts_dest_dir=self._transcripts_dest_dir,
+                    db_path=self._db_path,
+                )
             elif i == _REVIEW_INDEX:
                 step = ReviewStep()
             else:
@@ -189,6 +202,7 @@ class WizardWindow(QMainWindow):
                 # matters if the User previously chose "Use existing",
                 # went Back, and is now transcribing for real instead.
                 self._skipped.discard(_TRANSCRIBE_INDEX)
+                self._push_transcript_to_transcribe()
             self._active = next_index
             self._furthest = max(self._furthest, self._active)
             self._render()
@@ -200,6 +214,16 @@ class WizardWindow(QMainWindow):
         assert isinstance(transcript_step, TranscriptStep)
         if source.manifest is not None:
             transcript_step.set_source(source.manifest)
+
+    def _push_transcript_to_transcribe(self) -> None:
+        transcript_step = self._steps[_TRANSCRIPT_INDEX]
+        transcribe_step = self._steps[_TRANSCRIBE_INDEX]
+        assert isinstance(transcript_step, TranscriptStep)
+        assert isinstance(transcribe_step, TranscribeStep)
+        manifest = transcript_step.manifest
+        model_spec = transcript_step.chosen_model
+        if manifest is not None and model_spec is not None:
+            transcribe_step.set_transcript_choice(manifest, model_spec)
 
     def _on_transcript_reuse(self) -> None:
         """TranscriptStep chose to reuse a compatible saved transcript —

@@ -108,7 +108,7 @@ These are non-negotiable and must be enforced in code and tests:
 | D-13 | Default model | `base.en` is the default recommended model. |
 | D-14 | Optional model | User may download/select `small.en` as a higher-recognition-effort option. |
 | D-15 | Transcription pause | Pause is safe at persisted chunk boundaries, not necessarily instantaneous. |
-| D-16 | Pause latency | Target pause acknowledgement and transition to `PAUSED` within 30 seconds under normal supported conditions. |
+| D-16 | Pause latency | *Revised 2026-08-25 (ADR-0001) — pause responsiveness is not a v1 design priority.* Pause takes effect at the next persisted chunk boundary; with chunks chosen for transcription efficiency and durability rather than pause speed (§11.3), that may take substantially longer than the original 30-second target for a typical chapter-sized chunk. Actual latency is still recorded in diagnostics regardless. |
 | D-17 | Restart behavior | After close/crash, preserve state and present a User-controlled `Resume` action. Never automatically resume transcription or rendering. |
 | D-18 | Rendering recovery | Prefer validated resumable rendering. If implementation cannot validate segment-level recovery without timeline/metadata risk, preserve all upstream artifacts and require explicit restart of the render only. Never claim a partial file is complete. |
 | D-19 | MVP scope | The MVP boundary in §5 is approved. |
@@ -148,7 +148,7 @@ The following are technical decisions—not invitations for uncontrolled scope e
 | Preservation | Preserve source duration, chapter start times/titles, required metadata, and cover art per §8. |
 | STT | English-only, local Whisper/whisper.cpp transcription with timestamped words. |
 | Models | On-demand `base.en` download; optional on-demand `small.en` download. |
-| Transcription resilience | Chunk-based persisted transcription; pause at a safe boundary within 30 seconds target; explicit User Resume after interruption. |
+| Transcription resilience | Chunk-based persisted transcription, chunk boundaries chosen for transcription efficiency and durability granularity rather than pause responsiveness (D-16, revised); explicit User Resume after interruption. |
 | Catalog | Category/term CRUD; basic reusable profile; phrase and whole-token matching. |
 | Scan/review | Timestamped scan, category/term counts, per-hit include/exclude, interval-plan preview. |
 | Filtering | PCM-domain amplitude attenuation with defined fades; no timeline cuts or shifts. |
@@ -543,8 +543,8 @@ The implementation must define an allowed-transition matrix, stable error codes,
 
 ### 11.3 Transcription durability
 
-- Divide source audio into fixed-duration chunks with overlap sufficient to protect words at boundaries.
-- Chunk duration must be chosen such that pause latency target (≤30 seconds under normal supported conditions) is achievable; record actual latency in diagnostics.
+- Divide source audio into chunks with overlap sufficient to protect words at boundaries. *Revised 2026-08-25 (ADR-0001):* chapter-aligned by default when chapter markers exist (one chunk per chapter), subdividing only a chapter that exceeds a size ceiling chosen for the same reasons as the next bullet; a fixed, generous duration is the fallback for sources without chapter markers.
+- Chunk duration is chosen primarily for transcription efficiency (minimizing redundant per-invocation engine overhead — real measurement showed whisper.cpp reloads its full model from disk on every invocation, so fewer/larger chunks meaningfully reduce wasted time on a long book) and durability granularity (bounding how much committed work a crash can lose to roughly one chunk, accepted as up to one chapter's length), not pause-click responsiveness — that target is no longer a chunk-sizing constraint (see D-16). Actual pause latency must still be recorded in diagnostics regardless.
 - Persist a completed chunk and its words atomically before marking it complete.
 - Successfully committed chunks must not be re-transcribed after restart, except minimal boundary-overlap reconciliation needed to prevent duplicate/missing words.
 - Deduplicate overlap words deterministically with documented timestamp/text logic and retain source chunk provenance.
@@ -771,7 +771,7 @@ All schemas must define version, IDs, timestamps, time units, nullability, requi
 4. A normal scan is unavailable for `partial`, `failed`, or `incompatible` transcript status.
 5. After interruption following committed chunks, reopening shows `Resume` and preserves committed chunks. No work starts automatically.
 6. Successfully committed chunks are not re-transcribed except documented boundary reconciliation.
-7. Pause requests transition to `PAUSED` within 30 seconds on named reference fixtures under normal supported conditions, or show an actionable exception/recovery state.
+7. *Revised 2026-08-25 (ADR-0001):* Pause requests transition to `PAUSED` at the next chunk boundary — potentially on the order of a chapter's length, since chunk size is no longer bounded by a pause-latency target — with actual latency recorded in diagnostics, and the UI communicating that a pending pause is waiting for a safe boundary rather than appearing to hang.
 8. Word-timestamp quality meets the numeric, corpus-specific release threshold approved in ADR O-02.
 
 ### 15.4 Attenuation and rendering
