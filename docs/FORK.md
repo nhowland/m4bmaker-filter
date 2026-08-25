@@ -34,7 +34,9 @@ unchanged, and is intentionally left untouched to keep future
      `gui/filter/workers.py`); `0010` — wizard shell design (horizontal
      stepper, consistent-height content pane, transcript-reuse auto-skip,
      chapter/section progress terminology), approved after an iterative
-     wireframe review.
+     wireframe review; `0011` — Catalog term masking (category- and
+     entry-level, OR-composed), decided directly by the product owner
+     and shipped.
 3. **`docs/TESTING.md`** — test conventions specific to the new code.
 
 ## Status
@@ -350,6 +352,64 @@ Settled by the review:
 Not yet built: any of this in PySide6 — the wireframe is HTML/CSS/JS
 only, deliberately low-fidelity and in its own "blueprint" visual
 language distinct from `gui/styles.py`, so it reads as a structural
-draft rather than a finished screen. The Scan-Review screen still needs
-its own wireframe pass (also called for in ADR-0008) before either
-screen's real implementation begins.
+draft rather than a finished screen.
+
+## G5: Review step fully wireframed, plus a real Catalog masking feature (2026-08-25)
+
+The Scan-Review screen wireframe pass ADR-0008 called for turned out to
+live inside the same wizard-shell wireframe rather than a separate file
+— the Review step (previously a static placeholder table) is now a
+fully interactive, real-data-driven panel in
+[docs/design/wizard-shell-wireframe.html](design/wizard-shell-wireframe.html),
+iterated through several rounds directly with the product owner:
+
+- **Hits and Render Plan as tabs**, not both inline at once and not
+  popped into separate windows (a modal-window split was considered and
+  explicitly rejected — see ADR-0010-adjacent discussion in this
+  session — because it would break the live coupling between excluding
+  a hit and watching its render interval change). Hits is the default,
+  primary tab; Render Plan is explicitly the secondary "you probably
+  don't need this" view — filters, bulk include/exclude, and a table
+  with its own bounded internal scroll live in Hits; a merged-interval
+  list with real provenance (which raw hits merged into which interval)
+  lives in Render Plan, both driven by one shared dataset so switching
+  tabs never loses state.
+- **The interval merge is the real algorithm**, not decoration: PRD
+  §8.3's MVP defaults (60ms lead / 80ms tail padding, 20ms merge
+  adjacency) run against whichever demo hits are currently included,
+  live, in the browser — verified by actually executing the extracted
+  logic (macOS's built-in JavaScript engine, not just visual inspection)
+  before ever publishing it for review.
+- **Redacted example terms use real asterisk masking** (first + last
+  letter, middle asterisked — "value" → "v\*\*\*e"), applied only to
+  categories/words flagged for it, not blanket-applied to every term.
+
+That last point led directly to a real, shipped feature — the wireframe
+was demonstrating a display rule with no actual User-facing control
+behind it, and the product owner asked for one. See
+[docs/adr/0011-catalog-masking.md](adr/0011-catalog-masking.md):
+
+- `Category.mask_all_terms` / `CatalogEntry.mask` (fork-specific fields,
+  not in PRD §9.1's table), composed by OR via the new
+  `CatalogService.is_masked(entry_id)` — a category-wide mask and a
+  per-word mask are independent, additive switches, not an
+  override/inheritance pair.
+- `CatalogWindow` (ADR-0008) gained a "Mask" checkbox column in both its
+  category and word tables, mirroring "Enabled"'s exact pattern.
+- The wireframe's own demo data was updated to match: Slurs is now
+  category-masked and one Profanity word carries an explicit per-word
+  mask, both read through the same OR-composition the real
+  `is_masked()` uses, instead of a hardcoded category-name check.
+- 13 new tests (6 `catalog.py`, 2 `catalog_store.py` — including
+  loading a pre-masking-schema `catalog.json` to confirm the new fields
+  default cleanly with no migration needed — and 5 `catalog_window.py`),
+  `black`/`flake8`/`mypy` clean, **visually verified against the live
+  app**.
+
+Full suite: **1409 passing, 2 correctly skipped**, project-wide.
+
+Not yet built: the rest of the wizard's per-step screens in PySide6
+(only the shell and Review are wireframed to this level of detail);
+a bulk "mask every entry in this profile" action — masking is set
+per-category or per-word only, as decided, with no profile-level
+shortcut.

@@ -6,6 +6,7 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+from m4bmaker.filter import storage
 from m4bmaker.filter.catalog import CatalogService
 from m4bmaker.filter.catalog_store import load_catalog, save_catalog
 
@@ -27,6 +28,22 @@ class TestSaveAndLoadRoundTrip:
         assert restored_entry.canonical_phrase == "darn"
         assert restored_entry.notes == "mild"
         assert restored_entry.category_id == cat.id
+
+    def test_mask_fields_round_trip(self, tmp_path: Path) -> None:
+        service = CatalogService()
+        cat = service.create_category("Slurs", mask_all_terms=True)
+        masked_entry, _ = service.create_entry(cat.id, "sensitive-word", mask=True)
+        plain_entry, _ = service.create_entry(cat.id, "other-word")
+
+        path = tmp_path / "catalog.json"
+        save_catalog(service, path)
+        restored = load_catalog(path)
+
+        assert restored.get_category(cat.id).mask_all_terms is True
+        assert restored.get_entry(masked_entry.id).mask is True
+        assert restored.get_entry(plain_entry.id).mask is False
+        assert restored.is_masked(masked_entry.id) is True
+        assert restored.is_masked(plain_entry.id) is True  # category-wide mask
 
     def test_profile_and_attenuation_round_trip(self, tmp_path: Path) -> None:
         from m4bmaker.filter.models import AttenuationSettings
@@ -132,6 +149,48 @@ class TestLoadCorruptedFile:
         with patch("m4bmaker.filter.catalog_store._log") as mock_log:
             load_catalog(path)
         mock_log.warning.assert_called_once()
+
+    def test_pre_masking_schema_loads_with_mask_defaults(self, tmp_path: Path) -> None:
+        """A catalog.json saved before mask_all_terms/mask existed (ADR-0011)
+        must still load — new fields fall back to their dataclass defaults
+        rather than raising, since Category(**c)/CatalogEntry(**e) only
+        requires keys with no default to be present."""
+        path = tmp_path / "catalog.json"
+        storage.write_json_atomic(
+            path,
+            {
+                "schemaVersion": 1,
+                "categories": [
+                    {
+                        "id": "cat-1",
+                        "name": "Profanity",
+                        "description": "",
+                        "enabled_by_default": True,
+                        "display_order": 0,
+                        "revision": 1,
+                        "archived": False,
+                    }
+                ],
+                "entries": [
+                    {
+                        "id": "e-1",
+                        "category_id": "cat-1",
+                        "canonical_phrase": "darn",
+                        "enabled": True,
+                        "notes": "",
+                        "revision": 1,
+                        "archived": False,
+                    }
+                ],
+                "profiles": [],
+            },
+        )
+
+        restored = load_catalog(path)
+
+        assert restored.get_category("cat-1").mask_all_terms is False
+        assert restored.get_entry("e-1").mask is False
+        assert restored.is_masked("e-1") is False
 
 
 class TestDefaultPath:

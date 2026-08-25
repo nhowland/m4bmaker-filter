@@ -60,6 +60,7 @@ class TestCategory:
         c = Category(id="cat-1", name="Profanity")
         assert c.name == "Profanity"
         assert c.enabled_by_default is True
+        assert c.mask_all_terms is False
         assert c.archived is False
 
     def test_blank_name_rejected(self) -> None:
@@ -75,6 +76,7 @@ class TestCatalogEntry:
     def test_valid_entry(self) -> None:
         e = CatalogEntry(id="e-1", category_id="cat-1", canonical_phrase="darn")
         assert e.enabled is True
+        assert e.mask is False
 
     def test_blank_phrase_rejected(self) -> None:
         with pytest.raises(SchemaValidationError):

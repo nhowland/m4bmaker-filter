@@ -27,7 +27,9 @@ from PySide6.QtWidgets import QMessageBox, QTableWidget, QTableWidgetItem
 
 from m4bmaker.filter.catalog import CatalogService
 from m4bmaker.gui.filter.catalog_window import (
+    _COL_CATEGORY_MASK,
     _COL_ENTRY_ENABLED,
+    _COL_ENTRY_MASK,
     _COL_ENTRY_NOTES,
     _COL_ENTRY_PHRASE,
     _ID_ROLE,
@@ -201,6 +203,42 @@ class TestShowArchivedToggle:
         assert "(archived)" in _item(win._category_table, 0, 0).text()
 
 
+class TestCategoryMasking:
+    def test_new_category_mask_checkbox_starts_unchecked(
+        self, win: CatalogWindow, service: CatalogService
+    ) -> None:
+        service.create_category("Profanity")
+        win._refresh_categories()
+
+        item = _item(win._category_table, 0, _COL_CATEGORY_MASK)
+        assert item.checkState() == Qt.CheckState.Unchecked
+
+    def test_toggling_category_mask_checkbox_updates_service(
+        self, win: CatalogWindow, service: CatalogService
+    ) -> None:
+        cat = service.create_category("Slurs")
+        win._refresh_categories()
+
+        item = _item(win._category_table, 0, _COL_CATEGORY_MASK)
+        assert item.data(_ID_ROLE) == cat.id
+        item.setCheckState(Qt.CheckState.Checked)
+
+        assert service.get_category(cat.id).mask_all_terms is True
+
+    def test_category_mask_masks_every_entry_regardless_of_its_own_flag(
+        self, win: CatalogWindow, service: CatalogService
+    ) -> None:
+        cat = service.create_category("Slurs")
+        entry, _ = service.create_entry(cat.id, "slur-example")
+        win._refresh_categories()
+
+        item = _item(win._category_table, 0, _COL_CATEGORY_MASK)
+        item.setCheckState(Qt.CheckState.Checked)
+
+        assert service.get_entry(entry.id).mask is False
+        assert service.is_masked(entry.id) is True
+
+
 class TestEntries:
     @pytest.fixture()
     def category_id(self, win: CatalogWindow, service: CatalogService) -> str:
@@ -277,6 +315,28 @@ class TestEntries:
         item.setCheckState(Qt.CheckState.Unchecked)
 
         assert service.get_entry(entry.id).enabled is False
+
+    def test_new_entry_mask_checkbox_starts_unchecked(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        service.create_entry(category_id, "darn")
+        win._refresh_entries()
+
+        item = _item(win._entry_table, 0, _COL_ENTRY_MASK)
+        assert item.checkState() == Qt.CheckState.Unchecked
+
+    def test_toggling_mask_checkbox_updates_service(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        entry, _ = service.create_entry(category_id, "darn")
+        win._refresh_entries()
+
+        item = _item(win._entry_table, 0, _COL_ENTRY_MASK)
+        assert item.data(_ID_ROLE) == entry.id
+        item.setCheckState(Qt.CheckState.Checked)
+
+        assert service.get_entry(entry.id).mask is True
+        assert service.is_masked(entry.id) is True
 
     def test_editing_notes_updates_service(
         self, win: CatalogWindow, service: CatalogService, category_id: str

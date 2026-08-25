@@ -94,12 +94,22 @@ def normalize_phrase(text: str) -> str:
 
 @dataclass
 class Category:
-    """A catalog category. See PRD §9.1 table."""
+    """A catalog category. See PRD §9.1 table.
+
+    ``mask_all_terms`` is a fork-specific addition beyond PRD §9.1's table
+    (review-screen display, not matching/scanning behavior) — see
+    ``docs/adr/0011-catalog-masking.md``. It composes with
+    :attr:`CatalogEntry.mask` by OR, not override: turning this on masks
+    every term in the category in review-screen display regardless of each
+    entry's own flag, and a User can still mask one specific entry in an
+    otherwise-unmasked category. See :meth:`CatalogService.is_masked`.
+    """
 
     id: str
     name: str
     description: str = ""
     enabled_by_default: bool = True
+    mask_all_terms: bool = False
     display_order: int = 0
     revision: int = 1
     archived: bool = False
@@ -111,12 +121,17 @@ class Category:
 
 @dataclass
 class CatalogEntry:
-    """A single catalog term/phrase within a category. See PRD §9.1 table."""
+    """A single catalog term/phrase within a category. See PRD §9.1 table.
+
+    ``mask`` is a fork-specific addition — see
+    ``docs/adr/0011-catalog-masking.md`` and :attr:`Category.mask_all_terms`.
+    """
 
     id: str
     category_id: str
     canonical_phrase: str
     enabled: bool = True
+    mask: bool = False
     notes: str = ""
     revision: int = 1
     archived: bool = False

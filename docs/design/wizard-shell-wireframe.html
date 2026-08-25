@@ -370,9 +370,189 @@
   .disclosure .disclosure-body { padding: 10px 2px 2px 16px; font-size: 0.8rem; color: var(--prose); }
 
   table.hits { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
-  table.hits th { text-align: left; color: var(--muted); font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 8px 8px; border-bottom: 1px solid var(--line); }
+  table.hits th { text-align: left; color: var(--muted); font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 8px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--paper); }
   table.hits td { padding: 8px; border-bottom: 1px solid var(--line); color: var(--prose); vertical-align: top; }
   table.hits td.mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; color: var(--muted); }
+  table.hits tbody tr.excluded { opacity: 0.55; }
+  table.hits tbody tr.excluded td.term-cell { text-decoration: line-through; text-decoration-color: var(--muted); }
+
+  /* ── Review step: a real (not schematic) panel — this is the screen
+     under design review, so it gets full interaction fidelity rather
+     than a dashed placeholder block ────────────────────────────────── */
+
+  .stat-strip {
+    display: flex;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--paper);
+    overflow-x: auto;
+    margin-bottom: 14px;
+  }
+
+  .stat {
+    padding: 10px 18px;
+    border-right: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  .stat:last-child { border-right: none; }
+
+  .stat .stat-label {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.62rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  .stat .stat-value {
+    font-size: 1.05rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+  .stat .stat-value.included { color: var(--success); }
+  .stat .stat-value.excluded { color: var(--accent); }
+
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+
+  .filter-bar select {
+    font: inherit;
+    font-size: 0.78rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 5px;
+    padding: 6px 8px;
+    background: var(--panel);
+    color: var(--ink);
+  }
+  .filter-bar select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .filter-bar label {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.62rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .bulk-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: rgba(var(--accent-rgb), 0.08);
+    border: 1px solid var(--accent);
+    margin-bottom: 10px;
+    font-size: 0.8rem;
+    color: var(--ink);
+  }
+  .bulk-bar.is-empty { visibility: hidden; }
+
+  .btn.small { padding: 4px 10px; font-size: 0.74rem; }
+
+  .table-scroll {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    max-height: 250px;
+    overflow-y: auto;
+    background: var(--paper);
+  }
+  .table-scroll table.hits { font-size: 0.76rem; }
+  .table-scroll table.hits th, .table-scroll table.hits td { padding: 6px 8px; }
+
+  .state-toggle { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 999px; overflow: hidden; }
+  .state-toggle button {
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 3px 9px;
+    border: none;
+    background: var(--panel);
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .state-toggle button + button { border-left: 1px solid var(--line-strong); }
+  .state-toggle button.active.incl { background: var(--success); color: var(--accent-ink); }
+  .state-toggle button.active.excl { background: var(--accent); color: var(--accent-ink); }
+
+  .conf-chip { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.7rem; color: var(--muted); }
+  .conf-chip.na { font-style: italic; }
+
+  .context-cell { color: var(--muted); font-size: 0.74rem; max-width: 220px; }
+  .context-cell .term-cell { color: var(--ink); font-weight: 600; font-style: normal; }
+
+  .interval-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin: 16px 0 8px;
+  }
+  .interval-heading .sketch-label { margin: 0; }
+  .interval-heading .interval-total { font-size: 0.74rem; color: var(--muted); }
+
+  .interval-list {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--paper);
+    max-height: 250px;
+    overflow-y: auto;
+  }
+  .interval-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    font-size: 0.78rem;
+  }
+  .interval-row + .interval-row { border-top: 1px solid var(--line); }
+  .interval-row .interval-time { font-family: "IBM Plex Mono", ui-monospace, monospace; color: var(--ink); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .interval-row .interval-dur { color: var(--muted); font-size: 0.72rem; flex-shrink: 0; }
+  .interval-row .interval-prov { flex: 1; color: var(--prose); font-size: 0.74rem; }
+  .interval-row .interval-prov strong { color: var(--ink); }
+  .interval-empty { padding: 16px; text-align: center; color: var(--muted); font-size: 0.8rem; }
+
+  .tabs {
+    display: flex;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 14px;
+  }
+  .tab {
+    font: inherit;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 0 0 10px;
+    margin-bottom: -1px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tab + .tab { margin-left: 22px; }
+  .tab:hover { color: var(--ink); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+  .tab-panel-note {
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin: 0 0 12px;
+    max-width: 62ch;
+  }
 
   /* ── footer nav ───────────────────────────────────────────────────── */
 
@@ -604,7 +784,7 @@
         <div class="sketch">
           <p class="sketch-label">scan summary</p>
           <dl class="kv">
-            <dt>Hits found</dt><dd>247 across 2 categories</dd>
+            <dt>Hits found</dt><dd>14 — Profanity ×10, Slurs ×4 (see Review)</dd>
             <dt>Profile snapshot</dt><dd>Family Friendly · rev. 3</dd>
           </dl>
         </div>
@@ -622,20 +802,8 @@
     {
       id: "review", label: "Review", eyebrow: "Step 6 · Review",
       title: "Review",
-      sub: "Inspect individual hits; include or exclude before anything is rendered.",
-      body: `
-        <div class="row" style="margin-bottom:12px;">
-          <span class="chip ok">232 included</span><span class="chip">15 excluded</span>
-          <span class="chip">Profanity ×198</span><span class="chip">Slurs ×49</span>
-        </div>
-        <table class="hits">
-          <thead><tr><th></th><th>Word</th><th>Category</th><th>Time</th></tr></thead>
-          <tbody>
-            <tr><td>☑</td><td>“—redacted—”</td><td>Profanity</td><td class="mono">01:14:02.3</td></tr>
-            <tr><td>☑</td><td>“—redacted—”</td><td>Slurs</td><td class="mono">01:14:55.8</td></tr>
-            <tr><td>☐</td><td>“—redacted—”</td><td>Profanity</td><td class="mono">02:03:10.1</td></tr>
-          </tbody>
-        </table>`
+      sub: "Every hit the scan found, matched against an immutable profile snapshot. Include or exclude individually, or act on a whole category or term at once — nothing is rendered until Render.",
+      body: `<div id="reviewRoot"></div>`
     },
     {
       id: "render", label: "Render", eyebrow: "Step 7 · Render",
@@ -646,7 +814,7 @@
           <p class="sketch-label">output plan</p>
           <dl class="kv">
             <dt>Output</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).m4b</dd>
-            <dt>Intervals to attenuate</dt><dd>221 (merged from 232 hits)</dd>
+            <dt>Intervals to attenuate</dt><dd>13 (merged from 14 hits — see Review)</dd>
             <dt>Est. render time</dt><dd>~10–11 min</dd>
           </dl>
           <div class="row" style="margin-top:14px;"><button class="btn primary">Start Render</button></div>
@@ -716,6 +884,358 @@
     });
   }
 
+  // ── Review step: a real, working demo dataset and interaction — this
+  // is the most novel/interactive screen in the wizard, so it gets full
+  // fidelity rather than a schematic sketch (ADR-0008's wireframing
+  // decision). Field shapes mirror the real ScanHit/RenderInterval
+  // dataclasses (models.py) and the interval-merge rules mirror the real
+  // Interval Planner algorithm (PRD §8.3, MVP defaults) so the review
+  // and provenance behavior shown here is what the real screen will
+  // actually have to do, not just what looks plausible. ──────────────
+
+  const SOURCE_DURATION_MS = 48693108; // the real G4 fixture's measured duration
+  const PAD_LEAD_MS = 60, PAD_TAIL_MS = 80, MERGE_ADJACENCY_MS = 20; // PRD §8.3 MVP defaults
+
+  // maskAllTerms/hit.mask mirror the real Catalog's mask_all_terms/mask
+  // fields (ADR-0011) — a User sets these in the Catalog window, they
+  // are not hardcoded per category here. h13 below carries an explicit
+  // per-word mask even though its category doesn't, demonstrating that
+  // an individual word can still be masked in an otherwise-plain category.
+  const reviewCategories = [
+    { id: "cat-profanity", name: "Profanity", maskAllTerms: false },
+    { id: "cat-slurs", name: "Slurs", maskAllTerms: true }
+  ];
+
+  const reviewHits = [
+    { id: "h01", categoryId: "cat-profanity", term: "darn", rule: "exact_token", confidence: 0.91, startMs: 269340, endMs: 269820, before: ["and", "then", "he"], after: ["under", "his", "breath"] },
+    { id: "h02", categoryId: "cat-slurs", term: "input", rule: "exact_token", confidence: null, startMs: 612900, endMs: 613400, before: ["someone", "in", "the", "crowd"], after: ["shouted", "from", "the", "back"] },
+    { id: "h03", categoryId: "cat-profanity", term: "heck", rule: "exact_token", confidence: 0.88, startMs: 1332100, endMs: 1332560, before: ["what", "the"], after: ["is", "going", "on"] },
+    { id: "h04", categoryId: "cat-profanity", term: "dang", rule: "exact_token", confidence: 0.95, startMs: 2035500, endMs: 2035980, before: ["well", "that", "was", "one"], after: ["way", "to", "find", "out"] },
+    { id: "h05", categoryId: "cat-profanity", term: "oh darn", rule: "exact_phrase", confidence: 0.79, startMs: 2847220, endMs: 2847900, before: ["she", "froze", "and", "said"], after: ["not", "again"] },
+    { id: "h06", categoryId: "cat-slurs", term: "value", rule: "exact_token", confidence: 0.83, startMs: 3421750, endMs: 3422260, before: ["he", "muttered", "it"], after: ["without", "thinking"] },
+    { id: "h07", categoryId: "cat-profanity", term: "darn", rule: "exact_token", confidence: 0.90, startMs: 4467340, endMs: 4467820, before: ["and", "then", "he", "said"], after: ["it", "was", "too", "late"] },
+    { id: "h08", categoryId: "cat-profanity", term: "heck", rule: "exact_token", confidence: 0.86, startMs: 4467850, endMs: 4468320, before: ["darn"], after: ["that", "hurt"] },
+    { id: "h09", categoryId: "cat-slurs", term: "token", rule: "exact_token", confidence: null, startMs: 5501100, endMs: 5501600, before: ["the", "old", "man", "spat"], after: ["and", "walked", "away"] },
+    { id: "h10", categoryId: "cat-profanity", term: "dang it", rule: "exact_phrase", confidence: 0.81, startMs: 6203400, endMs: 6204050, before: ["she", "kicked", "the", "wall"], after: ["that", "really", "hurt"] },
+    { id: "h11", categoryId: "cat-profanity", term: "heck", rule: "exact_token", confidence: 0.93, startMs: 7012300, endMs: 7012780, before: ["what", "in", "the"], after: ["was", "that", "sound"] },
+    { id: "h12", categoryId: "cat-slurs", term: "label", rule: "exact_token", confidence: 0.77, startMs: 8455900, endMs: 8456420, before: ["someone", "yelled", "it", "across"], after: ["the", "tavern", "floor"] },
+    { id: "h13", categoryId: "cat-profanity", term: "darn", mask: true, rule: "exact_token", confidence: 0.89, startMs: 9821000, endMs: 9821480, before: ["for", "the", "love", "of"], after: ["can", "we", "just", "go"] },
+    { id: "h14", categoryId: "cat-profanity", term: "heck", rule: "exact_token", confidence: 0.92, startMs: 11734600, endMs: 11735100, before: ["he", "kicked", "the", "door"], after: ["open", "and", "froze"] }
+  ];
+
+  // Absent = included, matching Scan.status_for()'s real default (PRD
+  // §7.2's happy path expects excluding unwanted hits, not opting every
+  // hit in one by one).
+  const reviewDecisions = {};
+  const reviewSelected = new Set();
+  const reviewFilters = { category: "all", term: "all", confidence: "all", state: "all", sort: "time", dir: "asc" };
+  // Hits is the default and primary tab — reviewing/including/excluding
+  // hits is the actual task. Render Plan is the secondary, "advanced"
+  // view of what will run; most Users won't need to open it before
+  // clicking Continue.
+  let reviewTab = "hits";
+
+  function reviewStatus(hitId) {
+    return reviewDecisions[hitId] || "included";
+  }
+
+  function setReviewStatus(hitId, status) {
+    if (status === "included") delete reviewDecisions[hitId];
+    else reviewDecisions[hitId] = status;
+  }
+
+  function categoryName(id) {
+    const c = reviewCategories.find(c => c.id === id);
+    return c ? c.name : id;
+  }
+
+  function msToClock(ms) {
+    const totalSec = ms / 1000;
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return `${h}:${String(m).padStart(2, "0")}:${s.toFixed(1).padStart(4, "0")}`;
+  }
+
+  function formatDuration(ms) {
+    return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(2)}s`;
+  }
+
+  // First and last letter shown, everything between asterisked —
+  // e.g. "value" -> "v***e". Applied only to categories the User has
+  // chosen to keep out of plain view (here, Slurs) — Profanity's terms
+  // display in full, same as the real app would show a User their own
+  // catalog entries.
+  function maskTerm(term) {
+    if (term.length <= 2) return term[0] + "*".repeat(term.length - 1);
+    return term[0] + "*".repeat(term.length - 2) + term[term.length - 1];
+  }
+
+  function displayTerm(hit) {
+    // Mirrors CatalogService.is_masked()'s OR-composition exactly: a
+    // category-wide mask or a per-word mask, either one is enough.
+    const category = reviewCategories.find(c => c.id === hit.categoryId);
+    const categoryMasks = Boolean(category && category.maskAllTerms);
+    return categoryMasks || hit.mask ? maskTerm(hit.term) : hit.term;
+  }
+
+  function filteredSortedHits() {
+    let list = reviewHits.filter(h => {
+      if (reviewFilters.category !== "all" && h.categoryId !== reviewFilters.category) return false;
+      if (reviewFilters.term !== "all" && h.term !== reviewFilters.term) return false;
+      if (reviewFilters.confidence === "available" && h.confidence == null) return false;
+      if (reviewFilters.confidence === "unavailable" && h.confidence != null) return false;
+      if (reviewFilters.state !== "all" && reviewStatus(h.id) !== reviewFilters.state) return false;
+      return true;
+    });
+    const dir = reviewFilters.dir === "desc" ? -1 : 1;
+    list = list.slice().sort((a, b) => {
+      let cmp = 0;
+      if (reviewFilters.sort === "time") cmp = a.startMs - b.startMs;
+      else if (reviewFilters.sort === "category") cmp = categoryName(a.categoryId).localeCompare(categoryName(b.categoryId));
+      else if (reviewFilters.sort === "term") cmp = a.term.localeCompare(b.term);
+      else if (reviewFilters.sort === "confidence") cmp = (a.confidence ?? -1) - (b.confidence ?? -1);
+      return cmp * dir;
+    });
+    return list;
+  }
+
+  // Simplified version of the real Interval Planner (PRD §8.3): pad each
+  // included hit, clamp to the source duration, sort, then merge any
+  // padded intervals that touch or overlap — carrying every contributing
+  // hit id forward as provenance (models.py's RenderInterval.hit_ids).
+  function computeIntervals() {
+    const included = reviewHits.filter(h => reviewStatus(h.id) === "included");
+    const padded = included
+      .map(h => ({
+        start: Math.max(0, h.startMs - PAD_LEAD_MS),
+        end: Math.min(SOURCE_DURATION_MS, h.endMs + PAD_TAIL_MS),
+        hitIds: [h.id]
+      }))
+      .sort((a, b) => a.start - b.start);
+
+    const merged = [];
+    for (const iv of padded) {
+      const last = merged[merged.length - 1];
+      if (last && iv.start - last.end <= MERGE_ADJACENCY_MS) {
+        last.end = Math.max(last.end, iv.end);
+        last.hitIds.push(...iv.hitIds);
+      } else {
+        merged.push({ start: iv.start, end: iv.end, hitIds: [...iv.hitIds] });
+      }
+    }
+    return merged;
+  }
+
+  function reviewSummary() {
+    const included = reviewHits.filter(h => reviewStatus(h.id) === "included");
+    const excluded = reviewHits.filter(h => reviewStatus(h.id) === "excluded");
+    // Matches build_report()'s real semantics: term_counts (and so
+    // unique_terms_hit) counts every raw hit regardless of review status.
+    const uniqueTermsHit = new Set(reviewHits.map(h => h.term)).size;
+    const intervals = computeIntervals();
+    const attenuatedMs = intervals.reduce((sum, iv) => sum + (iv.end - iv.start), 0);
+    return {
+      total: reviewHits.length,
+      included: included.length,
+      excluded: excluded.length,
+      uniqueTermsHit,
+      attenuatedMs,
+      intervals
+    };
+  }
+
+  // Builds the Review step's full inner HTML for a given tab. Pure
+  // (no DOM reads/writes) so it can be reused both by the real render
+  // and by measureTallestStepHeight()'s off-screen probe — the probe
+  // needs Review's actual rendered content, not its empty <div id=
+  // "reviewRoot"> placeholder body, to correctly find the tallest step.
+  function buildReviewRootHtml(tab) {
+    const summary = reviewSummary();
+    const rows = filteredSortedHits();
+    const terms = [...new Set(reviewHits.map(h => h.term))].sort();
+
+    const hitsPanel = `
+      <div class="filter-bar">
+        <label>Category
+          <select id="fltCategory">
+            <option value="all">All</option>
+            ${reviewCategories.map(c => `<option value="${c.id}" ${reviewFilters.category === c.id ? "selected" : ""}>${c.name}</option>`).join("")}
+          </select>
+        </label>
+        <label>Term
+          <select id="fltTerm">
+            <option value="all">All</option>
+            ${terms.map(t => {
+              const owner = reviewHits.find(h => h.term === t);
+              const label = owner ? displayTerm(owner) : t;
+              return `<option value="${t}" ${reviewFilters.term === t ? "selected" : ""}>${label}</option>`;
+            }).join("")}
+          </select>
+        </label>
+        <label>Confidence
+          <select id="fltConfidence">
+            <option value="all">All</option>
+            <option value="available" ${reviewFilters.confidence === "available" ? "selected" : ""}>Available</option>
+            <option value="unavailable" ${reviewFilters.confidence === "unavailable" ? "selected" : ""}>Not available</option>
+          </select>
+        </label>
+        <label>State
+          <select id="fltState">
+            <option value="all">All</option>
+            <option value="included" ${reviewFilters.state === "included" ? "selected" : ""}>Included</option>
+            <option value="excluded" ${reviewFilters.state === "excluded" ? "selected" : ""}>Excluded</option>
+          </select>
+        </label>
+        <label>Sort
+          <select id="fltSort">
+            <option value="time" ${reviewFilters.sort === "time" ? "selected" : ""}>Time</option>
+            <option value="category" ${reviewFilters.sort === "category" ? "selected" : ""}>Category</option>
+            <option value="term" ${reviewFilters.sort === "term" ? "selected" : ""}>Term</option>
+            <option value="confidence" ${reviewFilters.sort === "confidence" ? "selected" : ""}>Confidence</option>
+          </select>
+        </label>
+        <button class="btn small ghost" id="fltDirBtn" title="Toggle sort direction">${reviewFilters.dir === "desc" ? "↓" : "↑"}</button>
+      </div>
+
+      <div class="bulk-bar ${reviewSelected.size ? "" : "is-empty"}">
+        <span>${reviewSelected.size} selected</span>
+        <button class="btn small" id="bulkIncludeBtn">Include</button>
+        <button class="btn small" id="bulkExcludeBtn">Exclude</button>
+      </div>
+
+      <div class="table-scroll">
+        <table class="hits">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="selectAllBox"></th>
+              <th>Time</th><th>Category</th><th>Term</th><th>Context</th><th>Conf.</th><th>State</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.length === 0
+              ? `<tr><td colspan="7" class="interval-empty">No hits match the current filters.</td></tr>`
+              : rows.map(h => {
+                  const status = reviewStatus(h.id);
+                  return `
+                    <tr class="${status === "excluded" ? "excluded" : ""}">
+                      <td><input type="checkbox" class="rowBox" data-hit="${h.id}" ${reviewSelected.has(h.id) ? "checked" : ""}></td>
+                      <td class="mono">${msToClock(h.startMs)}</td>
+                      <td>${categoryName(h.categoryId)}</td>
+                      <td class="term-cell">${displayTerm(h)}</td>
+                      <td class="context-cell">${h.before.join(" ")} <span class="term-cell">${displayTerm(h)}</span> ${h.after.join(" ")}</td>
+                      <td>${h.confidence == null ? `<span class="conf-chip na">n/a</span>` : `<span class="conf-chip">${Math.round(h.confidence * 100)}%</span>`}</td>
+                      <td>
+                        <span class="state-toggle">
+                          <button class="incl ${status === "included" ? "active" : ""}" data-hit="${h.id}" data-status="included" title="Include">✓</button>
+                          <button class="excl ${status === "excluded" ? "active" : ""}" data-hit="${h.id}" data-status="excluded" title="Exclude">✕</button>
+                        </span>
+                      </td>
+                    </tr>`;
+                }).join("")
+            }
+          </tbody>
+        </table>
+      </div>`;
+
+    const planPanel = `
+      <p class="tab-panel-note">
+        What will actually run when you click Render — merged, padded intervals with
+        provenance back to the hits that produced each one. Most people won't need to
+        check this before continuing.
+      </p>
+      <div class="interval-heading">
+        <p class="sketch-label">merged interval provenance</p>
+        <span class="interval-total">${summary.intervals.length} interval${summary.intervals.length === 1 ? "" : "s"} · ${formatDuration(summary.attenuatedMs)} total</span>
+      </div>
+      <div class="interval-list">
+        ${summary.intervals.length === 0
+          ? `<div class="interval-empty">Nothing included — the render plan is empty.</div>`
+          : summary.intervals.map(iv => {
+              const contribTerms = iv.hitIds.map(id => displayTerm(reviewHits.find(h => h.id === id)));
+              return `
+                <div class="interval-row">
+                  <span class="interval-time">${msToClock(iv.start)}–${msToClock(iv.end)}</span>
+                  <span class="interval-dur">${formatDuration(iv.end - iv.start)}</span>
+                  <span class="interval-prov">merged from <strong>${iv.hitIds.length}</strong> hit${iv.hitIds.length === 1 ? "" : "s"}: ${contribTerms.join(", ")}</span>
+                </div>`;
+            }).join("")
+        }
+      </div>`;
+
+    return `
+      <div class="stat-strip">
+        <div class="stat"><span class="stat-label">Total hits</span><span class="stat-value">${summary.total}</span></div>
+        <div class="stat"><span class="stat-label">Included</span><span class="stat-value included">${summary.included}</span></div>
+        <div class="stat"><span class="stat-label">Excluded</span><span class="stat-value excluded">${summary.excluded}</span></div>
+        <div class="stat"><span class="stat-label">Unique terms hit</span><span class="stat-value">${summary.uniqueTermsHit}</span></div>
+        <div class="stat"><span class="stat-label">Attenuated total</span><span class="stat-value">${formatDuration(summary.attenuatedMs)}</span></div>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab ${tab === "hits" ? "active" : ""}" data-tab="hits" role="tab" aria-selected="${tab === "hits"}">Hits</button>
+        <button class="tab ${tab === "plan" ? "active" : ""}" data-tab="plan" role="tab" aria-selected="${tab === "plan"}">Render Plan</button>
+      </div>
+
+      ${tab === "hits" ? hitsPanel : planPanel}
+    `;
+  }
+
+  function renderReviewPanel() {
+    const root = document.getElementById("reviewRoot");
+    if (!root) return;
+    root.innerHTML = buildReviewRootHtml(reviewTab);
+
+    root.querySelectorAll(".tab").forEach(btn => {
+      btn.addEventListener("click", () => { reviewTab = btn.dataset.tab; renderReviewPanel(); });
+    });
+
+    if (reviewTab !== "hits") return; // nothing else below exists in the Render Plan tab
+
+    const rows = filteredSortedHits(); // same filtered set buildReviewRootHtml() just rendered
+
+    document.getElementById("fltCategory").addEventListener("change", e => { reviewFilters.category = e.target.value; renderReviewPanel(); });
+    document.getElementById("fltTerm").addEventListener("change", e => { reviewFilters.term = e.target.value; renderReviewPanel(); });
+    document.getElementById("fltConfidence").addEventListener("change", e => { reviewFilters.confidence = e.target.value; renderReviewPanel(); });
+    document.getElementById("fltState").addEventListener("change", e => { reviewFilters.state = e.target.value; renderReviewPanel(); });
+    document.getElementById("fltSort").addEventListener("change", e => { reviewFilters.sort = e.target.value; renderReviewPanel(); });
+    document.getElementById("fltDirBtn").addEventListener("click", () => { reviewFilters.dir = reviewFilters.dir === "desc" ? "asc" : "desc"; renderReviewPanel(); });
+
+    document.getElementById("selectAllBox").addEventListener("change", e => {
+      rows.forEach(h => e.target.checked ? reviewSelected.add(h.id) : reviewSelected.delete(h.id));
+      renderReviewPanel();
+    });
+
+    root.querySelectorAll(".rowBox").forEach(box => {
+      box.addEventListener("change", e => {
+        const id = e.target.dataset.hit;
+        if (e.target.checked) reviewSelected.add(id); else reviewSelected.delete(id);
+        renderReviewPanel();
+      });
+    });
+
+    root.querySelectorAll(".state-toggle button").forEach(btn => {
+      btn.addEventListener("click", () => {
+        setReviewStatus(btn.dataset.hit, btn.dataset.status);
+        renderReviewPanel();
+      });
+    });
+
+    // Bulk buttons are always present (just visibility:hidden, and so
+    // unclickable, while nothing is selected) — always wire them rather
+    // than conditionally, so there's no dependency on render order.
+    document.getElementById("bulkIncludeBtn").addEventListener("click", () => {
+      reviewSelected.forEach(id => setReviewStatus(id, "included"));
+      reviewSelected.clear();
+      renderReviewPanel();
+    });
+    document.getElementById("bulkExcludeBtn").addEventListener("click", () => {
+      reviewSelected.forEach(id => setReviewStatus(id, "excluded"));
+      reviewSelected.clear();
+      renderReviewPanel();
+    });
+  }
+
   function renderPane() {
     const s = steps[active];
     const skippedNotice = s.id === "transcribe" && skippedSteps.has(2)
@@ -744,6 +1264,8 @@
     if (useExistingBtn) useExistingBtn.addEventListener("click", useExistingTranscript);
     const reTranscribeBtn = document.getElementById("reTranscribeBtn");
     if (reTranscribeBtn) reTranscribeBtn.addEventListener("click", reTranscribeAnyway);
+
+    if (s.id === "review") renderReviewPanel();
   }
 
   // The one behavior this wireframe demonstrates live, not just describes:
@@ -795,6 +1317,10 @@
     {
       tag: "Empty states",
       html: "<strong>First-run states render inline</strong>, in the same shell, not as separate error screens — required by PRD §7.3 (shown here, on the Transcript step: no model installed yet)."
+    },
+    {
+      tag: "Masking",
+      html: "<strong>Masking is a real Catalog setting, not hardcoded.</strong> A User marks a whole category or one specific word as masked in the Word Catalog window (ADR-0011) — this demo's data mirrors that: the Slurs category is category-masked, and one Profanity word (“darn” on Hit h13) carries its own per-word mask despite its category being plain. The two compose by OR, same as <code>CatalogService.is_masked()</code>."
     }
   ];
 
@@ -828,17 +1354,30 @@
 
     let max = 0;
     steps.forEach(s => {
-      probe.innerHTML = `
-        <p class="step-eyebrow">${s.eyebrow}</p>
-        <h2 class="step-title">${s.title}</h2>
-        <p class="step-sub">${s.sub}</p>
-        ${s.body}
-      `;
-      max = Math.max(max, probe.scrollHeight);
+      // Review's real content is rendered dynamically (buildReviewRootHtml),
+      // not static like every other step's s.body — which is just an empty
+      // placeholder <div>. Measure both of its tabs directly so the probe
+      // sees what Review will actually render, not an empty container.
+      if (s.id === "review") {
+        max = Math.max(max, measureStaticHtml(probe, s, buildReviewRootHtml("hits")));
+        max = Math.max(max, measureStaticHtml(probe, s, buildReviewRootHtml("plan")));
+        return;
+      }
+      max = Math.max(max, measureStaticHtml(probe, s, s.body));
     });
 
     document.body.removeChild(probe);
     return max;
+  }
+
+  function measureStaticHtml(probe, step, bodyHtml) {
+    probe.innerHTML = `
+      <p class="step-eyebrow">${step.eyebrow}</p>
+      <h2 class="step-title">${step.title}</h2>
+      <p class="step-sub">${step.sub}</p>
+      ${bodyHtml}
+    `;
+    return probe.scrollHeight;
   }
 
   function applyConsistentStepHeight() {

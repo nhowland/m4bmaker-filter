@@ -19,6 +19,13 @@ Archive-vs-hard-delete (PRD §9.2) needs no branching in this UI at all —
 internally based on whether a saved profile references the item, so the
 "Delete" button here always calls the same method regardless of which
 outcome results.
+
+Masking (fork-specific, not in PRD §9.1 — see ``docs/adr/0011-catalog-masking.md``):
+both tables carry a "Mask" checkbox column, mirroring "Enabled"'s exact
+checkbox pattern. Checking a category's Mask masks every term in it in
+the Review screen regardless of each entry's own flag; an entry's own
+Mask still applies even if its category isn't masked
+(``CatalogService.is_masked`` composes the two by OR).
 """
 
 from __future__ import annotations
@@ -47,9 +54,12 @@ from m4bmaker.filter.catalog_store import save_catalog
 from m4bmaker.filter.models import SchemaValidationError
 
 _COL_CATEGORY_NAME = 0
+_COL_CATEGORY_MASK = 1
+
 _COL_ENTRY_PHRASE = 0
 _COL_ENTRY_ENABLED = 1
-_COL_ENTRY_NOTES = 2
+_COL_ENTRY_MASK = 2
+_COL_ENTRY_NOTES = 3
 
 _ID_ROLE = Qt.ItemDataRole.UserRole
 
@@ -103,11 +113,20 @@ class CatalogWindow(QMainWindow):
 
         layout.addWidget(QLabel("Categories"))
 
-        self._category_table = QTableWidget(0, 1)
-        self._category_table.setHorizontalHeaderLabels(["Name"])
+        self._category_table = QTableWidget(0, 2)
+        self._category_table.setHorizontalHeaderLabels(["Name", "Mask"])
         self._category_table.horizontalHeader().setSectionResizeMode(
-            0, QHeaderView.ResizeMode.Stretch
+            _COL_CATEGORY_NAME, QHeaderView.ResizeMode.Stretch
         )
+        self._category_table.horizontalHeader().setSectionResizeMode(
+            _COL_CATEGORY_MASK, QHeaderView.ResizeMode.ResizeToContents
+        )
+        mask_header = self._category_table.horizontalHeaderItem(_COL_CATEGORY_MASK)
+        if mask_header is not None:
+            mask_header.setToolTip(
+                "Mask every term in this category in the Review screen, "
+                "regardless of each term's own Mask setting."
+            )
         self._category_table.verticalHeader().setVisible(False)
         self._category_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -119,6 +138,7 @@ class CatalogWindow(QMainWindow):
             QAbstractItemView.EditTrigger.NoEditTriggers
         )
         self._category_table.itemSelectionChanged.connect(self._on_category_selected)
+        self._category_table.itemChanged.connect(self._on_category_item_changed)
         layout.addWidget(self._category_table, stretch=1)
 
         btn_row = QHBoxLayout()
@@ -149,8 +169,10 @@ class CatalogWindow(QMainWindow):
         self._entries_label = QLabel("Words")
         layout.addWidget(self._entries_label)
 
-        self._entry_table = QTableWidget(0, 3)
-        self._entry_table.setHorizontalHeaderLabels(["Phrase", "Enabled", "Notes"])
+        self._entry_table = QTableWidget(0, 4)
+        self._entry_table.setHorizontalHeaderLabels(
+            ["Phrase", "Enabled", "Mask", "Notes"]
+        )
         header = self._entry_table.horizontalHeader()
         header.setSectionResizeMode(
             _COL_ENTRY_PHRASE, QHeaderView.ResizeMode.Interactive
@@ -158,7 +180,16 @@ class CatalogWindow(QMainWindow):
         header.setSectionResizeMode(
             _COL_ENTRY_ENABLED, QHeaderView.ResizeMode.ResizeToContents
         )
+        header.setSectionResizeMode(
+            _COL_ENTRY_MASK, QHeaderView.ResizeMode.ResizeToContents
+        )
         header.setSectionResizeMode(_COL_ENTRY_NOTES, QHeaderView.ResizeMode.Stretch)
+        mask_header = self._entry_table.horizontalHeaderItem(_COL_ENTRY_MASK)
+        if mask_header is not None:
+            mask_header.setToolTip(
+                "Mask just this term in the Review screen — its category "
+                "doesn't need to be masked too."
+            )
         self._entry_table.verticalHeader().setVisible(False)
         self._entry_table.setSelectionBehavior(
             QAbstractItemView.SelectionBehavior.SelectRows
@@ -218,6 +249,19 @@ class CatalogWindow(QMainWindow):
             item = QTableWidgetItem(label)
             item.setData(_ID_ROLE, category.id)
             self._category_table.setItem(row, _COL_CATEGORY_NAME, item)
+
+            mask_item = QTableWidgetItem()
+            mask_item.setFlags(
+                (mask_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                & ~Qt.ItemFlag.ItemIsEditable
+            )
+            mask_item.setCheckState(
+                Qt.CheckState.Checked
+                if category.mask_all_terms
+                else Qt.CheckState.Unchecked
+            )
+            mask_item.setData(_ID_ROLE, category.id)
+            self._category_table.setItem(row, _COL_CATEGORY_MASK, mask_item)
         self._category_table.blockSignals(False)
 
         # Preserve selection if the previously-selected category still exists
@@ -251,6 +295,14 @@ class CatalogWindow(QMainWindow):
     def _on_show_archived_toggled(self) -> None:
         self._show_archived = self._show_archived_cb.isChecked()
         self._refresh_categories()
+
+    def _on_category_item_changed(self, item: QTableWidgetItem) -> None:
+        category_id = item.data(_ID_ROLE)
+        if category_id is None or item.column() != _COL_CATEGORY_MASK:
+            return
+        masked = item.checkState() == Qt.CheckState.Checked
+        self._service.update_category(category_id, mask_all_terms=masked)
+        self._save()
 
     def _add_category(self) -> None:
         name, ok = QInputDialog.getText(self, "New Category", "Category name:")
@@ -347,6 +399,17 @@ class CatalogWindow(QMainWindow):
             enabled_item.setData(_ID_ROLE, entry.id)
             self._entry_table.setItem(row, _COL_ENTRY_ENABLED, enabled_item)
 
+            mask_item = QTableWidgetItem()
+            mask_item.setFlags(
+                (mask_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                & ~Qt.ItemFlag.ItemIsEditable
+            )
+            mask_item.setCheckState(
+                Qt.CheckState.Checked if entry.mask else Qt.CheckState.Unchecked
+            )
+            mask_item.setData(_ID_ROLE, entry.id)
+            self._entry_table.setItem(row, _COL_ENTRY_MASK, mask_item)
+
             notes_item = QTableWidgetItem(entry.notes)
             notes_item.setData(_ID_ROLE, entry.id)
             self._entry_table.setItem(row, _COL_ENTRY_NOTES, notes_item)
@@ -410,6 +473,10 @@ class CatalogWindow(QMainWindow):
         if column == _COL_ENTRY_ENABLED:
             enabled = item.checkState() == Qt.CheckState.Checked
             self._service.update_entry(entry_id, enabled=enabled)
+            self._save()
+        elif column == _COL_ENTRY_MASK:
+            masked = item.checkState() == Qt.CheckState.Checked
+            self._service.update_entry(entry_id, mask=masked)
             self._save()
         elif column == _COL_ENTRY_NOTES:
             self._service.update_entry(entry_id, notes=item.text())

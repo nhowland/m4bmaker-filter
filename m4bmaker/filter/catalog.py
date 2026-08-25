@@ -50,13 +50,18 @@ class CatalogService:
     # ── categories ────────────────────────────────────────────────────────
 
     def create_category(
-        self, name: str, description: str = "", enabled_by_default: bool = True
+        self,
+        name: str,
+        description: str = "",
+        enabled_by_default: bool = True,
+        mask_all_terms: bool = False,
     ) -> Category:
         category = Category(
             id=_new_id(),
             name=name,
             description=description,
             enabled_by_default=enabled_by_default,
+            mask_all_terms=mask_all_terms,
         )
         self._categories[category.id] = category
         return category
@@ -121,7 +126,11 @@ class CatalogService:
         return None
 
     def create_entry(
-        self, category_id: str, canonical_phrase: str, notes: str = ""
+        self,
+        category_id: str,
+        canonical_phrase: str,
+        notes: str = "",
+        mask: bool = False,
     ) -> tuple[CatalogEntry, CatalogEntry | None]:
         """Create a catalog entry. Returns ``(created_entry, duplicate)``
         where *duplicate* is the pre-existing conflicting entry if one
@@ -141,6 +150,7 @@ class CatalogService:
             category_id=category_id,
             canonical_phrase=canonical_phrase,
             notes=notes,
+            mask=mask,
         )
         self._entries[entry.id] = entry
         return entry, duplicate
@@ -166,6 +176,22 @@ class CatalogService:
 
     def archive_entry(self, entry_id: str) -> CatalogEntry:
         return self.update_entry(entry_id, archived=True)
+
+    def is_masked(self, entry_id: str) -> bool:
+        """Whether *entry_id* should display masked (e.g. review-screen
+        asterisking) rather than in plain text — a fork-specific addition,
+        see ``docs/adr/0011-catalog-masking.md``.
+
+        Composes the category's :attr:`Category.mask_all_terms` and the
+        entry's own :attr:`CatalogEntry.mask` by OR, not override: turning
+        masking on for a whole category masks every entry in it regardless
+        of each entry's own flag, and a User can still mask one specific
+        entry in an otherwise-unmasked category. Neither flag can turn the
+        other off.
+        """
+        entry = self._entries[entry_id]
+        category = self._categories.get(entry.category_id)
+        return bool(category and category.mask_all_terms) or entry.mask
 
     def delete_entry(self, entry_id: str) -> None:
         """Hard-delete if unreferenced by any profile; otherwise soft-archive."""

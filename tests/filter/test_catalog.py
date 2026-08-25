@@ -143,6 +143,59 @@ class TestCatalogEntryCRUD:
         assert service.get_entry(entry.id).archived is True
 
 
+class TestMasking:
+    """mask_all_terms/mask (fork-specific, ADR-0011): review-screen display
+    masking composes by OR, not override — see CatalogService.is_masked."""
+
+    def test_defaults_to_unmasked(self, service: CatalogService) -> None:
+        cat = service.create_category("Profanity")
+        entry, _ = service.create_entry(cat.id, "darn")
+        assert cat.mask_all_terms is False
+        assert entry.mask is False
+        assert service.is_masked(entry.id) is False
+
+    def test_create_category_with_mask_all_terms(self, service: CatalogService) -> None:
+        cat = service.create_category("Slurs", mask_all_terms=True)
+        entry, _ = service.create_entry(cat.id, "slur-example")
+        assert service.is_masked(entry.id) is True
+
+    def test_create_entry_with_mask(self, service: CatalogService) -> None:
+        cat = service.create_category("Profanity")
+        entry, _ = service.create_entry(cat.id, "darn", mask=True)
+        assert cat.mask_all_terms is False
+        assert service.is_masked(entry.id) is True
+
+    def test_category_mask_does_not_require_entry_mask(
+        self, service: CatalogService
+    ) -> None:
+        cat = service.create_category("Slurs", mask_all_terms=True)
+        entry, _ = service.create_entry(cat.id, "slur-example")
+        assert entry.mask is False
+        assert service.is_masked(entry.id) is True
+
+    def test_entry_mask_survives_category_unmasked(
+        self, service: CatalogService
+    ) -> None:
+        cat = service.create_category("Profanity")
+        masked_entry, _ = service.create_entry(cat.id, "sensitive-word", mask=True)
+        plain_entry, _ = service.create_entry(cat.id, "darn")
+        assert service.is_masked(masked_entry.id) is True
+        assert service.is_masked(plain_entry.id) is False
+
+    def test_update_category_mask_all_terms(self, service: CatalogService) -> None:
+        cat = service.create_category("Profanity")
+        entry, _ = service.create_entry(cat.id, "darn")
+        assert service.is_masked(entry.id) is False
+        service.update_category(cat.id, mask_all_terms=True)
+        assert service.is_masked(entry.id) is True
+
+    def test_update_entry_mask(self, service: CatalogService) -> None:
+        cat = service.create_category("Profanity")
+        entry, _ = service.create_entry(cat.id, "darn")
+        service.update_entry(entry.id, mask=True)
+        assert service.is_masked(entry.id) is True
+
+
 class TestFilterProfileCRUD:
     def test_create_with_default_attenuation(self, service: CatalogService) -> None:
         profile = service.create_profile("Family Friendly")
