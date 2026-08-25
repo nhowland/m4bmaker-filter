@@ -17,6 +17,7 @@ from typing import Any
 
 from .models import SchemaValidationError
 from .storage import read_json, write_json_atomic
+from .storage import transcripts_dir as _default_transcripts_dir
 
 
 class TranscriptStatus(Enum):
@@ -242,3 +243,38 @@ def write_transcript(path: Path, transcript: Transcript) -> None:
 def read_transcript(path: Path) -> Transcript:
     """Read and parse a transcript artifact from *path*."""
     return transcript_from_dict(read_json(path))
+
+
+def find_compatible_transcript(
+    fingerprint: str, transcripts_dir: Path | None = None
+) -> Transcript | None:
+    """Return the most recently saved COMPLETE transcript whose source
+    fingerprint matches *fingerprint*, or ``None`` if none exists (PRD
+    §7.2 stage 1: "compatible saved transcript availability").
+
+    Only a :attr:`TranscriptStatus.COMPLETE` transcript counts as
+    compatible — a draft/partial/failed/incompatible one isn't something
+    the wizard can actually reuse (PRD §10.4). A transcript file that
+    fails to parse is skipped rather than raised — one corrupt file in
+    the directory shouldn't block finding a good one.
+    """
+    directory = transcripts_dir or _default_transcripts_dir()
+    if not directory.is_dir():
+        return None
+
+    matches: list[tuple[float, Transcript]] = []
+    for path in directory.glob("*.m4bt.json"):
+        try:
+            transcript = read_transcript(path)
+        except Exception:  # noqa: BLE001 — any parse/shape failure, not just JSON
+            continue
+        if transcript.source.fingerprint != fingerprint:
+            continue
+        if transcript.status != TranscriptStatus.COMPLETE:
+            continue
+        matches.append((path.stat().st_mtime, transcript))
+
+    if not matches:
+        return None
+    matches.sort(key=lambda pair: pair[0], reverse=True)
+    return matches[0][1]

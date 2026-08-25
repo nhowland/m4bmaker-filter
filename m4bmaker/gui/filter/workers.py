@@ -14,6 +14,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QThread, Signal
 
+from m4bmaker.filter.media_inspector import inspect
 from m4bmaker.filter.model_manager import (
     ModelChecksumMismatchError,
     ModelDownloadCancelled,
@@ -21,6 +22,7 @@ from m4bmaker.filter.model_manager import (
     ModelSpec,
     download_model,
 )
+from m4bmaker.utils import find_binary
 
 
 class ModelDownloadWorker(QThread):
@@ -65,3 +67,37 @@ class ModelDownloadWorker(QThread):
         mb_total = total / (1024 * 1024)
         message = f"Downloading {self._spec.name}: {mb_done:.1f} / {mb_total:.1f} MB"
         self.progress.emit(message, fraction)
+
+
+class MediaInspectWorker(QThread):
+    """Run :func:`media_inspector.inspect` (an ffprobe subprocess call)
+    off the UI thread.
+
+    Uses :func:`m4bmaker.utils.find_binary`, not
+    :func:`~m4bmaker.utils.find_ffprobe` — the latter calls ``sys.exit()``
+    on a missing binary, correct for the CLI but not for a background
+    thread inside a running GUI, which needs a recoverable ``error``
+    signal instead (see ``find_binary``'s own docstring).
+    """
+
+    result_ready = Signal(object)  # MediaManifest
+    error = Signal(str)
+
+    def __init__(self, path: Path) -> None:
+        super().__init__()
+        self._path = path
+
+    def run(self) -> None:
+        ffprobe = find_binary("ffprobe")
+        if ffprobe is None:
+            self.error.emit(
+                "ffprobe not found. Install ffmpeg (which bundles ffprobe) "
+                "and make sure it's on your PATH."
+            )
+            return
+        try:
+            manifest = inspect(self._path, ffprobe)
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+            return
+        self.result_ready.emit(manifest)

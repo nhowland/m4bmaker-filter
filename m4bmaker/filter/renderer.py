@@ -70,6 +70,12 @@ _ENVELOPE_CHUNK_FRAMES = 10_000_000
 _FULL_SCALE = 32767
 _PCM_FORMAT = "s16le"
 
+#: Simultaneous raw-PCM scratch stages at peak: source.pcm, envelope.pcm,
+#: and filtered.pcm all exist on disk at once between
+#: apply_gain_envelope() writing filtered.pcm and encode_and_mux()
+#: consuming it (see render() below).
+_PEAK_SIMULTANEOUS_PCM_STAGES = 3
+
 
 class RenderError(Exception):
     """Raised when any render stage fails. The partial/staged output is
@@ -81,6 +87,33 @@ class RenderError(Exception):
 class RenderResult:
     output_path: Path
     duration_ms: int
+
+
+def estimate_storage_bytes(manifest: MediaManifest) -> int:
+    """Estimate total disk space a render of *manifest*'s source needs:
+    the three simultaneous raw-PCM scratch stages at peak (source/
+    envelope/filtered — see this module's docstring) plus the final AAC
+    output, sized from the source's own bit rate since the actual render
+    bitrate isn't chosen until the Render step (PRD §7.2 stage 1's
+    "storage estimate").
+
+    Returns 0 if the selected track's sample rate/channel count is
+    unknown — mirrors :func:`render`'s own guard for that same case,
+    since no estimate can be computed without them.
+    """
+    track = next(
+        (t for t in manifest.tracks if t.index == manifest.selected_track_index), None
+    )
+    if track is None or track.sample_rate is None or track.channels is None:
+        return 0
+
+    duration_s = manifest.duration_ms / 1000
+    pcm_bytes_per_stage = duration_s * track.sample_rate * track.channels * 2
+    total_pcm_bytes = pcm_bytes_per_stage * _PEAK_SIMULTANEOUS_PCM_STAGES
+
+    aac_bytes = duration_s * (track.bit_rate / 8) if track.bit_rate else 0
+
+    return round(total_pcm_bytes + aac_bytes)
 
 
 def _run(cmd: list[str], step: str) -> None:

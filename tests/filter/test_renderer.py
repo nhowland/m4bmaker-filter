@@ -36,6 +36,7 @@ from m4bmaker.filter.renderer import (
     _gain_at,
     apply_gain_envelope,
     encode_and_mux,
+    estimate_storage_bytes,
     extract_primary_audio_pcm,
     generate_envelope_pcm,
     render,
@@ -521,3 +522,84 @@ class TestRender:
             )
         assert fractions[-1] == 1.0
         assert fractions == sorted(fractions)
+
+
+class TestEstimateStorageBytes:
+    def _manifest(
+        self,
+        duration_ms: int = 10_000,
+        sample_rate: int | None = 44_100,
+        channels: int | None = 2,
+        bit_rate: int | None = 128_000,
+    ) -> MediaManifest:
+        return MediaManifest(
+            schema_version=1,
+            source_path="/books/a.m4b",
+            fingerprint="sha256:x",
+            duration_ms=duration_ms,
+            tracks=(
+                AudioTrack(
+                    index=0,
+                    codec_name="aac",
+                    is_default=True,
+                    channels=channels,
+                    sample_rate=sample_rate,
+                    bit_rate=bit_rate,
+                ),
+            ),
+            selected_track_index=0,
+            selected_track_is_fallback=False,
+            chapters=(),
+            required_metadata={},
+            cover_present=False,
+            eligible=True,
+        )
+
+    def test_matches_the_real_13_5_hour_fixture_measurement(self) -> None:
+        # ADR-0007/this module's own docstring: "this book's PCM is ~8.6GB
+        # per intermediate stage" — the real Dungeon Crawler Carl fixture,
+        # 48693.108345s at stereo 44.1kHz. Cross-checking the formula
+        # against that real, previously-measured number rather than only
+        # a synthetic one.
+        manifest = self._manifest(
+            duration_ms=48_693_108, sample_rate=44_100, channels=2, bit_rate=126_000
+        )
+        estimate = estimate_storage_bytes(manifest)
+
+        pcm_per_stage = 48_693.108 * 44_100 * 2 * 2
+        assert pcm_per_stage == pytest.approx(8.59e9, rel=0.01)
+
+        expected = round(pcm_per_stage * 3 + 48_693.108 * (126_000 / 8))
+        assert estimate == pytest.approx(expected, rel=1e-6)
+
+    def test_three_pcm_stages_plus_aac_output(self) -> None:
+        # 10s @ 44.1kHz stereo 16-bit = 1,764,000 bytes/stage * 3 stages
+        # + 10s @ 128kbps AAC = 160,000 bytes.
+        manifest = self._manifest(
+            duration_ms=10_000, sample_rate=44_100, channels=2, bit_rate=128_000
+        )
+        assert estimate_storage_bytes(manifest) == 1_764_000 * 3 + 160_000
+
+    def test_missing_sample_rate_returns_zero(self) -> None:
+        manifest = self._manifest(sample_rate=None)
+        assert estimate_storage_bytes(manifest) == 0
+
+    def test_missing_channels_returns_zero(self) -> None:
+        manifest = self._manifest(channels=None)
+        assert estimate_storage_bytes(manifest) == 0
+
+    def test_missing_selected_track_returns_zero(self) -> None:
+        manifest = replace(self._manifest(), selected_track_index=99)
+        assert estimate_storage_bytes(manifest) == 0
+
+    def test_missing_bit_rate_omits_aac_term_but_still_counts_pcm(self) -> None:
+        manifest = self._manifest(
+            duration_ms=10_000, sample_rate=44_100, channels=2, bit_rate=None
+        )
+        assert estimate_storage_bytes(manifest) == 1_764_000 * 3
+
+    def test_mono_track_estimate(self) -> None:
+        manifest = self._manifest(
+            duration_ms=10_000, sample_rate=44_100, channels=1, bit_rate=64_000
+        )
+        assert estimate_storage_bytes(manifest) == 882_000 * 3 + 80_000

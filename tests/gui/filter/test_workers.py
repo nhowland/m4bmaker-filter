@@ -23,7 +23,8 @@ from m4bmaker.filter.model_manager import (
     ModelDownloadError,
     ModelSpec,
 )
-from m4bmaker.gui.filter.workers import ModelDownloadWorker
+from m4bmaker.filter.models import MediaManifest
+from m4bmaker.gui.filter.workers import MediaInspectWorker, ModelDownloadWorker
 
 _SPEC = ModelSpec(
     name="tiny.en",
@@ -154,3 +155,76 @@ class TestModelDownloadWorker:
 
         assert len(seen_cancel_events) == 1
         assert seen_cancel_events[0].is_set()
+
+
+def _manifest() -> MediaManifest:
+    return MediaManifest(
+        schema_version=1,
+        source_path="/books/a.m4b",
+        fingerprint="sha256:x",
+        duration_ms=10_000,
+        tracks=(),
+        selected_track_index=None,
+        selected_track_is_fallback=False,
+        chapters=(),
+        required_metadata={},
+        cover_present=False,
+        eligible=True,
+    )
+
+
+class TestMediaInspectWorker:
+    def test_success_emits_manifest(self, qapp: QApplication, tmp_path: Path) -> None:
+        manifest = _manifest()
+        results: list[MediaManifest] = []
+
+        with (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                return_value="/usr/bin/ffprobe",
+            ),
+            patch("m4bmaker.gui.filter.workers.inspect", return_value=manifest),
+        ):
+            worker = MediaInspectWorker(tmp_path / "book.m4b")
+            worker.result_ready.connect(results.append)
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert results == [manifest]
+
+    def test_missing_ffprobe_emits_recoverable_error_not_sys_exit(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        errors: list[str] = []
+        with patch("m4bmaker.gui.filter.workers.find_binary", return_value=None):
+            worker = MediaInspectWorker(tmp_path / "book.m4b")
+            worker.error.connect(errors.append)
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert len(errors) == 1
+        assert "ffprobe" in errors[0]
+
+    def test_unexpected_exception_emits_error(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        errors: list[str] = []
+        with (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                return_value="/usr/bin/ffprobe",
+            ),
+            patch(
+                "m4bmaker.gui.filter.workers.inspect",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            worker = MediaInspectWorker(tmp_path / "book.m4b")
+            worker.error.connect(errors.append)
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert errors == ["boom"]

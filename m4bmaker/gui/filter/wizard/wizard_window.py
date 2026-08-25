@@ -33,14 +33,14 @@ from PySide6.QtWidgets import (
 
 from .placeholder_step import PlaceholderStep
 from .review_step import ReviewStep
+from .source_step import SourceStep
 from .step_base import WizardStep
 from .stepper import STEP_LABELS, StepperWidget
 
+_SOURCE_INDEX = STEP_LABELS.index("Source")
 _REVIEW_INDEX = STEP_LABELS.index("Review")
 
 _PLACEHOLDER_SUBTITLES: dict[int, str] = {
-    0: "Inspect eligibility, selected audio track, duration, chapters, "
-    "and storage estimate.",
     1: "Reuse a compatible saved transcript, or set up local transcription.",
     2: "Durable and resumable — progress persists across app restarts, "
     "picking up chapter by chapter.",
@@ -116,7 +116,9 @@ class WizardWindow(QMainWindow):
         steps: list[WizardStep] = []
         for i, label in enumerate(STEP_LABELS):
             step: WizardStep
-            if i == _REVIEW_INDEX:
+            if i == _SOURCE_INDEX:
+                step = SourceStep()
+            elif i == _REVIEW_INDEX:
                 step = ReviewStep()
             else:
                 step = PlaceholderStep(label, _PLACEHOLDER_SUBTITLES.get(i, ""))
@@ -138,6 +140,14 @@ class WizardWindow(QMainWindow):
             self._render()
 
     def _on_continue(self) -> None:
+        # Defensive, not just cosmetic: the Continue button's disabled
+        # state is the primary gate, but this guards the actual
+        # transition too, in case something besides that button's own
+        # click signal ever calls this (a shortcut, a future automated
+        # "run wizard end-to-end" caller, etc.) — the step's own
+        # can_advance() stays the single source of truth either way.
+        if not self._steps[self._active].can_advance():
+            return
         if self._active < len(self._steps) - 1:
             self._active += 1
             self._furthest = max(self._furthest, self._active)

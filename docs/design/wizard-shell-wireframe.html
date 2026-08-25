@@ -695,7 +695,7 @@
     {
       id: "source", label: "Source", eyebrow: "Step 1 · Select source",
       title: "Select Source",
-      sub: "Inspect eligibility, selected audio track, duration, chapters, and storage estimate before anything else runs.",
+      sub: "Inspect eligibility, selected audio track, duration, chapters, required metadata, storage estimate, and compatible saved transcript availability — every field here is a real MediaManifest field (media_inspector.py), not invented for the mockup.",
       body: `
         <div class="sketch">
           <p class="sketch-label">source</p>
@@ -705,14 +705,23 @@
           </div>
         </div>
         <div class="sketch">
-          <p class="sketch-label">eligibility</p>
+          <p class="sketch-label">scenario A — eligible <span class="chip ok">✓ eligible</span></p>
           <dl class="kv">
             <dt>Audio track</dt><dd>Stereo AAC-LC · 44.1&nbsp;kHz · ~126&nbsp;kbps (track 0 of 1)</dd>
             <dt>Duration</dt><dd>13h 31m 33s</dd>
             <dt>Chapters</dt><dd>50</dd>
-            <dt>Est. storage needed</dt><dd>~9.1 GB scratch space (PCM stages)</dd>
-            <dt>DRM check</dt><dd><span class="chip ok">verified not protected</span></dd>
+            <dt>Metadata</dt><dd>Title, Author, Narrator, Genre present</dd>
+            <dt>Cover art</dt><dd>Present</dd>
+            <dt>Est. storage needed</dt><dd>~9.1 GB scratch space (PCM stages) — heuristic, not yet decided</dd>
+            <dt>Saved transcript</dt><dd>None found for this source</dd>
           </dl>
+        </div>
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">scenario B — not eligible <span class="chip warn">✗ not eligible</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 8px;">Continue stays disabled until an eligible source is selected. Every reason is surfaced, not just the first one found:</p>
+          <ul style="margin:0;padding-left:18px;font-size:.85rem;color:var(--prose);">
+            <li>Primary audio track is MP3 — v1 only supports AAC M4B sources</li>
+          </ul>
         </div>`
     },
     {
@@ -1321,6 +1330,10 @@
     {
       tag: "Masking",
       html: "<strong>Masking is a real Catalog setting, not hardcoded.</strong> A User marks a whole category or one specific word as masked in the Word Catalog window (ADR-0011) — this demo's data mirrors that: the Slurs category is category-masked, and one Profanity word (“darn” on Hit h13) carries its own per-word mask despite its category being plain. The two compose by OR, same as <code>CatalogService.is_masked()</code>."
+    },
+    {
+      tag: "Source",
+      html: "<strong>Every field is real, two are still open.</strong> Source's eligibility panel mirrors <code>MediaManifest</code> (media_inspector.py) exactly — audio track, duration, chapters, metadata, cover art. Two fields shown here don't have a real implementation behind them yet: the storage-estimate heuristic (what exactly gets summed — PCM stages only, or also the final AAC output?) and the compatible-saved-transcript lookup (matching on <code>MediaManifest.fingerprint</code> against <code>storage.transcripts_dir()</code>, which exists as a directory but has no lookup function yet). Flagged rather than guessed at."
     }
   ];
 

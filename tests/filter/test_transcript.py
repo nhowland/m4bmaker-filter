@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -15,6 +18,7 @@ from m4bmaker.filter.transcript import (
     TranscriptSource,
     TranscriptStatus,
     TranscriptWord,
+    find_compatible_transcript,
     read_transcript,
     shift_segment,
     transcript_from_dict,
@@ -207,3 +211,75 @@ class TestStatusEnums:
 
     def test_segment_status_values(self) -> None:
         assert {s.value for s in SegmentStatus} == {"pending", "completed", "failed"}
+
+
+class TestFindCompatibleTranscript:
+    def test_finds_matching_complete_transcript(self, tmp_path: Path) -> None:
+        t = _sample_transcript()
+        write_transcript(tmp_path / "book.m4bt.json", t)
+
+        found = find_compatible_transcript("sha256:abc", transcripts_dir=tmp_path)
+        assert found == t
+
+    def test_no_match_returns_none(self, tmp_path: Path) -> None:
+        write_transcript(tmp_path / "book.m4bt.json", _sample_transcript())
+        assert (
+            find_compatible_transcript("sha256:different", transcripts_dir=tmp_path)
+            is None
+        )
+
+    def test_missing_directory_returns_none(self, tmp_path: Path) -> None:
+        missing = tmp_path / "does-not-exist"
+        assert find_compatible_transcript("sha256:abc", transcripts_dir=missing) is None
+
+    def test_draft_transcript_is_not_compatible(self, tmp_path: Path) -> None:
+        draft = replace(_sample_transcript(), status=TranscriptStatus.DRAFT)
+        write_transcript(tmp_path / "book.m4bt.json", draft)
+
+        assert (
+            find_compatible_transcript("sha256:abc", transcripts_dir=tmp_path) is None
+        )
+
+    def test_failed_transcript_is_not_compatible(self, tmp_path: Path) -> None:
+        failed = replace(_sample_transcript(), status=TranscriptStatus.FAILED)
+        write_transcript(tmp_path / "book.m4bt.json", failed)
+
+        assert (
+            find_compatible_transcript("sha256:abc", transcripts_dir=tmp_path) is None
+        )
+
+    def test_picks_most_recently_saved_when_multiple_match(
+        self, tmp_path: Path
+    ) -> None:
+        older = replace(
+            _sample_transcript(),
+            engine=replace(_sample_transcript().engine, model="base.en"),
+        )
+        newer = replace(
+            _sample_transcript(),
+            engine=replace(_sample_transcript().engine, model="small.en"),
+        )
+        write_transcript(tmp_path / "a.m4bt.json", older)
+        write_transcript(tmp_path / "b.m4bt.json", newer)
+        # Force an unambiguous mtime ordering rather than relying on
+        # write order alone (filesystem timestamp resolution varies).
+        now = time.time()
+        os.utime(tmp_path / "a.m4bt.json", (now - 10, now - 10))
+        os.utime(tmp_path / "b.m4bt.json", (now, now))
+
+        found = find_compatible_transcript("sha256:abc", transcripts_dir=tmp_path)
+        assert found is not None
+        assert found.engine.model == "small.en"
+
+    def test_corrupted_file_is_skipped_not_raised(self, tmp_path: Path) -> None:
+        (tmp_path / "corrupt.m4bt.json").write_text("{not valid json", encoding="utf-8")
+        write_transcript(tmp_path / "good.m4bt.json", _sample_transcript())
+
+        found = find_compatible_transcript("sha256:abc", transcripts_dir=tmp_path)
+        assert found == _sample_transcript()
+
+    def test_non_transcript_json_files_are_ignored(self, tmp_path: Path) -> None:
+        (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")
+        assert (
+            find_compatible_transcript("sha256:abc", transcripts_dir=tmp_path) is None
+        )

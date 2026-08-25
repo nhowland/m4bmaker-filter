@@ -38,7 +38,9 @@ unchanged, and is intentionally left untouched to keep future
      entry-level, OR-composed), decided directly by the product owner
      and shipped; `0012` — the wizard shell and Review step's real
      PySide6 implementation, porting ADR-0010/0011's approved wireframe
-     design to working, tested, visually-verified code.
+     design to working, tested, visually-verified code; `0013` — the
+     Source step's real implementation, plus the storage-estimate and
+     compatible-transcript-lookup backend functions it needed.
 3. **`docs/TESTING.md`** — test conventions specific to the new code.
 
 ## Status
@@ -483,3 +485,65 @@ app yet (verified directly via the widget's own tests instead); a more
 prominent wizard entry point than a Tools-menu item, given it's the
 fork's central feature rather than a supporting tool like Catalog/Model
 Manager.
+
+## G5: Source step — real PySide6 code (2026-08-25)
+
+The Source step (PRD §7.2 stage 1) moves from placeholder to real,
+working code — the wizard's second fully-built step after Review. Full
+rationale in
+[docs/adr/0013-source-step-implementation.md](adr/0013-source-step-implementation.md).
+
+Two new backend functions it needed:
+- `renderer.estimate_storage_bytes(manifest)` — sums the three raw-PCM
+  scratch stages that exist on disk simultaneously at `render()`'s peak
+  (source/envelope/filtered) plus the final AAC output sized from the
+  source's own bit rate, since the actual render bitrate isn't chosen
+  until the not-yet-built Render step. Cross-checked against ADR-0007's
+  real 13.5-hour production fixture (~8.6GB/stage, ~26GB total).
+- `transcript.find_compatible_transcript(fingerprint, transcripts_dir=None)`
+  — scans saved transcripts for a fingerprint match, requiring
+  `TranscriptStatus.COMPLETE` (PRD §10.4 — a draft/partial/failed
+  transcript isn't something the wizard can hand off to Scan) and
+  returning the most-recently-saved match when more than one qualifies.
+
+New `SourceStep` (`gui/filter/wizard/source_step.py`): a single-file
+`.m4b` picker (drag-and-drop plus a native macOS file panel, scoped
+down from `gui/widgets.py`'s `FolderDropZone` pattern) feeding a new
+`MediaInspectWorker(QThread)` that runs `media_inspector.inspect()`
+(an `ffprobe` call) off the UI thread — using `utils.find_binary()`,
+not `utils.find_ffprobe()`, since the latter's `sys.exit()` on a
+missing binary would be fatal to the whole app from a background
+thread. The result renders as either an eligible panel (every real
+`MediaManifest` field — audio track, duration, chapters, metadata,
+cover art, storage estimate, saved-transcript status) or an ineligible
+panel listing **every** failure reason at once, not just the first.
+
+Caught and fixed a real gap in `WizardWindow._on_continue()`: it only
+ever checked the Continue button's own `enabled` state, never
+`step.can_advance()` directly — invisible until Source became the
+first step that can genuinely block advancement. Now defended directly
+in `_on_continue()` itself.
+
+38 new tests, all against real backend objects (real `MediaManifest`/
+`Transcript` instances, not display-only fakes), `black`/`flake8`/
+`mypy` clean. One test-safety bug caught only by running the new tests:
+several tests were unknowingly starting a real background
+`MediaInspectWorker` thread against a nonexistent file, which could
+race a test's own manual result-delivery call — fixed by patching the
+worker class at the point of selection, the same pattern
+`test_workers.py` already used for worker classes generally.
+
+**Visually verified against the live app with real `ffprobe` inspection,
+not mocked**: synthesized a real AAC-in-M4B file with `ffmpeg` (stereo,
+two chapters, cover art, title/artist metadata) and selected it via the
+native Browse panel — every field rendered correctly and Continue
+enabled. Synthesized a second file with an MP3 stream in a mismatched
+container and confirmed the ineligible panel listed both simultaneous
+failure reasons at once, with Continue staying disabled.
+
+Full suite: **1509 passing, 2 correctly skipped**, project-wide.
+
+Not yet decided: how Source's manifest will eventually feed the
+not-yet-built Transcript step (nothing consumes it yet — each wizard
+step still holds its own state independently); Transcript's own real
+design, which hasn't had a wireframe pass.

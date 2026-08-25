@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import pytest
 
+from m4bmaker.filter.models import MediaManifest
 from m4bmaker.gui.filter.wizard.placeholder_step import PlaceholderStep
 from m4bmaker.gui.filter.wizard.review_step import ReviewStep
+from m4bmaker.gui.filter.wizard.source_step import SourceStep
 from m4bmaker.gui.filter.wizard.stepper import STEP_LABELS
 from m4bmaker.gui.filter.wizard.wizard_window import WizardWindow
 
@@ -19,6 +21,32 @@ def win() -> WizardWindow:
     return WizardWindow()
 
 
+def _make_source_eligible(win: WizardWindow) -> None:
+    """Advance Source past its own gate by injecting an eligible manifest
+    directly. These navigation tests exercise the shell's own mechanics
+    (advancing/back/stepper sync) — SourceStep's own gating logic has its
+    own dedicated tests in test_source_step.py — so this deliberately
+    bypasses the real file-picker/inspection flow rather than duplicating
+    that coverage here.
+    """
+    source = win._steps[STEP_LABELS.index("Source")]
+    assert isinstance(source, SourceStep)
+    manifest = MediaManifest(
+        schema_version=1,
+        source_path="/books/a.m4b",
+        fingerprint="sha256:x",
+        duration_ms=10_000,
+        tracks=(),
+        selected_track_index=None,
+        selected_track_is_fallback=False,
+        chapters=(),
+        required_metadata={},
+        cover_present=False,
+        eligible=True,
+    )
+    source._on_inspect_finished(manifest)
+
+
 class TestConstruction:
     def test_window_creates_without_error(self, win: WizardWindow) -> None:
         assert win is not None
@@ -26,19 +54,23 @@ class TestConstruction:
     def test_has_one_step_widget_per_label(self, win: WizardWindow) -> None:
         assert len(win._steps) == len(STEP_LABELS)
 
+    def test_source_step_is_the_real_widget(self, win: WizardWindow) -> None:
+        source_index = STEP_LABELS.index("Source")
+        assert isinstance(win._steps[source_index], SourceStep)
+
     def test_review_step_is_the_real_widget(self, win: WizardWindow) -> None:
         review_index = STEP_LABELS.index("Review")
         assert isinstance(win._steps[review_index], ReviewStep)
 
     def test_every_other_step_is_a_placeholder(self, win: WizardWindow) -> None:
-        review_index = STEP_LABELS.index("Review")
+        real_indices = {STEP_LABELS.index("Source"), STEP_LABELS.index("Review")}
         for i, step in enumerate(win._steps):
-            if i != review_index:
+            if i not in real_indices:
                 assert isinstance(step, PlaceholderStep)
 
     def test_starts_on_first_step(self, win: WizardWindow) -> None:
         assert win._active == 0
-        assert win._title_label.text() == "Source"
+        assert win._title_label.text() == "Select Source"
         assert win._back_btn.isEnabled() is False
 
     def test_apply_stylesheet_does_not_raise(self, win: WizardWindow) -> None:
@@ -48,16 +80,19 @@ class TestConstruction:
 
 class TestNavigation:
     def test_continue_advances_one_step(self, win: WizardWindow) -> None:
+        _make_source_eligible(win)
         win._on_continue()
         assert win._active == 1
         assert win._title_label.text() == "Transcript"
 
     def test_continue_tracks_furthest_reached(self, win: WizardWindow) -> None:
+        _make_source_eligible(win)
         win._on_continue()
         win._on_continue()
         assert win._furthest == 2
 
     def test_continue_stops_at_last_step(self, win: WizardWindow) -> None:
+        _make_source_eligible(win)
         for _ in range(len(STEP_LABELS) + 2):
             win._on_continue()
         assert win._active == len(STEP_LABELS) - 1
@@ -68,6 +103,7 @@ class TestNavigation:
         assert win._active == 0
 
     def test_back_returns_one_step(self, win: WizardWindow) -> None:
+        _make_source_eligible(win)
         win._on_continue()
         win._on_continue()
         win._on_back()
@@ -78,6 +114,7 @@ class TestNavigation:
         assert win._active == 0
 
     def test_stepper_click_within_furthest_navigates(self, win: WizardWindow) -> None:
+        _make_source_eligible(win)
         win._on_continue()
         win._on_continue()
         win._go_to_step(0)
@@ -86,6 +123,7 @@ class TestNavigation:
         assert win._active == 2
 
     def test_stepper_reflects_current_progress(self, win: WizardWindow) -> None:
+        _make_source_eligible(win)
         win._on_continue()
         assert win._stepper._cells[0]._badge.property("stepState") == "done"
         assert win._stepper._cells[1]._badge.property("stepState") == "current"
@@ -95,9 +133,11 @@ class TestNavButtonsFollowStepCanAdvance:
     def test_continue_disabled_when_step_cannot_advance(
         self, win: WizardWindow
     ) -> None:
+        _make_source_eligible(win)
         review_index = STEP_LABELS.index("Review")
         for _ in range(review_index):
             win._on_continue()
+        assert win._active == review_index
         review = win._steps[review_index]
         assert isinstance(review, ReviewStep)
 
