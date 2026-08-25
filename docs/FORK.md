@@ -25,6 +25,11 @@ unchanged, and is intentionally left untouched to keep future
      eventual decision well-evidenced, not to make it unilaterally.
    - `0004` (O-08) — the module layout decision this fork's code already
      follows (`m4bmaker/filter/`, additive-only).
+   - `0005` — Job Orchestrator SQLite/JSON persistence split; `0006` —
+     gain-envelope mechanism; `0007` — Renderer/Validator, proven against
+     a real 13.5-hour audiobook; `0008` — G5 catalog persistence (JSON,
+     not SQLite), UI structure (new window), and start-screen sequencing,
+     decided directly by the product owner.
 3. **`docs/TESTING.md`** — test conventions specific to the new code.
 
 ## Status
@@ -216,3 +221,52 @@ multi-instance database locking (ADR-0005's flagged gap); real
 throughput/memory benchmarking on named reference hardware (PRD §13.1,
 deliberately deferred); anything G6-only (human listening review,
 accessibility, security review, packaging/signing).
+
+## G5: Catalog persistence and first screen (2026-08-25)
+
+Four decisions the product owner made directly before any G5 code was
+written — recorded in full in
+[docs/adr/0008-catalog-ui-and-persistence.md](adr/0008-catalog-ui-and-persistence.md):
+catalog data persists as a JSON file (`catalog_store.py`, matching
+`gui/prefs.py`'s pattern — not SQLite, which stays scoped to job/chunk
+state per ADR-0005); the new UI lives in a separate window launched from
+`MainWindow`, not embedded in its existing layout; the first screen
+built is catalog management, since both the Model Manager and the
+transcribe/scan/review/render wizard assume a non-empty catalog already
+exists; and wireframing is deferred to the wizard shell and scan-review
+screen specifically, not applied to this conventional CRUD screen.
+
+Built:
+- `catalog.py`: `export_all()`/`from_records()` bulk accessors, keeping
+  `CatalogService` itself storage-agnostic — all 24 pre-existing tests
+  still pass unchanged.
+- `catalog_store.py` (new): JSON round-trip of
+  categories/entries/profiles/attenuation/archived items/revisions;
+  returns a fresh empty service (never raises) on a missing or corrupted
+  file. 12 tests.
+- `m4bmaker/gui/filter/catalog_window.py` (new subpackage): `CatalogWindow`,
+  a two-pane category/word CRUD screen, persisting on every mutation
+  (no separate Save button). Archive-vs-hard-delete needs no UI branching
+  — the service already decides internally. Wired into `MainWindow` via a
+  new "Tools" menu, following `QueueWindow`'s exact lazy-create/
+  `apply_stylesheet`/`closeEvent` pattern. Confirmed via `git stash`
+  comparison to introduce zero new lint/type issues in `window.py` beyond
+  its pre-existing debt.
+
+**A disclosed limitation:** this sandboxed environment cannot grant the
+macOS Screen Recording or Accessibility permissions needed to screenshot
+or drive the live desktop app — both `screencapture` and AppleScript/
+System Events automation were attempted and both failed. Unlike the web
+and iOS surfaces used elsewhere in this project, the live `CatalogWindow`
+could not be visually self-verified. The substitute:
+`tests/gui/filter/test_catalog_window.py` builds the real widget tree
+under `QT_QPA_PLATFORM=offscreen` and drives it exactly as a User would
+(selecting rows, checking boxes, editing cells, clicking buttons),
+asserting on both resulting widget state and the underlying
+`CatalogService` — 20 tests, `black`/`flake8`/`mypy` clean.
+
+Full suite: **1367 passing, 2 correctly skipped**, project-wide.
+
+Not yet built: Model Manager UI; the transcribe/scan/review/render
+wizard (wireframes planned first, per the decision above); first-run/
+error-state polish.

@@ -246,3 +246,45 @@ class CatalogService:
             attenuation=profile.attenuation,
             created_at=_now(),
         )
+
+    # ── bulk export/import (for an external persistence layer) ─────────────
+
+    def export_all(
+        self,
+    ) -> tuple[list[Category], list[CatalogEntry], list[FilterProfile]]:
+        """Return every category/entry/profile, including archived ones, as
+        plain lists for an external persistence layer to serialize.
+
+        This is a bulk *read* only — it performs no I/O itself, keeping
+        this service storage-agnostic as documented at the top of this
+        file. See ``catalog_store.py`` for the concrete JSON repository
+        that actually writes this to disk.
+        """
+        return (
+            list(self._categories.values()),
+            list(self._entries.values()),
+            list(self._profiles.values()),
+        )
+
+    @classmethod
+    def from_records(
+        cls,
+        categories: list[Category],
+        entries: list[CatalogEntry],
+        profiles: list[FilterProfile],
+    ) -> "CatalogService":
+        """Reconstruct a service from previously-exported records (e.g.
+        loaded from JSON by ``catalog_store.py``).
+
+        Bypasses ``create_category``/``create_entry``/``create_profile``'s
+        creation-time side effects (new-UUID assignment, duplicate-phrase
+        detection) since these records already have real IDs and were
+        already validated once when first created — re-running duplicate
+        detection here would incorrectly flag every entry against its own
+        already-saved siblings.
+        """
+        service = cls()
+        service._categories = {c.id: c for c in categories}
+        service._entries = {e.id: e for e in entries}
+        service._profiles = {p.id: p for p in profiles}
+        return service
