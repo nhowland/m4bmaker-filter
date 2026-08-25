@@ -1,0 +1,878 @@
+<title>Filter Wizard Shell</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --paper: #faf9f6;
+    --panel: #f1efe9;
+    --ink: #262a2e;
+    --prose: #4b5157;
+    --muted: #7d8790;
+    --line: #cfd4d9;
+    --line-strong: #a9b0b6;
+    --accent: #c15a35;
+    --accent-rgb: 193, 90, 53;
+    --accent-ink: #fdf6f2;
+    --success: #4f7a5c;
+    --success-bg: #e9f1eb;
+    --locked: #b7bcc1;
+    --locked-bg: #eceeef;
+    --shadow: 0 1px 2px rgba(38, 42, 46, 0.06), 0 8px 24px rgba(38, 42, 46, 0.08);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #1c1e21;
+      --panel: #232629;
+      --ink: #e3e2de;
+      --prose: #b7bbc0;
+      --muted: #868c92;
+      --line: #34383c;
+      --line-strong: #454a4f;
+      --accent: #d97a51;
+      --accent-rgb: 217, 122, 81;
+      --accent-ink: #241209;
+      --success: #7cb389;
+      --success-bg: #1e2a22;
+      --locked: #5a5f64;
+      --locked-bg: #26292c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 12px 28px rgba(0, 0, 0, 0.4);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #1c1e21;
+    --panel: #232629;
+    --ink: #e3e2de;
+    --prose: #b7bbc0;
+    --muted: #868c92;
+    --line: #34383c;
+    --line-strong: #454a4f;
+    --accent: #d97a51;
+    --accent-ink: #241209;
+    --success: #7cb389;
+    --success-bg: #1e2a22;
+    --locked: #5a5f64;
+    --locked-bg: #26292c;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 12px 28px rgba(0, 0, 0, 0.4);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+    padding: clamp(20px, 4vw, 56px);
+  }
+
+  .page {
+    max-width: 1180px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  .masthead {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .masthead h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .masthead .kicker {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 4px;
+  }
+
+  .masthead .note {
+    font-size: 0.85rem;
+    color: var(--muted);
+    max-width: 46ch;
+  }
+
+  /* ── device frame ─────────────────────────────────────────────────── */
+
+  .frame {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .frame-titlebar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--paper);
+  }
+
+  .dots { display: flex; gap: 6px; }
+  .dots span {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--line-strong); opacity: 0.5;
+  }
+
+  .frame-titlebar .title {
+    flex: 1;
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--prose);
+    font-weight: 500;
+  }
+
+  .frame-titlebar .step-tag {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+  }
+
+  .frame-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 480px; /* floor before JS measures the tallest step and sets the real value */
+  }
+
+  /* ── step rail: horizontal stepper ───────────────────────────────── */
+
+  .rail {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    border-bottom: 1px solid var(--line);
+    background: var(--paper);
+    padding: 18px 20px 14px;
+  }
+
+  .rail-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    height: 62px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font: inherit;
+    color: var(--prose);
+    padding: 0;
+  }
+
+  /* circle + connecting line share one row; the line is two flexed
+     segments either side of the circle so neighboring cells' segments
+     meet exactly at the shared cell boundary and read as one line */
+  .node {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 28px;
+    flex-shrink: 0;
+  }
+
+  .node .line { flex: 1; height: 2px; background: var(--line); }
+  .rail-item:first-child .node .line-before { background: transparent; }
+  .rail-item:last-child .node .line-after { background: transparent; }
+
+  .node .num {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    display: grid; place-items: center;
+    border: 2px solid var(--line-strong);
+    background: var(--paper);
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+
+  .rail-item .label {
+    font-size: 0.74rem;
+    line-height: 1.2;
+    text-align: center;
+    white-space: nowrap;
+    padding: 0 4px;
+  }
+
+  .rail-item:hover:not(.locked):not(.current) .num { border-color: var(--muted); }
+  .rail-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+
+  /* done: filled green circle with a check; the line to its next
+     neighbor fills too — colored from both sides so the two flexed
+     half-segments meet without a visible seam at the cell boundary */
+  .rail-item.done .num { background: var(--success); border-color: var(--success); color: var(--accent-ink); }
+  .rail-item.done .node .line-after { background: var(--success); }
+  .rail-item.done + .rail-item .node .line-before { background: var(--success); }
+  .rail-item.done .label { color: var(--ink); }
+
+  /* current: the only bolded step — everything else stays quiet */
+  .rail-item.current .num { border-color: var(--accent); color: var(--accent); border-width: 3px; }
+  .rail-item.current .label { color: var(--accent); font-weight: 700; }
+
+  /* upcoming/locked: shaded gray, not interactive */
+  .rail-item.locked { cursor: not-allowed; }
+  .rail-item.locked .num { color: var(--locked); border-color: var(--locked-bg); background: var(--locked-bg); }
+  .rail-item.locked .label { color: var(--locked); }
+
+  /* ── content pane ─────────────────────────────────────────────────── */
+
+  .pane {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pane-scroll {
+    flex: 1;
+    padding: 26px 30px 10px;
+    overflow-y: auto;
+  }
+
+  .step-eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 4px;
+  }
+
+  .step-title {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+
+  .step-sub {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin: 0 0 20px;
+    max-width: 60ch;
+  }
+
+  /* schematic building blocks — deliberately low-fidelity */
+
+  .sketch {
+    border: 1px dashed var(--line-strong);
+    border-radius: 8px;
+    padding: 16px 18px;
+    background: var(--paper);
+  }
+
+  .sketch + .sketch { margin-top: 12px; }
+
+  .sketch-label {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .row + .row { margin-top: 10px; }
+  .grow { flex: 1; }
+
+  .field {
+    border: 1px solid var(--line-strong);
+    border-radius: 5px;
+    padding: 8px 10px;
+    font-size: 0.82rem;
+    color: var(--prose);
+    background: var(--panel);
+  }
+
+  .drop {
+    border: 1.5px dashed var(--line-strong);
+    border-radius: 8px;
+    padding: 26px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 5px 16px; font-size: 0.82rem; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; color: var(--prose); font-variant-numeric: tabular-nums; }
+
+  .btn {
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 600;
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--line-strong);
+    background: var(--panel);
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.link { border: none; background: none; color: var(--accent); padding: 8px 2px; text-decoration: underline; text-underline-offset: 2px; }
+  .btn.ghost { border-style: dashed; color: var(--prose); }
+
+  .chip {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.03em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .chip.warn { border-color: var(--accent); color: var(--accent); }
+  .chip.ok { border-color: var(--success); color: var(--success); background: var(--success-bg); }
+
+  .progress {
+    height: 8px;
+    border-radius: 999px;
+    background: var(--locked-bg);
+    overflow: hidden;
+    border: 1px solid var(--line);
+  }
+  .progress > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+
+  .disclosure summary {
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--accent);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .disclosure summary::-webkit-details-marker { display: none; }
+  .disclosure summary::before { content: "▸"; font-size: 0.7em; transition: transform .15s; }
+  .disclosure[open] summary::before { transform: rotate(90deg); }
+  .disclosure .disclosure-body { padding: 10px 2px 2px 16px; font-size: 0.8rem; color: var(--prose); }
+
+  table.hits { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  table.hits th { text-align: left; color: var(--muted); font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 8px 8px; border-bottom: 1px solid var(--line); }
+  table.hits td { padding: 8px; border-bottom: 1px solid var(--line); color: var(--prose); vertical-align: top; }
+  table.hits td.mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; color: var(--muted); }
+
+  /* ── footer nav ───────────────────────────────────────────────────── */
+
+  .nav {
+    border-top: 1px solid var(--line);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: var(--paper);
+  }
+
+  .nav .hint {
+    flex: 1;
+    font-size: 0.76rem;
+    color: var(--muted);
+  }
+
+  /* ── design notes: single-column, topic-tagged (not numbered — these
+     describe shell behavior, not the steps, and numbering them read as
+     if they mapped to the 8 numbered steps above) ─────────────────── */
+
+  .notes-heading {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+
+  .notes {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .note-row {
+    display: grid;
+    grid-template-columns: 152px 1fr;
+    gap: 18px;
+    padding: 14px 18px;
+    align-items: baseline;
+  }
+
+  .note-row + .note-row { border-top: 1px solid var(--line); }
+
+  .note-tag {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+
+  .note-row p {
+    margin: 0;
+    font-size: 0.83rem;
+    color: var(--prose);
+    line-height: 1.55;
+  }
+
+  .note-row p strong { color: var(--ink); }
+
+  code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.9em;
+    background: var(--locked-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  @media (max-width: 640px) {
+    .note-row { grid-template-columns: 1fr; gap: 4px; }
+  }
+
+  footer.colophon {
+    font-size: 0.75rem;
+    color: var(--muted);
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+
+  @media (max-width: 640px) {
+    .rail { padding: 14px 10px 10px; }
+    .rail-item .label { font-size: 0.62rem; }
+  }
+</style>
+
+<div class="page">
+
+  <div class="masthead">
+    <div>
+      <p class="kicker">m4bmaker-filter · G5 wireframe</p>
+      <h1>Filter Wizard Shell</h1>
+      <p class="note">Structural review only — step content below is schematic, not final screen design. Click a rail item, or Back / Next, to preview how the shell behaves at each of the eight PRD §7.2 stages.</p>
+    </div>
+  </div>
+
+  <div class="frame">
+    <div class="frame-titlebar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <div class="title">Filter Audiobook — Dungeon Crawler Carl</div>
+      <div class="step-tag" id="stepTag">STEP 1 / 8</div>
+    </div>
+
+    <div class="frame-body">
+      <nav class="rail" id="rail" aria-label="Wizard steps"></nav>
+
+      <div class="pane">
+        <div class="pane-scroll" id="paneScroll"></div>
+        <div class="nav">
+          <button class="btn" id="backBtn">Back</button>
+          <span class="hint" id="navHint"></span>
+          <button class="btn primary" id="nextBtn">Continue</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <p class="notes-heading">Shell design notes</p>
+    <div class="notes" id="notes"></div>
+  </div>
+
+  <footer class="colophon">
+    Palette and type are wireframe-only (IBM Plex Sans / Mono, blueprint neutrals) — deliberately distinct from the shipped app's own light/dark stylesheet (<code>gui/styles.py</code>) so this reads as a structural draft, not a finished screen. Source file and figures throughout (Dungeon Crawler Carl, 13h 31m, 50 chapters) are the real fixture this fork has been tested against since G4, not placeholder text.
+  </footer>
+
+</div>
+
+<script>
+  const steps = [
+    {
+      id: "source", label: "Source", eyebrow: "Step 1 · Select source",
+      title: "Select Source",
+      sub: "Inspect eligibility, selected audio track, duration, chapters, and storage estimate before anything else runs.",
+      body: `
+        <div class="sketch">
+          <p class="sketch-label">source</p>
+          <div class="row">
+            <div class="field grow">📁 Dungeon Crawler Carl_ A LitRPG⁄Gamelit Adventure.m4b</div>
+            <button class="btn ghost">Browse…</button>
+          </div>
+        </div>
+        <div class="sketch">
+          <p class="sketch-label">eligibility</p>
+          <dl class="kv">
+            <dt>Audio track</dt><dd>Stereo AAC-LC · 44.1&nbsp;kHz · ~126&nbsp;kbps (track 0 of 1)</dd>
+            <dt>Duration</dt><dd>13h 31m 33s</dd>
+            <dt>Chapters</dt><dd>50</dd>
+            <dt>Est. storage needed</dt><dd>~9.1 GB scratch space (PCM stages)</dd>
+            <dt>DRM check</dt><dd><span class="chip ok">verified not protected</span></dd>
+          </dl>
+        </div>`
+    },
+    {
+      id: "transcript", label: "Transcript", eyebrow: "Step 2 · Choose transcript path",
+      title: "Choose Transcript Path",
+      sub: "Reuse a compatible saved transcript, or set up local transcription. First-run empty states (PRD §7.3) render inline here, not as separate error screens.",
+      body: `
+        <div class="sketch">
+          <p class="sketch-label">scenario A — compatible transcript found</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">A saved transcript matches this source exactly (same fingerprint, engine, and model). Reusing it skips Transcribe entirely — there is nothing left to run.</p>
+          <div class="row">
+            <span class="chip ok">whisper.cpp 1.9.2 · base.en · 13h 31m</span>
+          </div>
+          <div class="row" style="margin-top:12px;">
+            <button class="btn primary" id="useExistingBtn">Use existing →</button>
+            <button class="btn ghost" id="reTranscribeBtn">Re-transcribe anyway</button>
+          </div>
+        </div>
+        <div class="sketch">
+          <p class="sketch-label">scenario B — empty state, no saved transcript</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">No compatible <code>.m4bt.json</code> found for this source. Transcription needs a local model — none is installed yet.</p>
+          <div class="row">
+            <span class="chip warn">base.en not installed · 141 MB</span>
+            <button class="btn link">Open Model Manager →</button>
+          </div>
+        </div>`
+    },
+    {
+      id: "transcribe", label: "Transcribe", eyebrow: "Step 3 · Transcribe",
+      title: "Transcribe",
+      sub: "Durable and resumable — progress persists across app restarts, picking up chapter by chapter via the SQLite Job Orchestrator.",
+      body: `
+        <div class="sketch">
+          <p class="sketch-label">progress</p>
+          <div class="row"><div class="grow"><div class="progress"><i style="width:42%"></i></div></div><span class="chip">42%</span></div>
+          <div class="row" style="margin-top:12px;">
+            <dl class="kv" style="grid-template-columns:auto 1fr;">
+              <dt>Chapter</dt><dd>21 / 50</dd>
+              <dt>Elapsed</dt><dd>6m 12s</dd>
+              <dt>Est. remaining</dt><dd>~8m 40s</dd>
+            </dl>
+          </div>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn">⏸ Pause</button>
+            <span class="chip ok">safe to close — resumes on reopen</span>
+          </div>
+        </div>`
+    },
+    {
+      id: "profile", label: "Profile", eyebrow: "Step 4 · Select profile",
+      title: "Select Profile",
+      sub: "Pick a saved filter profile, or manage the underlying word catalog without leaving the wizard.",
+      body: `
+        <div class="sketch">
+          <p class="sketch-label">saved profiles</p>
+          <div class="row"><input type="radio" name="prof" checked disabled> <span class="grow">Family Friendly <span class="chip">2 categories · 34 words</span></span></div>
+          <div class="row"><input type="radio" name="prof" disabled> <span class="grow">Profanity Only <span class="chip">1 category · 19 words</span></span></div>
+          <div class="row" style="margin-top:12px;">
+            <button class="btn ghost">+ New Profile</button>
+            <button class="btn link">Manage Word Catalog… →</button>
+          </div>
+        </div>`
+    },
+    {
+      id: "scan", label: "Scan", eyebrow: "Step 5 · Scan",
+      title: "Scan",
+      sub: "Matches the transcript against an immutable snapshot of the selected profile.",
+      body: `
+        <div class="sketch">
+          <p class="sketch-label">scan summary</p>
+          <dl class="kv">
+            <dt>Hits found</dt><dd>247 across 2 categories</dd>
+            <dt>Profile snapshot</dt><dd>Family Friendly · rev. 3</dd>
+          </dl>
+        </div>
+        <details class="disclosure">
+          <summary>Advanced: padding &amp; merge settings</summary>
+          <div class="disclosure-body">
+            <div class="kv" style="grid-template-columns:auto 1fr;">
+              <dt>Lead / tail padding</dt><dd>60&nbsp;ms / 80&nbsp;ms</dd>
+              <dt>Merge adjacency</dt><dd>20&nbsp;ms</dd>
+              <dt>Gain floor</dt><dd>-80&nbsp;dBFS</dd>
+            </div>
+          </div>
+        </details>`
+    },
+    {
+      id: "review", label: "Review", eyebrow: "Step 6 · Review",
+      title: "Review",
+      sub: "Inspect individual hits; include or exclude before anything is rendered.",
+      body: `
+        <div class="row" style="margin-bottom:12px;">
+          <span class="chip ok">232 included</span><span class="chip">15 excluded</span>
+          <span class="chip">Profanity ×198</span><span class="chip">Slurs ×49</span>
+        </div>
+        <table class="hits">
+          <thead><tr><th></th><th>Word</th><th>Category</th><th>Time</th></tr></thead>
+          <tbody>
+            <tr><td>☑</td><td>“—redacted—”</td><td>Profanity</td><td class="mono">01:14:02.3</td></tr>
+            <tr><td>☑</td><td>“—redacted—”</td><td>Slurs</td><td class="mono">01:14:55.8</td></tr>
+            <tr><td>☐</td><td>“—redacted—”</td><td>Profanity</td><td class="mono">02:03:10.1</td></tr>
+          </tbody>
+        </table>`
+    },
+    {
+      id: "render", label: "Render", eyebrow: "Step 7 · Render",
+      title: "Render",
+      sub: "Confirm the output plan, then attenuate, encode, mux, and validate.",
+      body: `
+        <div class="sketch">
+          <p class="sketch-label">output plan</p>
+          <dl class="kv">
+            <dt>Output</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).m4b</dd>
+            <dt>Intervals to attenuate</dt><dd>221 (merged from 232 hits)</dd>
+            <dt>Est. render time</dt><dd>~10–11 min</dd>
+          </dl>
+          <div class="row" style="margin-top:14px;"><button class="btn primary">Start Render</button></div>
+        </div>`
+    },
+    {
+      id: "complete", label: "Complete", eyebrow: "Step 8 · Complete",
+      title: "Complete",
+      sub: "Validation status, output location, and the persisted filter report.",
+      body: `
+        <div class="sketch">
+          <p class="sketch-label">validation</p>
+          <div class="row"><span class="chip ok">✓ duration match — Δ 0 ms</span><span class="chip ok">✓ chapters 50 / 50</span><span class="chip ok">✓ metadata &amp; cover preserved</span></div>
+          <dl class="kv" style="margin-top:12px;">
+            <dt>Output</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).m4b</dd>
+            <dt>Report</dt><dd>filter-report.json</dd>
+          </dl>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn ghost">Open Folder</button>
+            <button class="btn primary">Done</button>
+          </div>
+        </div>`
+    }
+  ];
+
+  const railEl = document.getElementById("rail");
+  const paneEl = document.getElementById("paneScroll");
+  const stepTagEl = document.getElementById("stepTag");
+  const navHintEl = document.getElementById("navHint");
+  const backBtn = document.getElementById("backBtn");
+  const nextBtn = document.getElementById("nextBtn");
+  const notesEl = document.getElementById("notes");
+
+  // furthest step actually reached — steps beyond it are locked and not
+  // clickable, matching the real wizard's sequential gating. Starts at 0:
+  // a fresh wizard has completed nothing yet.
+  let furthest = 0;
+  let active = 0;
+
+  // Steps satisfied without running — currently just Transcribe (index 2),
+  // and only when "Use existing →" is chosen on the Transcript step. A
+  // skipped step still counts as reached (its circle turns green), but
+  // is marked distinctly rather than implying it actually ran.
+  const skippedSteps = new Set();
+
+  function renderRail() {
+    railEl.innerHTML = "";
+    steps.forEach((s, i) => {
+      const btn = document.createElement("button");
+      const isCurrent = i === active;
+      const isDone = i < furthest && !isCurrent;
+      const isSkipped = isDone && skippedSteps.has(i);
+      const isLocked = i > furthest;
+      btn.className = "rail-item " + (isCurrent ? "current" : isDone ? "done" : isLocked ? "locked" : "");
+      if (isSkipped) btn.title = `Skipped — ${s.label} was satisfied by an earlier choice, not run.`;
+      btn.innerHTML = `
+        <span class="node">
+          <span class="line line-before"></span>
+          <span class="num">${isSkipped ? "»" : isDone ? "✓" : i + 1}</span>
+          <span class="line line-after"></span>
+        </span>
+        <span class="label">${s.label}</span>`;
+      btn.disabled = i > furthest;
+      btn.setAttribute("aria-current", isCurrent ? "step" : "false");
+      btn.addEventListener("click", () => { active = i; render(); });
+      railEl.appendChild(btn);
+    });
+  }
+
+  function renderPane() {
+    const s = steps[active];
+    const skippedNotice = s.id === "transcribe" && skippedSteps.has(2)
+      ? `<div class="sketch" style="border-style:solid;border-color:var(--success);">
+           <p class="sketch-label" style="color:var(--success);">skipped</p>
+           <p style="font-size:.85rem;color:var(--prose);margin:0;">
+             Satisfied by reusing a compatible saved transcript in the previous step —
+             nothing to transcribe, so this step is marked complete without running.
+           </p>
+         </div>`
+      : "";
+    paneEl.innerHTML = `
+      <p class="step-eyebrow">${s.eyebrow}</p>
+      <h2 class="step-title">${s.title}</h2>
+      <p class="step-sub">${s.sub}</p>
+      ${skippedNotice || s.body}
+    `;
+    stepTagEl.textContent = `STEP ${active + 1} / ${steps.length}`;
+    backBtn.disabled = active === 0;
+    nextBtn.textContent = active === steps.length - 1 ? "Done" : "Continue";
+    navHintEl.textContent = active < steps.length - 1
+      ? `Next: ${steps[active + 1].label}`
+      : "End of wizard.";
+
+    const useExistingBtn = document.getElementById("useExistingBtn");
+    if (useExistingBtn) useExistingBtn.addEventListener("click", useExistingTranscript);
+    const reTranscribeBtn = document.getElementById("reTranscribeBtn");
+    if (reTranscribeBtn) reTranscribeBtn.addEventListener("click", reTranscribeAnyway);
+  }
+
+  // The one behavior this wireframe demonstrates live, not just describes:
+  // reusing a compatible transcript skips Transcribe (index 2) entirely and
+  // jumps straight to Profile (index 3) — there is nothing to run.
+  function useExistingTranscript() {
+    skippedSteps.add(2);
+    furthest = Math.max(furthest, 3);
+    active = 3;
+    render();
+  }
+
+  function reTranscribeAnyway() {
+    skippedSteps.delete(2);
+    furthest = Math.max(furthest, 2);
+    active = 2;
+    render();
+  }
+
+  const designNotes = [
+    {
+      tag: "Step rail",
+      html: "<strong>Steps lock in order.</strong> A step unlocks only once its prerequisite completes; Back is always free, to revisit or edit any earlier step."
+    },
+    {
+      tag: "Close / Cancel",
+      html: "<strong>Cancel confirms when it matters.</strong> Closing the wizard mid-Transcribe or mid-Render prompts first, mirroring the confirm-before-close pattern <code>ModelManagerWindow</code> already uses."
+    },
+    {
+      tag: "Transcribe",
+      html: "<strong>Transcribe is durable.</strong> Progress is written through the existing SQLite Job Orchestrator (ADR-0005) on every committed chunk, so closing the wizard here and reopening later resumes rather than restarting."
+    },
+    {
+      tag: "Auto-skip",
+      html: "<strong>Reusing a transcript skips Transcribe, not just visits it.</strong> Try it: on the Transcript step, click “Use existing →” — the wizard jumps straight to Profile, and Transcribe's circle marks “»” (skipped) rather than “✓” (done). Back from Profile skips over it too, since there's nothing there to review."
+    },
+    {
+      tag: "Progress label",
+      html: "<strong>“Chapter” when it's true, “Section” when it isn't.</strong> Chunking is chapter-<em>aware</em>, not chapter-equivalent (<code>chunking.py</code>): a chapter longer than the pause-latency budget gets subdivided, and a source with sparse/no chapter markers falls back to fixed-duration chunks entirely. Progress shows real chapter numbers only when a chapter maps to exactly one processing chunk — true for this well-chaptered demo book, shown here as “Chapter 21 / 50.” Otherwise it reads “Section X of Y” instead, so the label never claims chapter-level precision the source doesn't have."
+    },
+    {
+      tag: "Profile",
+      html: "<strong>Reuses the Catalog window.</strong> “Manage Word Catalog…” opens the already-shipped <code>CatalogWindow</code> (ADR-0008) instead of duplicating category/word CRUD inside the wizard."
+    },
+    {
+      tag: "Scan",
+      html: "<strong>Advanced settings stay behind a disclosure.</strong> Padding, merge adjacency, and gain floor never show by default — PRD §7.1 requires the happy path stay unblocked by them."
+    },
+    {
+      tag: "Empty states",
+      html: "<strong>First-run states render inline</strong>, in the same shell, not as separate error screens — required by PRD §7.3 (shown here, on the Transcript step: no model installed yet)."
+    }
+  ];
+
+  function renderNotes() {
+    notesEl.innerHTML = designNotes.map(n => `
+      <div class="note-row">
+        <span class="note-tag">${n.tag}</span>
+        <p>${n.html}</p>
+      </div>
+    `).join("");
+  }
+
+  function render() { renderRail(); renderPane(); }
+
+  // The frame's height comes from the tallest step's actual rendered
+  // content, measured directly — not a guessed pixel value — so every
+  // step shares one consistent window size and none of them needs an
+  // internal scrollbar. Measured off-screen at the pane's real width,
+  // since text wrapping (and therefore height) depends on it.
+  function measureTallestStepHeight() {
+    const probe = document.createElement("div");
+    probe.className = "pane-scroll";
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.top = "0";
+    probe.style.left = "-9999px";
+    probe.style.minHeight = "0";
+    probe.style.width = paneEl.clientWidth + "px";
+    document.body.appendChild(probe);
+
+    let max = 0;
+    steps.forEach(s => {
+      probe.innerHTML = `
+        <p class="step-eyebrow">${s.eyebrow}</p>
+        <h2 class="step-title">${s.title}</h2>
+        <p class="step-sub">${s.sub}</p>
+        ${s.body}
+      `;
+      max = Math.max(max, probe.scrollHeight);
+    });
+
+    document.body.removeChild(probe);
+    return max;
+  }
+
+  function applyConsistentStepHeight() {
+    paneEl.style.minHeight = measureTallestStepHeight() + "px";
+  }
+
+  backBtn.addEventListener("click", () => {
+    if (active === 0) return;
+    do { active--; } while (active > 0 && skippedSteps.has(active));
+    render();
+  });
+  nextBtn.addEventListener("click", () => {
+    if (active < steps.length - 1) {
+      active++;
+      furthest = Math.max(furthest, active);
+      render();
+    }
+  });
+
+  render();
+  renderNotes();
+  applyConsistentStepHeight();
+
+  // Web fonts (IBM Plex) can swap in after first paint and change text
+  // metrics slightly — remeasure once they're actually loaded.
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(applyConsistentStepHeight);
+  }
+
+  // Column width affects text wrapping, so a resize can change the
+  // tallest step's height — remeasure, debounced.
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(applyConsistentStepHeight, 150);
+  });
+</script>

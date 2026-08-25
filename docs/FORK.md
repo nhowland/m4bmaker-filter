@@ -31,7 +31,10 @@ unchanged, and is intentionally left untouched to keep future
      not SQLite), UI structure (new window), and start-screen sequencing,
      decided directly by the product owner; `0009` — Model Manager window
      design (table + details panel, one download at a time, shared
-     `gui/filter/workers.py`).
+     `gui/filter/workers.py`); `0010` — wizard shell design (horizontal
+     stepper, consistent-height content pane, transcript-reuse auto-skip,
+     chapter/section progress terminology), approved after an iterative
+     wireframe review.
 3. **`docs/TESTING.md`** — test conventions specific to the new code.
 
 ## Status
@@ -306,5 +309,47 @@ than a stubbed value.
 
 Full suite: **1395 passing, 2 correctly skipped**, project-wide.
 
-Not yet built: the transcribe/scan/review/render wizard (wireframes
-planned first, per ADR-0008's decision); first-run/error-state polish.
+## G5: Wizard shell wireframe, approved (2026-08-25)
+
+Per ADR-0008's decision to wireframe the wizard shell before writing any
+code for it, built an interactive, self-contained HTML wireframe and
+iterated on it directly with the product owner over several review
+rounds until approved. Full design rationale, including everything
+corrected along the way, in
+[docs/adr/0010-wizard-shell-design.md](adr/0010-wizard-shell-design.md);
+the approved wireframe itself is archived at
+[docs/design/wizard-shell-wireframe.html](design/wizard-shell-wireframe.html)
+(open directly in a browser — no build step, no server).
+
+Settled by the review:
+- **Shell structure**: horizontal 8-step stepper (Source → Transcript →
+  Transcribe → Profile → Scan → Review → Render → Complete) across the
+  top of the window; content pane below; Back/Continue footer anchored
+  to the bottom.
+- **Stepper visuals**: equal-width/height cells regardless of state or
+  label length; state carried by color and weight alone (no extra status
+  captions); done = green check, current = bold accent, locked = gray;
+  a solid connecting line runs through all eight circles.
+- **Content pane sizing**: measured from the tallest step's actual
+  rendered content rather than a guessed value, so every step shares one
+  consistent window height and none of them needs to scroll internally.
+- **Auto-skip**: reusing a compatible saved transcript jumps straight
+  from Transcript to Profile — Transcribe is marked done-but-skipped
+  (a distinct glyph, not a plain checkmark) rather than visited as an
+  empty step. Chosen over merging Transcript+Transcribe into one step,
+  which was considered and rejected (pros/cons in the ADR).
+  Backend note: nothing to build yet — this is shell/UI-flow behavior
+  layered on top of the existing G2/G3 transcript-compatibility and
+  model-selection backend, which already supports the check.
+- **Progress terminology**: "Chapter *N* / *M*" only when a chunk maps
+  1:1 to a real chapter (per `chunking.py`'s actual chapter-*aware*, not
+  chapter-*equivalent*, planning); "Section *N* of *M*" otherwise. Flagged
+  in the ADR as a real data requirement for the eventual Transcribe step
+  (needs per-chunk real-chapter mapping), not just copy.
+
+Not yet built: any of this in PySide6 — the wireframe is HTML/CSS/JS
+only, deliberately low-fidelity and in its own "blueprint" visual
+language distinct from `gui/styles.py`, so it reads as a structural
+draft rather than a finished screen. The Scan-Review screen still needs
+its own wireframe pass (also called for in ADR-0008) before either
+screen's real implementation begins.
