@@ -40,7 +40,11 @@ unchanged, and is intentionally left untouched to keep future
      PySide6 implementation, porting ADR-0010/0011's approved wireframe
      design to working, tested, visually-verified code; `0013` — the
      Source step's real implementation, plus the storage-estimate and
-     compatible-transcript-lookup backend functions it needed.
+     compatible-transcript-lookup backend functions it needed; `0014` —
+     the Transcript step's real implementation (reuse-a-transcript vs.
+     choose-a-model, inline model download), plus the shared
+     `DownloadCoordinator` it needed once download moved inline rather
+     than linking out to Model Manager.
 3. **`docs/TESTING.md`** — test conventions specific to the new code.
 
 ## Status
@@ -546,4 +550,73 @@ Full suite: **1509 passing, 2 correctly skipped**, project-wide.
 Not yet decided: how Source's manifest will eventually feed the
 not-yet-built Transcript step (nothing consumes it yet — each wizard
 step still holds its own state independently); Transcript's own real
+design, which hasn't had a wireframe pass.
+
+## G5: Transcript step — real PySide6 code, plus a shared download guard (2026-08-25)
+
+The Transcript step (PRD §7.2 stage 2) moves from placeholder to real,
+working code, wired directly to Source since the two are now adjacent
+real steps. Full rationale in
+[docs/adr/0014-transcript-step-implementation.md](adr/0014-transcript-step-implementation.md).
+
+Two modes, neither reachable via a default Continue click: a
+**"found"** panel when `find_compatible_transcript()` (ADR-0013)
+matches — Continue stays disabled here on purpose, forcing an explicit
+"Use existing →" or "Transcribe again instead" choice — and a
+**"choose a model"** panel showing both real `model_manager.KNOWN_MODELS`
+catalog entries with their real install state, one chooser covering
+both "nothing installed" (PRD §7.3's first-run state) and "something's
+already installed," not two separate screens.
+
+Model download happens inline on the model's own row — the wireframe
+review's one open, explicitly-flagged question (link out to Model
+Manager, or embed the download here) resolved toward inline, reusing
+`ModelDownloadWorker` (ADR-0009) as-is. That decision immediately
+opened the gap the wireframe review had already flagged: ADR-0009's
+"one download at a time" guard was scoped to `ModelManagerWindow`'s own
+state, not shared, so nothing stopped both windows racing to write the
+same model file if both were open at once. Closed with one new,
+process-wide `DownloadCoordinator` (`gui/filter/workers.py`) both
+windows now check before starting a download.
+
+"Use existing →" skips Transcribe entirely — `TranscriptStep.
+reuse_requested` drives `WizardWindow` to jump straight to Profile and
+mark Transcribe skipped, using `StepperWidget`'s `»`-glyph rendering
+that's existed since ADR-0012 but had nothing to exercise it until now.
+Visiting Transcribe for real afterward clears the skip mark.
+
+34 new tests, all against real backend objects and a real `tmp_path`
+filesystem, `black`/`flake8`/`mypy` clean.
+
+**Visually verified against the live app with a real network
+download**: advanced through the real Source step into Transcript,
+confirmed the empty model chooser, clicked Download on `base.en` — a
+real HTTPS request to the real pinned URL completed and
+checksum-verified within the screenshot round-trip, the row flipped to
+installed, and Continue enabled immediately. Continuing landed on
+Transcribe (still a placeholder) with the stepper correctly showing two
+green checkmarks and no skip glyph, confirming the normal, not-skipped
+path renders correctly alongside the skip path (covered by dedicated
+tests). This left a real, correctly-verified `base.en` model installed
+at this machine's actual models directory — not test pollution, a
+genuine usable install.
+
+Full suite: **1546 tests total**, up from 1511.
+
+**A pre-existing test-environment issue is now materially worse, and
+confirmed unrelated to this round's code**: the full bare `pytest -q`
+run now segfaults in the offscreen Qt platform plugin far more often
+than the "~1 in 9" rate ADR-0013 disclosed — every attempt today
+crashed, at a different test each time. Isolated via `git stash` back
+to the prior commit: the identical bare full-suite command still
+segfaults there too, on completely untouched code, while no
+explicitly-assembled test-ID-list reproduction — including the exact
+same tests in the exact same order — ever crashed. Every individual
+file and every reasonably-sized combination passed cleanly and
+repeatedly. Conclusively a pre-existing, environment-level instability
+at full-project scale, not a regression this round introduced, but
+flagged here since it's become more disruptive, not less.
+
+Not yet decided: how `TranscriptStep.chosen_model`/`.compatible_transcript`
+will feed the not-yet-built Transcribe step; Transcribe's own real
 design, which hasn't had a wireframe pass.

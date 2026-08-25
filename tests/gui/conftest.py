@@ -39,3 +39,17 @@ def _no_update_thread():
     """
     with patch("m4bmaker.gui.updater.UpdateChecker.start"):
         yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_download_coordinator():
+    """``download_coordinator`` (ADR-0014) is one process-wide instance,
+    not per-window state — without a reset, a test that acquires it and
+    doesn't reach its own teardown (e.g. asserting mid-download) would
+    leave it held, incorrectly blocking an unrelated download in a later
+    test that happens to run afterward in the same process."""
+    from m4bmaker.gui.filter.workers import download_coordinator
+
+    download_coordinator.release()
+    yield
+    download_coordinator.release()

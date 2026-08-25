@@ -292,6 +292,56 @@ class TestDownload:
         win._on_download_clicked()  # no selection: must be a no-op
         assert win._download_worker is None
 
+    def test_blocked_when_coordinator_held_elsewhere(
+        self, win: ModelManagerWindow
+    ) -> None:
+        """ADR-0014: the shared download_coordinator (not just this
+        window's own _downloading_name) gates starting a download — a
+        download already in flight from the wizard's Transcript step
+        must block this window's own Download button, not just the
+        reverse. Simulated by acquiring the coordinator directly, the
+        same as TranscriptStep's real download click would."""
+        from m4bmaker.gui.filter.workers import download_coordinator
+
+        assert download_coordinator.try_acquire("small.en") is True
+        _select_row_for(win, "base.en")
+        with patch(
+            "m4bmaker.gui.filter.model_manager_window.QMessageBox.information"
+        ) as mock_info:
+            win._on_download_clicked()
+        assert win._download_worker is None
+        mock_info.assert_called_once()
+        assert "small.en" in mock_info.call_args.args[2]
+
+    def test_successful_download_releases_coordinator(
+        self, win: ModelManagerWindow, tmp_path: Path
+    ) -> None:
+        from m4bmaker.gui.filter.workers import download_coordinator
+
+        def fake_download(
+            spec: ModelSpec,
+            dest_dir: Path,
+            progress_callback: _ProgressCallback | None = None,
+            cancel_event: threading.Event | None = None,
+        ) -> Path:
+            installed_path = tmp_path / spec.filename()
+            installed_path.touch()
+            os.truncate(installed_path, spec.size_bytes)
+            return installed_path
+
+        _select_row_for(win, "base.en")
+        with patch(
+            "m4bmaker.gui.filter.workers.download_model", side_effect=fake_download
+        ):
+            win._on_download_clicked()
+            assert download_coordinator.active_name == "base.en"
+            worker = win._download_worker
+            assert worker is not None
+            worker.wait(3000)
+
+        QApplication.processEvents()
+        assert download_coordinator.active_name is None
+
 
 class TestRemove:
     @pytest.fixture()

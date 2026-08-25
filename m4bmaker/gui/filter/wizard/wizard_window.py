@@ -11,15 +11,25 @@ Qt's layout system handles this natively — ``QStackedWidget`` already
 sizes itself to its largest child, so every step shares one window size
 for free, with no measurement workaround needed.
 
-Only Review (index 5) has a real step widget; the other seven are
-:class:`~.placeholder_step.PlaceholderStep` stand-ins, since only the
-shell and Review have been through ADR-0010's wireframe review so far.
-The wizard is still fully navigable end-to-end today — Back/Continue and
-the stepper's click-to-revisit all work against the placeholders exactly
-as they will once each step gets built for real.
+Source, Transcript, and Review have real step widgets; the other five
+are :class:`~.placeholder_step.PlaceholderStep` stand-ins, since only
+those three have been through a wireframe review so far. The wizard is
+still fully navigable end-to-end today — Back/Continue and the
+stepper's click-to-revisit all work against the placeholders exactly as
+they will once each step gets built for real.
+
+Source and Transcript are wired together for real (ADR-0014): advancing
+past Source hands its ``MediaManifest`` straight to
+:meth:`~.transcript_step.TranscriptStep.set_source`, and choosing to
+reuse a compatible saved transcript there skips Transcribe entirely —
+:attr:`~.transcript_step.TranscriptStep.reuse_requested` drives that
+jump, and ``StepperWidget.set_progress()``'s already-existing (if
+previously unused) ``skipped`` parameter renders the "»" glyph for it.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -36,12 +46,15 @@ from .review_step import ReviewStep
 from .source_step import SourceStep
 from .step_base import WizardStep
 from .stepper import STEP_LABELS, StepperWidget
+from .transcript_step import TranscriptStep
 
 _SOURCE_INDEX = STEP_LABELS.index("Source")
+_TRANSCRIPT_INDEX = STEP_LABELS.index("Transcript")
+_TRANSCRIBE_INDEX = STEP_LABELS.index("Transcribe")
+_PROFILE_INDEX = STEP_LABELS.index("Profile")
 _REVIEW_INDEX = STEP_LABELS.index("Review")
 
 _PLACEHOLDER_SUBTITLES: dict[int, str] = {
-    1: "Reuse a compatible saved transcript, or set up local transcription.",
     2: "Durable and resumable — progress persists across app restarts, "
     "picking up chapter by chapter.",
     3: "Pick a saved filter profile, or manage the underlying word "
@@ -56,14 +69,28 @@ _PLACEHOLDER_SUBTITLES: dict[int, str] = {
 class WizardWindow(QMainWindow):
     """Top-level window hosting the whole filter wizard."""
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        models_dest_dir: Path | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Filter Audiobook")
         self.setMinimumSize(760, 560)
         self.resize(900, 640)
 
+        # None (the real-app default) means TranscriptStep falls back to
+        # storage.models_dir() itself — this param exists so tests can
+        # point it at a tmp_path instead of touching the real,
+        # user-wide models directory (mirrors ModelManagerWindow's own
+        # dest_dir constructor param, same reason).
+        self._models_dest_dir = models_dest_dir
+
         self._active = 0
         self._furthest = 0
+        # Steps satisfied without running — currently only Transcribe,
+        # and only when TranscriptStep's reuse_requested fires (ADR-0014).
+        self._skipped: set[int] = set()
 
         self._build_ui()
         self._render()
@@ -118,12 +145,17 @@ class WizardWindow(QMainWindow):
             step: WizardStep
             if i == _SOURCE_INDEX:
                 step = SourceStep()
+            elif i == _TRANSCRIPT_INDEX:
+                step = TranscriptStep(dest_dir=self._models_dest_dir)
             elif i == _REVIEW_INDEX:
                 step = ReviewStep()
             else:
                 step = PlaceholderStep(label, _PLACEHOLDER_SUBTITLES.get(i, ""))
             step.can_advance_changed.connect(self._update_nav_buttons)
             steps.append(step)
+        transcript_step = steps[_TRANSCRIPT_INDEX]
+        assert isinstance(transcript_step, TranscriptStep)
+        transcript_step.reuse_requested.connect(self._on_transcript_reuse)
         return steps
 
     # ── navigation ───────────────────────────────────────────────────────
@@ -149,16 +181,40 @@ class WizardWindow(QMainWindow):
         if not self._steps[self._active].can_advance():
             return
         if self._active < len(self._steps) - 1:
-            self._active += 1
+            next_index = self._active + 1
+            if self._active == _SOURCE_INDEX and next_index == _TRANSCRIPT_INDEX:
+                self._push_source_to_transcript()
+            if next_index == _TRANSCRIBE_INDEX:
+                # Actually visiting it for real now, not skipping it —
+                # matters if the User previously chose "Use existing",
+                # went Back, and is now transcribing for real instead.
+                self._skipped.discard(_TRANSCRIBE_INDEX)
+            self._active = next_index
             self._furthest = max(self._furthest, self._active)
             self._render()
+
+    def _push_source_to_transcript(self) -> None:
+        source = self._steps[_SOURCE_INDEX]
+        transcript_step = self._steps[_TRANSCRIPT_INDEX]
+        assert isinstance(source, SourceStep)
+        assert isinstance(transcript_step, TranscriptStep)
+        if source.manifest is not None:
+            transcript_step.set_source(source.manifest)
+
+    def _on_transcript_reuse(self) -> None:
+        """TranscriptStep chose to reuse a compatible saved transcript —
+        Transcribe has nothing to do, so skip straight to Profile."""
+        self._skipped.add(_TRANSCRIBE_INDEX)
+        self._active = _PROFILE_INDEX
+        self._furthest = max(self._furthest, self._active)
+        self._render()
 
     def _render(self) -> None:
         step = self._steps[self._active]
         self._stack.setCurrentIndex(self._active)
         self._title_label.setText(step.step_title)
         self._subtitle_label.setText(step.step_subtitle)
-        self._stepper.set_progress(self._active, self._furthest)
+        self._stepper.set_progress(self._active, self._furthest, self._skipped)
         self._back_btn.setEnabled(self._active > 0)
         is_last = self._active == len(self._steps) - 1
         self._continue_btn.setText("Done" if is_last else "Continue")

@@ -25,6 +25,47 @@ from m4bmaker.filter.model_manager import (
 from m4bmaker.utils import find_binary
 
 
+class DownloadCoordinator:
+    """Process-wide "one model download at a time" guard, shared across
+    every window that can start one — ``ModelManagerWindow`` and the
+    wizard's Transcript step (ADR-0014). ADR-0009's original guard
+    (``ModelManagerWindow._downloading_name``) was scoped to that
+    window's own state only, so nothing stopped both windows from
+    starting a download of the *same* model file at once if a User had
+    both open simultaneously — this closes that gap with one shared
+    instance (:data:`download_coordinator` below) both windows check.
+
+    Deliberately not thread-safe beyond what a single Qt UI thread
+    already guarantees: every caller (``_on_download_clicked`` in both
+    windows) runs on the UI thread, so a plain attribute is enough —
+    no lock needed for what's really just cooperative UI-level state.
+    """
+
+    def __init__(self) -> None:
+        self._active_name: str | None = None
+
+    @property
+    def active_name(self) -> str | None:
+        return self._active_name
+
+    def try_acquire(self, name: str) -> bool:
+        """Claim the single download slot for *name*. Returns ``False``
+        (claiming nothing) if another download is already in flight."""
+        if self._active_name is not None:
+            return False
+        self._active_name = name
+        return True
+
+    def release(self) -> None:
+        """Idempotent — safe to call even if nothing is held."""
+        self._active_name = None
+
+
+#: Shared across the whole process — import this instance, never
+#: construct a second :class:`DownloadCoordinator`.
+download_coordinator = DownloadCoordinator()
+
+
 class ModelDownloadWorker(QThread):
     """Run :func:`download_model` off the UI thread."""
 

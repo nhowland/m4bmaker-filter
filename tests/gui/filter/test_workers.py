@@ -24,7 +24,11 @@ from m4bmaker.filter.model_manager import (
     ModelSpec,
 )
 from m4bmaker.filter.models import MediaManifest
-from m4bmaker.gui.filter.workers import MediaInspectWorker, ModelDownloadWorker
+from m4bmaker.gui.filter.workers import (
+    DownloadCoordinator,
+    MediaInspectWorker,
+    ModelDownloadWorker,
+)
 
 _SPEC = ModelSpec(
     name="tiny.en",
@@ -228,3 +232,33 @@ class TestMediaInspectWorker:
 
         qapp.processEvents()
         assert errors == ["boom"]
+
+
+class TestDownloadCoordinator:
+    def test_starts_unclaimed(self) -> None:
+        coordinator = DownloadCoordinator()
+        assert coordinator.active_name is None
+
+    def test_first_acquire_succeeds(self) -> None:
+        coordinator = DownloadCoordinator()
+        assert coordinator.try_acquire("base.en") is True
+        assert coordinator.active_name == "base.en"
+
+    def test_second_acquire_fails_while_first_held(self) -> None:
+        coordinator = DownloadCoordinator()
+        coordinator.try_acquire("base.en")
+        assert coordinator.try_acquire("small.en") is False
+        assert coordinator.active_name == "base.en"
+
+    def test_release_frees_the_slot(self) -> None:
+        coordinator = DownloadCoordinator()
+        coordinator.try_acquire("base.en")
+        coordinator.release()
+        assert coordinator.active_name is None
+        assert coordinator.try_acquire("small.en") is True
+
+    def test_release_is_idempotent(self) -> None:
+        coordinator = DownloadCoordinator()
+        coordinator.release()
+        coordinator.release()
+        assert coordinator.active_name is None

@@ -703,51 +703,84 @@
             <div class="field grow">📁 Dungeon Crawler Carl_ A LitRPG⁄Gamelit Adventure.m4b</div>
             <button class="btn ghost">Browse…</button>
           </div>
-        </div>
+        </div>`,
+      scenarios: [
+        {
+          id: "eligible", label: "Eligible",
+          html: `
         <div class="sketch">
-          <p class="sketch-label">scenario A — eligible <span class="chip ok">✓ eligible</span></p>
+          <p class="sketch-label">result <span class="chip ok">✓ eligible</span></p>
           <dl class="kv">
             <dt>Audio track</dt><dd>Stereo AAC-LC · 44.1&nbsp;kHz · ~126&nbsp;kbps (track 0 of 1)</dd>
             <dt>Duration</dt><dd>13h 31m 33s</dd>
             <dt>Chapters</dt><dd>50</dd>
             <dt>Metadata</dt><dd>Title, Author, Narrator, Genre present</dd>
             <dt>Cover art</dt><dd>Present</dd>
-            <dt>Est. storage needed</dt><dd>~9.1 GB scratch space (PCM stages) — heuristic, not yet decided</dd>
+            <dt>Est. storage needed</dt><dd>~24.7 GB (3 PCM scratch stages + AAC output — <code>renderer.estimate_storage_bytes()</code>)</dd>
             <dt>Saved transcript</dt><dd>None found for this source</dd>
           </dl>
-        </div>
+        </div>`
+        },
+        {
+          id: "ineligible", label: "Not eligible",
+          html: `
         <div class="sketch" style="border-color:var(--accent);">
-          <p class="sketch-label" style="color:var(--accent);">scenario B — not eligible <span class="chip warn">✗ not eligible</span></p>
+          <p class="sketch-label" style="color:var(--accent);">result <span class="chip warn">✗ not eligible</span></p>
           <p style="font-size:.85rem;color:var(--prose);margin:0 0 8px;">Continue stays disabled until an eligible source is selected. Every reason is surfaced, not just the first one found:</p>
           <ul style="margin:0;padding-left:18px;font-size:.85rem;color:var(--prose);">
             <li>Primary audio track is MP3 — v1 only supports AAC M4B sources</li>
           </ul>
         </div>`
+        }
+      ]
     },
     {
       id: "transcript", label: "Transcript", eyebrow: "Step 2 · Choose transcript path",
       title: "Choose Transcript Path",
       sub: "Reuse a compatible saved transcript, or set up local transcription. First-run empty states (PRD §7.3) render inline here, not as separate error screens.",
-      body: `
+      scenarios: [
+        {
+          id: "found", label: "Transcript found",
+          html: `
         <div class="sketch">
-          <p class="sketch-label">scenario A — compatible transcript found</p>
-          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">A saved transcript matches this source exactly (same fingerprint, engine, and model). Reusing it skips Transcribe entirely — there is nothing left to run.</p>
+          <p class="sketch-label">match <span class="chip ok">✓ complete</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Real <code>Transcript</code> object returned by <code>find_compatible_transcript()</code> — same fingerprint as this source, status <code>complete</code> (a draft/partial/failed transcript never counts, PRD §10.4). Reusing it skips Transcribe entirely — there is nothing left to run.</p>
           <div class="row">
-            <span class="chip ok">whisper.cpp 1.9.2 · base.en · 13h 31m</span>
+            <span class="chip ok">whisper.cpp 1.9.2 · base.en · 13h 31m 33s</span>
           </div>
           <div class="row" style="margin-top:12px;">
             <button class="btn primary" id="useExistingBtn">Use existing →</button>
-            <button class="btn ghost" id="reTranscribeBtn">Re-transcribe anyway</button>
-          </div>
-        </div>
-        <div class="sketch">
-          <p class="sketch-label">scenario B — empty state, no saved transcript</p>
-          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">No compatible <code>.m4bt.json</code> found for this source. Transcription needs a local model — none is installed yet.</p>
-          <div class="row">
-            <span class="chip warn">base.en not installed · 141 MB</span>
-            <button class="btn link">Open Model Manager →</button>
+            <button class="btn ghost" id="reTranscribeBtn">Transcribe again instead</button>
           </div>
         </div>`
+        },
+        {
+          id: "choose-model", label: "Choose a model",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">models</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Shown when no compatible transcript exists, or after “Transcribe again instead.” Both real catalog entries (<code>model_manager.KNOWN_MODELS</code>) always show, each with its own real install state (<code>is_installed()</code>) — one chooser, not a separate screen per state. Selecting a not-yet-installed model reveals Download right on its row — no second window (<code>ModelDownloadWorker</code>, the exact worker <code>ModelManagerWindow</code> already uses).</p>
+          <div class="row"><input type="radio" name="model" checked disabled> <span class="grow">base.en <span class="chip ok">✓ installed</span></span><span class="chip">Recommended · 141 MB</span></div>
+          <div class="row" style="margin-top:8px;"><input type="radio" name="model" disabled> <span class="grow">small.en <span class="chip warn">not installed</span></span><span class="chip">Higher recognition effort · 465 MB</span><button class="btn ghost small">Download</button></div>
+        </div>
+        <div class="sketch">
+          <p class="sketch-label">while downloading</p>
+          <div class="row"><span class="grow">small.en</span><span class="chip">144.2 / 465.0 MB</span></div>
+          <div class="row" style="margin-top:6px;"><div class="grow"><div class="progress"><i style="width:31%"></i></div></div><span class="chip">31%</span></div>
+          <div class="row" style="margin-top:10px;"><button class="btn ghost">Cancel</button></div>
+        </div>`
+        },
+        {
+          id: "offline", label: "Offline — blocked",
+          html: `
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">nothing installed <span class="chip warn">⚠ blocked</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">PRD §7.3: explain that transcription can't start until a supported model is installed — never fail silently. Same chooser as “Choose a model,” both rows read “not installed,” each with its own inline Download. Continue stays disabled until one finishes.</p>
+          <div class="row"><span class="grow">base.en <span class="chip warn">not installed</span></span><span class="chip">Recommended · 141 MB</span><button class="btn ghost small">Download</button></div>
+          <div class="row" style="margin-top:8px;"><span class="grow">small.en <span class="chip warn">not installed</span></span><span class="chip">Higher recognition effort · 465 MB</span><button class="btn ghost small">Download</button></div>
+        </div>`
+        }
+      ]
     },
     {
       id: "transcribe", label: "Transcribe", eyebrow: "Step 3 · Transcribe",
@@ -868,6 +901,23 @@
   // skipped step still counts as reached (its circle turns green), but
   // is marked distinctly rather than implying it actually ran.
   const skippedSteps = new Set();
+
+  // A step with a real `scenarios` array (Source, Transcript) renders them
+  // as tabs rather than stacked — only one is ever actually true at once in
+  // the real app (a MediaManifest is never simultaneously eligible and
+  // not), so tabs match production instead of implying all states coexist.
+  // Keyed by step id, not a single shared index, so switching tabs on one
+  // step doesn't disturb another step's tab when you navigate back to it.
+  const activeScenario = {};
+
+  function renderScenarioTabs(step) {
+    if (activeScenario[step.id] === undefined) activeScenario[step.id] = 0;
+    const idx = activeScenario[step.id];
+    const tabs = step.scenarios.map((sc, i) => `
+      <button class="tab ${i === idx ? "active" : ""}" data-scenario-step="${step.id}" data-scenario-index="${i}" role="tab" aria-selected="${i === idx}">${sc.label}</button>
+    `).join("");
+    return `<div class="tabs" role="tablist">${tabs}</div>${step.scenarios[idx].html}`;
+  }
 
   function renderRail() {
     railEl.innerHTML = "";
@@ -1256,11 +1306,12 @@
            </p>
          </div>`
       : "";
+    const mainContent = (s.body || "") + (s.scenarios ? renderScenarioTabs(s) : "");
     paneEl.innerHTML = `
       <p class="step-eyebrow">${s.eyebrow}</p>
       <h2 class="step-title">${s.title}</h2>
       <p class="step-sub">${s.sub}</p>
-      ${skippedNotice || s.body}
+      ${skippedNotice || mainContent}
     `;
     stepTagEl.textContent = `STEP ${active + 1} / ${steps.length}`;
     backBtn.disabled = active === 0;
@@ -1268,6 +1319,13 @@
     navHintEl.textContent = active < steps.length - 1
       ? `Next: ${steps[active + 1].label}`
       : "End of wizard.";
+
+    paneEl.querySelectorAll("[data-scenario-step]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        activeScenario[btn.dataset.scenarioStep] = Number(btn.dataset.scenarioIndex);
+        renderPane();
+      });
+    });
 
     const useExistingBtn = document.getElementById("useExistingBtn");
     if (useExistingBtn) useExistingBtn.addEventListener("click", useExistingTranscript);
@@ -1296,6 +1354,10 @@
 
   const designNotes = [
     {
+      tag: "Scenario tabs",
+      html: "<strong>Tabbed, not stacked.</strong> Source and Transcript each show more than one possible real state (eligible/not; transcript-found/choose-model/offline) — tabs (reusing Review's existing <code>.tab</code> pattern) keep the pane's height from growing with every new edge case, and match production more honestly than stacking, since only one of these is ever actually true at once for a given source."
+    },
+    {
       tag: "Step rail",
       html: "<strong>Steps lock in order.</strong> A step unlocks only once its prerequisite completes; Back is always free, to revisit or edit any earlier step."
     },
@@ -1310,6 +1372,10 @@
     {
       tag: "Auto-skip",
       html: "<strong>Reusing a transcript skips Transcribe, not just visits it.</strong> Try it: on the Transcript step, click “Use existing →” — the wizard jumps straight to Profile, and Transcribe's circle marks “»” (skipped) rather than “✓” (done). Back from Profile skips over it too, since there's nothing there to review."
+    },
+    {
+      tag: "Transcript — decided",
+      html: "<strong>Model download is inline, not a link-out.</strong> Reuses <code>ModelDownloadWorker</code> exactly as <code>ModelManagerWindow</code> already does (ADR-0009) — same progress-signal shape (message + fraction), same checksum-verified atomic staging underneath, just a second place it can be driven from. The one loose end this creates, not yet resolved: ADR-0009's 'one download at a time' guard is scoped to <code>ModelManagerWindow</code>'s own <code>_downloading_name</code> state, not shared — if both that window and the wizard are open at once, nothing today stops each from starting its own download of the same model file simultaneously. Needs a shared in-flight guard (e.g. a small module-level lock in <code>gui/filter/workers.py</code> both windows check) before real implementation, not deferred to be discovered by a race in testing."
     },
     {
       tag: "Progress label",
@@ -1333,7 +1399,7 @@
     },
     {
       tag: "Source",
-      html: "<strong>Every field is real, two are still open.</strong> Source's eligibility panel mirrors <code>MediaManifest</code> (media_inspector.py) exactly — audio track, duration, chapters, metadata, cover art. Two fields shown here don't have a real implementation behind them yet: the storage-estimate heuristic (what exactly gets summed — PCM stages only, or also the final AAC output?) and the compatible-saved-transcript lookup (matching on <code>MediaManifest.fingerprint</code> against <code>storage.transcripts_dir()</code>, which exists as a directory but has no lookup function yet). Flagged rather than guessed at."
+      html: "<strong>Every field is real — implemented, not sketched.</strong> Source's eligibility panel mirrors <code>MediaManifest</code> (media_inspector.py) exactly — audio track, duration, chapters, metadata, cover art, storage estimate (<code>renderer.estimate_storage_bytes()</code>, ADR-0013), and compatible-saved-transcript lookup (<code>transcript.find_compatible_transcript()</code>, ADR-0013). Live-verified against the real app with real <code>ffprobe</code> inspection, not mocked."
     }
   ];
 

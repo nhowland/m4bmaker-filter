@@ -50,7 +50,7 @@ from m4bmaker.filter.model_manager import (
 from m4bmaker.filter.storage import models_dir
 from m4bmaker.filter.transcript_engine import find_whisper_cli, get_whisper_version
 
-from .workers import ModelDownloadWorker
+from .workers import ModelDownloadWorker, download_coordinator
 
 _COL_NAME = 0
 _COL_LABEL = 1
@@ -248,6 +248,15 @@ class ModelManagerWindow(QMainWindow):
         spec = self._current_spec()
         if spec is None or self._download_worker is not None:
             return
+        if not download_coordinator.try_acquire(spec.name):
+            QMessageBox.information(
+                self,
+                "Download In Progress",
+                f"“{download_coordinator.active_name}” is downloading elsewhere "
+                "(the Transcript wizard step). Wait for it to finish before "
+                "starting another download.",
+            )
+            return
         self._downloading_name = spec.name
         self._progress_bar.setVisible(True)
         self._progress_bar.setValue(0)
@@ -275,6 +284,7 @@ class ModelManagerWindow(QMainWindow):
         self._cancel_btn.setVisible(False)
         self._download_worker = None
         self._downloading_name = None
+        download_coordinator.release()
 
     def _on_download_finished(self, path: object) -> None:
         name = self._downloading_name
