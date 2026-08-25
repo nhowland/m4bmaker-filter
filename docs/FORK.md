@@ -138,9 +138,42 @@ be operationally unusable past ~300 intervals — exactly the kind of
 reversed intuition a real spike exists to catch before it's built into
 production code.
 
-Still not built: the Renderer/Validator implementation itself (now
-comparatively mechanical, not open technical risk) and its testing against
-real AAC (this spike used raw PCM throughout); any UI (G5).
+**G4 complete: Renderer and Validator implemented and proven against a
+real ~13.5-hour production audiobook**, not a synthetic fixture. See
+[docs/adr/0007-renderer-and-validator.md](adr/0007-renderer-and-validator.md).
+`renderer.py` (extract → generate envelope → `amultiply` → encode/mux)
+and `validator.py` (duration/chapters/metadata/attenuation checks, with
+tolerances set from real measurement rather than the earlier ADR-0002
+placeholder) ran the full pipeline end-to-end on a real, user-owned,
+non-DRM `.m4b` (verified empirically decodable with no DRM handling
+needed — not assumed) and **passed with zero errors and zero warnings**:
+exact 0ms duration match, all 50 real chapters exactly preserved, full
+metadata and cover art preserved, and a real narration passage measured
+at -17.95dB before attenuation and -97.6dB after, with regions
+immediately outside the interval unchanged. Total render time for the
+entire 13.5-hour book: **615 seconds (~10.25 minutes)** — extraction
+31.3s, envelope generation 2.3s, `amultiply` 10.0s, AAC encode+mux 587.7s.
+
+Real testing surfaced and fixed three things no synthetic fixture would
+have caught: (1) the classic WAV format's 4GiB size ceiling — this
+book's PCM is ~8.6GB per stage, so every intermediate file is raw
+headerless PCM instead; (2) `amultiply`'s two inputs must be byte-exact
+in length or it silently truncates — envelope length is now derived from
+the real extracted PCM's actual byte count, not re-estimated from
+duration; (3) the most significant one — mapping cover art directly from
+the source container (`-map 1:v?`) alongside `-map_chapters` from that
+same input **silently corrupted the first several chapter titles**
+(swapped with unrelated later titles, start times unaffected, no error
+raised). Fixed by extracting the cover to a standalone image first (the
+base project's own already-proven `cover.py` pattern) and supplying it
+as an independent third input — exactly how `encoder.py` already does
+it. A regression test for this exact defect is in `test_validator.py`.
+
+Not yet built: any UI (G5); render-stage resumability (PRD O-05 —
+current renderer is all-or-nothing per PRD §11.4's "mandatory fallback,"
+which a real 615s/13.5-hour render makes a reasonable MVP position); a
+persisted `filter-report.json` artifact (the `ValidationReport` return
+value exists, writing it to disk is G5/orchestration work).
 
 **Chapter-aware transcription chunking** (`chunking.py`, `transcription_orchestrator.py`):
 the base project already has a proven pattern for chapter-based audio
@@ -163,3 +196,23 @@ lands mid-word, so this stays a safety margin, not an assumption.
 passes it straight through; omitting it preserves the original
 uniform-windowing behavior exactly (10 new chunking tests + 2 orchestrator
 tests confirm both the chapter-aware paths and that fallback).
+
+## Current overall status (2026-08-25)
+
+**G0-G4 complete**, each with real proof, not just passing mocked tests:
+real whisper.cpp transcription, real chunked pause/resume across a
+simulated app restart, and now a real ~13.5-hour production audiobook
+rendered and validated end-to-end with zero errors. 1333 tests passing
+project-wide (317 in `tests/filter/`), 98% coverage on `m4bmaker/filter/`,
+`black`/`flake8`/`mypy` clean throughout, 11 commits, nothing in the
+original conversion tool touched.
+
+Not yet built: any UI (G5) — every gate so far is backend/service work
+with no PySide6 screens wired up yet; catalog persistence (in-memory
+only by design); resume compatibility verification (documented as the
+caller's responsibility, not yet implemented); render-stage
+resumability (deferred, see G4 above); CLI parity (O-07, never decided);
+multi-instance database locking (ADR-0005's flagged gap); real
+throughput/memory benchmarking on named reference hardware (PRD §13.1,
+deliberately deferred); anything G6-only (human listening review,
+accessibility, security review, packaging/signing).
