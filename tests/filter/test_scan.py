@@ -6,7 +6,7 @@ import pytest
 
 from m4bmaker.filter.catalog import CatalogService
 from m4bmaker.filter.models import ReviewStatus
-from m4bmaker.filter.scan import build_report, run_scan
+from m4bmaker.filter.scan import TranscriptWordIndex, build_report, run_scan
 from m4bmaker.filter.transcript import (
     SegmentStatus,
     Transcript,
@@ -192,3 +192,97 @@ class TestBuildReport:
         report = build_report(scan, source_duration_ms=60_000)
         assert report.total_raw_hits == 0
         assert report.total_planned_attenuated_duration_ms == 0
+
+
+class TestTranscriptWordIndex:
+    def test_context_around_middle_hit(self, service: CatalogService) -> None:
+        snapshot, darn, _ = _profile_with_two_terms(service)
+        words = [
+            _word("and", 0, 100),
+            _word("then", 100, 200),
+            _word("he", 200, 300),
+            _word("said", 300, 400),
+            _word("darn", 500, 600),
+            _word("it", 700, 800),
+            _word("was", 800, 900),
+            _word("too", 900, 1000),
+            _word("late", 1000, 1100),
+        ]
+        transcript = _transcript(words)
+        scan = run_scan(transcript, snapshot, NORMALIZATION_VERSION)
+        hit = scan.hits[0]
+
+        index = TranscriptWordIndex(transcript)
+        before, after = index.context(hit)
+
+        assert before == ("and", "then", "he", "said")
+        assert after == ("it", "was", "too", "late")
+
+    def test_context_clamped_to_window_size(self, service: CatalogService) -> None:
+        snapshot, darn, _ = _profile_with_two_terms(service)
+        words = [_word(f"w{i}", i * 100, i * 100 + 90) for i in range(6)]
+        words.append(_word("darn", 700, 800))
+        words += [_word(f"w{i}", 900 + i * 100, 990 + i * 100) for i in range(6)]
+        transcript = _transcript(words)
+        scan = run_scan(transcript, snapshot, NORMALIZATION_VERSION)
+        hit = scan.hits[0]
+
+        index = TranscriptWordIndex(transcript)
+        before, after = index.context(hit, window=5)
+
+        assert before == ("w1", "w2", "w3", "w4", "w5")
+        assert after == ("w0", "w1", "w2", "w3", "w4")
+
+    def test_context_clamped_at_transcript_boundaries(
+        self, service: CatalogService
+    ) -> None:
+        snapshot, darn, _ = _profile_with_two_terms(service)
+        transcript = _transcript([_word("darn", 0, 100), _word("it", 200, 300)])
+        scan = run_scan(transcript, snapshot, NORMALIZATION_VERSION)
+        hit = scan.hits[0]
+
+        index = TranscriptWordIndex(transcript)
+        before, after = index.context(hit)
+
+        assert before == ()
+        assert after == ("it",)
+
+    def test_multi_word_phrase_hit_context_spans_the_whole_phrase(
+        self, service: CatalogService
+    ) -> None:
+        cat = service.create_category("Profanity")
+        entry, _ = service.create_entry(cat.id, "oh darn")
+        profile = service.create_profile("Test", entry_ids=[entry.id])
+        snapshot = service.create_snapshot(profile.id)
+        words = [
+            _word("she", 0, 100),
+            _word("said", 100, 200),
+            _word("oh", 300, 400),
+            _word("darn", 400, 500),
+            _word("again", 600, 700),
+        ]
+        transcript = _transcript(words)
+        scan = run_scan(transcript, snapshot, NORMALIZATION_VERSION)
+        hit = scan.hits[0]
+        assert hit.match_rule == "exact_phrase"
+
+        index = TranscriptWordIndex(transcript)
+        before, after = index.context(hit)
+
+        assert before == ("she", "said")
+        assert after == ("again",)
+
+    def test_hit_not_from_this_transcript_returns_empty_context(
+        self, service: CatalogService
+    ) -> None:
+        snapshot, darn, _ = _profile_with_two_terms(service)
+        transcript_a = _transcript([_word("darn", 0, 100)])
+        scan = run_scan(transcript_a, snapshot, NORMALIZATION_VERSION)
+        hit = scan.hits[0]
+
+        transcript_b = _transcript([_word("heck", 5000, 5100)])
+        index = TranscriptWordIndex(transcript_b)
+        before, after = index.context(hit)
+
+        assert before == ()
+        assert after == ()

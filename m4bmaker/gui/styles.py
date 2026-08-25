@@ -10,6 +10,7 @@ Ground Warm  #ebe6dd   cards / group boxes
 White        #faf8f4   input surfaces
 Terracotta   #c45a2d   accent / primary action
 Rule         #d0c9be   borders / dividers
+Success      #4b7a52   wizard step "done" state (filter/gui/wizard)
 """
 
 from __future__ import annotations
@@ -495,6 +496,51 @@ QProgressBar#jobProgress::chunk {
     background-color: #c45a2d;
     border-radius: 2px;
 }
+
+/* ── Wizard stepper (gui/filter/wizard) ─────────────────────────────── */
+QLabel#stepBadge {
+    border: 2px solid #d0c9be;
+    border-radius: 14px;
+    background-color: #f5f2ed;
+    color: #7a7a7a;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#stepBadge[stepState="current"] {
+    border-color: #c45a2d;
+    border-width: 3px;
+    color: #c45a2d;
+}
+QLabel#stepBadge[stepState="done"] {
+    background-color: #4b7a52;
+    border-color: #4b7a52;
+    color: #faf8f4;
+}
+QLabel#stepBadge[stepState="locked"] {
+    background-color: #ebe6dd;
+    border-color: #ebe6dd;
+    color: #b5ae9e;
+}
+QLabel#stepLine {
+    background-color: #d0c9be;
+}
+QLabel#stepLine[filled="true"] {
+    background-color: #4b7a52;
+}
+QLabel#stepName {
+    font-size: 11px;
+    color: #7a7a7a;
+}
+QLabel#stepName[stepState="current"] {
+    color: #c45a2d;
+    font-weight: 700;
+}
+QLabel#stepName[stepState="done"] {
+    color: #1a1a1a;
+}
+QLabel#stepName[stepState="locked"] {
+    color: #b5ae9e;
+}
 """
 
 # ── Dark mode palette ─────────────────────────────────────────────────────────
@@ -507,6 +553,7 @@ QProgressBar#jobProgress::chunk {
 # Dark Muted   #888888   labels / hints
 # Dark Rule    #333333   borders / dividers
 # Accent       #c45a2d   unchanged
+# Success      #7cb88a   wizard step "done" state (filter/gui/wizard)
 
 DARK_STYLESHEET = """
 /* ── Reset ──────────────────────────────────────────────────────────── */
@@ -988,6 +1035,51 @@ QProgressBar#jobProgress {
 QProgressBar#jobProgress::chunk {
     background-color: #c45a2d;
     border-radius: 2px;
+}
+
+/* ── Wizard stepper (gui/filter/wizard) ─────────────────────────────── */
+QLabel#stepBadge {
+    border: 2px solid #333333;
+    border-radius: 14px;
+    background-color: #1a1a1a;
+    color: #888888;
+    font-size: 11px;
+    font-weight: 600;
+}
+QLabel#stepBadge[stepState="current"] {
+    border-color: #c45a2d;
+    border-width: 3px;
+    color: #c45a2d;
+}
+QLabel#stepBadge[stepState="done"] {
+    background-color: #7cb88a;
+    border-color: #7cb88a;
+    color: #1a1a1a;
+}
+QLabel#stepBadge[stepState="locked"] {
+    background-color: #242424;
+    border-color: #242424;
+    color: #5a5a5a;
+}
+QLabel#stepLine {
+    background-color: #333333;
+}
+QLabel#stepLine[filled="true"] {
+    background-color: #7cb88a;
+}
+QLabel#stepName {
+    font-size: 11px;
+    color: #888888;
+}
+QLabel#stepName[stepState="current"] {
+    color: #c45a2d;
+    font-weight: 700;
+}
+QLabel#stepName[stepState="done"] {
+    color: #c8c2b8;
+}
+QLabel#stepName[stepState="locked"] {
+    color: #5a5a5a;
 }
 """
 

@@ -22,7 +22,7 @@ from .models import (
     ReviewStatus,
     ScanHit,
 )
-from .transcript import Transcript
+from .transcript import Transcript, TranscriptWord
 
 
 def _new_id() -> str:
@@ -157,3 +157,45 @@ def build_report(
         term_counts=dict(term_counts),
         total_planned_attenuated_duration_ms=total_duration,
     )
+
+
+class TranscriptWordIndex:
+    """O(1) hit-to-word lookup for PRD §9.4's per-hit context requirement
+    ("Up to five recognized words before/after for local context, subject
+    to transcript boundaries").
+
+    Built once per transcript, not per hit — a review screen commonly asks
+    for context on every visible hit, and a linear scan of
+    ``transcript.words()`` per hit would be O(hits × words) against a
+    transcript that can run to ~150k words (PRD §16.2's scale note in
+    ``matcher.py``).
+    """
+
+    def __init__(self, transcript: Transcript) -> None:
+        self._words: list[TranscriptWord] = transcript.words()
+        self._by_start_ms: dict[int, int] = {
+            w.start_ms: i for i, w in enumerate(self._words)
+        }
+        self._by_end_ms: dict[int, int] = {
+            w.end_ms: i for i, w in enumerate(self._words)
+        }
+
+    def context(
+        self, hit: ScanHit, window: int = 5
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Return ``(before, after)`` recognized-word text, each up to
+        *window* words, clamped to the transcript's boundaries. Returns two
+        empty tuples if *hit* doesn't correspond to this transcript (its
+        exact start/end timestamps aren't found) rather than raising —
+        context is a display nicety, not something a caller should have to
+        guard against for every render.
+        """
+        start_idx = self._by_start_ms.get(hit.start_ms)
+        end_idx = self._by_end_ms.get(hit.end_ms)
+        if start_idx is None or end_idx is None:
+            return (), ()
+        before = tuple(
+            w.text for w in self._words[max(0, start_idx - window) : start_idx]
+        )
+        after = tuple(w.text for w in self._words[end_idx + 1 : end_idx + 1 + window])
+        return before, after

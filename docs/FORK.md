@@ -36,7 +36,9 @@ unchanged, and is intentionally left untouched to keep future
      chapter/section progress terminology), approved after an iterative
      wireframe review; `0011` — Catalog term masking (category- and
      entry-level, OR-composed), decided directly by the product owner
-     and shipped.
+     and shipped; `0012` — the wizard shell and Review step's real
+     PySide6 implementation, porting ADR-0010/0011's approved wireframe
+     design to working, tested, visually-verified code.
 3. **`docs/TESTING.md`** — test conventions specific to the new code.
 
 ## Status
@@ -413,3 +415,71 @@ Not yet built: the rest of the wizard's per-step screens in PySide6
 a bulk "mask every entry in this profile" action — masking is set
 per-category or per-word only, as decided, with no profile-level
 shortcut.
+
+## G5: Wizard shell and Review step — real PySide6 code (2026-08-25)
+
+The wizard shell and Review step move from wireframe to real, working
+code. Full rationale in
+[docs/adr/0012-wizard-shell-and-review-implementation.md](adr/0012-wizard-shell-and-review-implementation.md).
+
+New subpackage `m4bmaker/gui/filter/wizard/`:
+- `stepper.py` — `StepperWidget`, a direct port of the approved
+  wireframe stepper (equal-sized cells, one continuous connecting line,
+  state via color/weight only, including the exact "furthest-reached
+  but not active" edge case the wireframe review caught).
+- `wizard_window.py` — `WizardWindow`, the shell: stepper, a
+  `QStackedWidget` content pane (which — unlike the wireframe's own
+  runtime-JS height-measurement workaround — sizes itself to its
+  largest child natively, no measurement trick needed), Back/Continue
+  footer.
+- `review_step.py` — `ReviewStep`, wired to the real backend rather
+  than a demo dataset: `scan.build_report()` for the stat strip,
+  `interval_planner.build_render_plan()` (the same function
+  `build_report()` itself calls) for the Render Plan tab, and
+  `CatalogService.is_masked()` (ADR-0011) for masking. Two departures
+  from the wireframe, both toward conventions already proven elsewhere
+  in this codebase: one checkable "Included" column instead of two
+  Include/Exclude buttons (mirrors `CatalogWindow`'s pattern), and bulk
+  actions read Qt's native multi-row table selection instead of a
+  separate selection-checkbox column.
+- `placeholder_step.py` — the other six steps (Source, Transcript,
+  Transcribe, Profile, Scan, Render, Complete) get a plain "isn't built
+  yet" stand-in, since only the shell and Review have been through a
+  wireframe review. The wizard is fully navigable end-to-end today
+  regardless — Back/Continue and the stepper's click-to-revisit all
+  work against the placeholders exactly as they will once each step is
+  built for real.
+
+New backend piece `scan.TranscriptWordIndex`: an O(1)-per-hit lookup
+for PRD §9.4's "up to five recognized words before/after" context
+requirement, built once per transcript rather than scanned per hit
+(relevant at the ~150k-word scale a 20-hour book's transcript reaches).
+
+Wired into `MainWindow`'s Tools menu as "Filter Audiobook…", above a
+new separator from Catalog/Model Manager since it's the fork's central
+feature rather than a supporting tool.
+
+50 new tests, all against real backend objects (a real `CatalogService`,
+`Transcript`, and a `Scan` produced by the actual matcher — not
+hand-built fake hit lists), `black`/`flake8`/`mypy` clean. Two real bugs
+caught only by testing: `QTableWidget.selectRow()` replaces rather than
+accumulates selection even in `ExtendedSelection` mode (confirmed
+empirically), and holding a `QTableWidgetItem` reference across a
+checkbox toggle fails because every toggle rebuilds the whole table —
+both fixed in the tests themselves once understood, not product bugs.
+
+**Visually verified against the live app**: launched it, opened
+Tools → Filter Audiobook…, confirmed the shell renders correctly on
+the first step, clicked Continue five times, and confirmed the stepper
+correctly shows five green checkmarks with filled connecting lines
+while Review's real title/subtitle/stat strip/tabs/filters/table all
+render as designed.
+
+Full suite: **1470 passing, 2 correctly skipped**, project-wide.
+
+Not yet built: the other six steps' real designs and implementations;
+the Scan step, so nothing calls `ReviewStep.set_scan()` in the running
+app yet (verified directly via the widget's own tests instead); a more
+prominent wizard entry point than a Tools-menu item, given it's the
+fork's central feature rather than a supporting tool like Catalog/Model
+Manager.
