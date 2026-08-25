@@ -29,7 +29,9 @@ unchanged, and is intentionally left untouched to keep future
      gain-envelope mechanism; `0007` — Renderer/Validator, proven against
      a real 13.5-hour audiobook; `0008` — G5 catalog persistence (JSON,
      not SQLite), UI structure (new window), and start-screen sequencing,
-     decided directly by the product owner.
+     decided directly by the product owner; `0009` — Model Manager window
+     design (table + details panel, one download at a time, shared
+     `gui/filter/workers.py`).
 3. **`docs/TESTING.md`** — test conventions specific to the new code.
 
 ## Status
@@ -267,6 +269,42 @@ asserting on both resulting widget state and the underlying
 
 Full suite: **1367 passing, 2 correctly skipped**, project-wide.
 
-Not yet built: Model Manager UI; the transcribe/scan/review/render
-wizard (wireframes planned first, per the decision above); first-run/
-error-state polish.
+## G5: Model Manager window (2026-08-25)
+
+The second G5 screen. `model_manager.py`'s backend (known-model catalog,
+checksum-verified download, install-state checks, removal — all built
+during the G3 spike) had no UI until now. Full design rationale in
+[docs/adr/0009-model-manager-window.md](adr/0009-model-manager-window.md).
+
+Built:
+- `m4bmaker/gui/filter/workers.py` (new): `ModelDownloadWorker`, a
+  `QThread` wrapping `download_model()`, mirroring the base project's
+  `ConvertWorker` exactly (progress/result_ready/cancelled/error
+  signals, `threading.Event`-based cancellation). Starts this file as
+  the shared home for filtering-feature UI workers, matching how the
+  base project keeps every `QThread` worker in one `gui/worker.py`
+  rather than one file per widget.
+- `m4bmaker/gui/filter/model_manager_window.py` (new): `ModelManagerWindow`.
+  A table (Model/Description/Size/Status) covers the scannable PRD
+  §10.1 fields; a details panel below it shows the selected model's
+  full source URL and SHA-256 checksum (too long for a table cell); an
+  engine-version label at the top reflects the real installed
+  whisper.cpp binary via `transcript_engine.get_whisper_version()`. Only
+  one download runs at a time. Wired into `MainWindow`'s Tools menu as
+  "Manage Models…", following `CatalogWindow`'s exact
+  lazy-create/`apply_stylesheet`/`closeEvent` pattern.
+- 26 tests (5 worker, 21 window), `black`/`flake8`/`mypy` clean.
+  Confirmed via `git stash` comparison to introduce zero new lint/type
+  issues in `window.py`.
+
+**Visually verified against the live app**: launched it, opened Tools →
+Manage Models…, and confirmed the window renders as designed —
+including an unplanned real-world proof point, since this development
+machine actually has whisper.cpp installed: the window's engine label
+correctly read "Engine: whisper.cpp 1.9.2" from the live binary rather
+than a stubbed value.
+
+Full suite: **1395 passing, 2 correctly skipped**, project-wide.
+
+Not yet built: the transcribe/scan/review/render wizard (wireframes
+planned first, per ADR-0008's decision); first-run/error-state polish.

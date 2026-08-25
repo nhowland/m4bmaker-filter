@@ -83,6 +83,7 @@ from m4bmaker.gui.queue_manager import QueueManager
 from m4bmaker.gui.queue_window import QueueWindow
 from m4bmaker.gui.updater import UpdateChecker, _RELEASES_URL
 from m4bmaker.gui.filter.catalog_window import CatalogWindow
+from m4bmaker.gui.filter.model_manager_window import ModelManagerWindow
 from m4bmaker.filter.catalog_store import load_catalog
 from m4bmaker.preflight import format_preflight_summary
 from m4bmaker.utils import sanitize_filename_component
@@ -167,6 +168,7 @@ class MainWindow(QMainWindow):
         self._queue_manager = QueueManager()
         self._queue_window: Optional[QueueWindow] = None
         self._catalog_window: Optional[CatalogWindow] = None
+        self._model_manager_window: Optional[ModelManagerWindow] = None
         # H6: keep direct-convert controls gated on live queue state.
         # Bound methods only — a lambda here would outlive the window and a
         # late queue signal would invoke a slot on a destroyed C++ object.
@@ -233,6 +235,9 @@ class MainWindow(QMainWindow):
         catalog_action = QAction("Manage Word Catalog…", self)
         catalog_action.triggered.connect(self._show_catalog_window)
         tools_menu.addAction(catalog_action)
+        model_manager_action = QAction("Manage Models…", self)
+        model_manager_action.triggered.connect(self._show_model_manager_window)
+        tools_menu.addAction(model_manager_action)
 
         # View menu
         view_menu = mb.addMenu("View")
@@ -309,6 +314,8 @@ class MainWindow(QMainWindow):
             self._queue_window.apply_stylesheet(self._dark_mode)
         if self._catalog_window is not None:
             self._catalog_window.apply_stylesheet(self._dark_mode)
+        if self._model_manager_window is not None:
+            self._model_manager_window.apply_stylesheet(self._dark_mode)
 
     def _on_job_updated(self, _job_id: object) -> None:
         self._update_controls()
@@ -941,6 +948,8 @@ class MainWindow(QMainWindow):
             self._queue_window.close()
         if self._catalog_window is not None:
             self._catalog_window.close()
+        if self._model_manager_window is not None:
+            self._model_manager_window.close()
 
         super().closeEvent(event)
 
@@ -1157,6 +1166,14 @@ class MainWindow(QMainWindow):
         self._catalog_window.show()
         self._catalog_window.raise_()
         self._catalog_window.activateWindow()
+
+    def _show_model_manager_window(self) -> None:
+        if self._model_manager_window is None:
+            self._model_manager_window = ModelManagerWindow(parent=self)
+            self._model_manager_window.apply_stylesheet(self._dark_mode)
+        self._model_manager_window.show()
+        self._model_manager_window.raise_()
+        self._model_manager_window.activateWindow()
 
     def _on_folder_changed(self, p: Path) -> None:
         self._book = None

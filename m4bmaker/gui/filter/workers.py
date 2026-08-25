@@ -1,0 +1,67 @@
+"""QThread workers for the filtering feature's UI (PRD §11.5).
+
+Mirrors ``m4bmaker/gui/worker.py``'s existing convention exactly: one
+``QThread`` subclass per long-running operation, a ``progress`` signal of
+``(message, fraction)``, a ``threading.Event``-based ``request_cancel()``,
+and ``result_ready``/``cancelled``/``error`` signals so the caller never
+blocks the UI thread waiting on a return value.
+"""
+
+from __future__ import annotations
+
+import threading
+from pathlib import Path
+
+from PySide6.QtCore import QThread, Signal
+
+from m4bmaker.filter.model_manager import (
+    ModelChecksumMismatchError,
+    ModelDownloadCancelled,
+    ModelDownloadError,
+    ModelSpec,
+    download_model,
+)
+
+
+class ModelDownloadWorker(QThread):
+    """Run :func:`download_model` off the UI thread."""
+
+    progress = Signal(str, float)  # message, 0.0-1.0
+    result_ready = Signal(object)  # Path (installed file)
+    cancelled = Signal()  # user cancellation (not an error)
+    error = Signal(str)
+
+    def __init__(self, spec: ModelSpec, dest_dir: Path) -> None:
+        super().__init__()
+        self._spec = spec
+        self._dest_dir = dest_dir
+        self._cancel_event = threading.Event()
+
+    def request_cancel(self) -> None:
+        self._cancel_event.set()
+
+    def run(self) -> None:
+        try:
+            path = download_model(
+                self._spec,
+                self._dest_dir,
+                progress_callback=self._on_progress,
+                cancel_event=self._cancel_event,
+            )
+            self.result_ready.emit(path)
+        except ModelDownloadCancelled:
+            self.cancelled.emit()
+        except (ModelDownloadError, ModelChecksumMismatchError) as exc:
+            self.error.emit(str(exc))
+        except Exception as exc:  # noqa: BLE001
+            if self._cancel_event.is_set():
+                self.cancelled.emit()
+            else:
+                self.error.emit(str(exc))
+
+    def _on_progress(self, downloaded: int, total: int) -> None:
+        fraction = downloaded / total if total else 0.0
+        mb_done = downloaded / (1024 * 1024)
+        mb_total = total / (1024 * 1024)
+        message = f"Downloading {self._spec.name}: {mb_done:.1f} / {mb_total:.1f} MB"
+        self.progress.emit(message, fraction)
