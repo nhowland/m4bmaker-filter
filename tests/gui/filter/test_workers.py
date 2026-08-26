@@ -17,6 +17,7 @@ from PySide6.QtWidgets import QApplication
 
 from unittest.mock import patch
 
+from m4bmaker.filter.catalog import CatalogService
 from m4bmaker.filter.model_manager import (
     ModelChecksumMismatchError,
     ModelDownloadCancelled,
@@ -25,7 +26,15 @@ from m4bmaker.filter.model_manager import (
 )
 from m4bmaker.filter.job_store import JobStore, connect
 from m4bmaker.filter.jobs import JobState, JobType
-from m4bmaker.filter.models import MediaManifest
+from m4bmaker.filter.models import (
+    NORMALIZATION_VERSION,
+    AttenuationSettings,
+    AudioTrack,
+    FilterProfileSnapshot,
+    MediaManifest,
+    RenderPlan,
+)
+from m4bmaker.filter.renderer import RenderError, RenderResult
 from m4bmaker.filter.transcript import (
     Transcript,
     TranscriptEngine,
@@ -33,10 +42,13 @@ from m4bmaker.filter.transcript import (
     TranscriptStatus,
 )
 from m4bmaker.filter.transcription_orchestrator import TranscriptionPaused
+from m4bmaker.filter.validator import ValidationReport
 from m4bmaker.gui.filter.workers import (
     DownloadCoordinator,
     MediaInspectWorker,
     ModelDownloadWorker,
+    RenderWorker,
+    ScanWorker,
     TranscribeWorker,
 )
 
@@ -544,3 +556,298 @@ class TestTranscribeWorker:
 
         store = JobStore(connect(tmp_path / "filter.db"))
         assert store.get_job("job-1") is None
+
+
+def _make_snapshot() -> FilterProfileSnapshot:
+    service = CatalogService()
+    category = service.create_category("Profanity")
+    entry, _ = service.create_entry(category.id, "darn")
+    profile = service.create_profile("Family Friendly", entry_ids=[entry.id])
+    return service.create_snapshot(profile.id)
+
+
+class TestScanWorker:
+    def test_success_emits_scan(self, qapp: QApplication) -> None:
+        transcript = _make_transcript()
+        snapshot = _make_snapshot()
+        results: list[object] = []
+
+        worker = ScanWorker(transcript, snapshot, NORMALIZATION_VERSION)
+        worker.result_ready.connect(results.append)
+        worker.start()
+        worker.wait(3000)
+        qapp.processEvents()
+
+        assert len(results) == 1
+        scan = results[0]
+        assert scan.profile_snapshot is snapshot
+        assert scan.transcript_schema_version == transcript.schema_version
+        assert scan.source_fingerprint == transcript.source.fingerprint
+
+    def test_unexpected_exception_emits_error(self, qapp: QApplication) -> None:
+        transcript = _make_transcript()
+        snapshot = _make_snapshot()
+        errors: list[str] = []
+
+        with patch(
+            "m4bmaker.gui.filter.workers.run_scan", side_effect=RuntimeError("boom")
+        ):
+            worker = ScanWorker(transcript, snapshot, NORMALIZATION_VERSION)
+            worker.error.connect(errors.append)
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert errors == ["boom"]
+
+
+def _manifest_with_track(
+    bit_rate: int | None = 126_000,
+    codec_name: str | None = "aac",
+) -> MediaManifest:
+    return MediaManifest(
+        schema_version=1,
+        source_path="/books/a.m4b",
+        fingerprint="sha256:x",
+        duration_ms=10_000,
+        tracks=(
+            AudioTrack(
+                index=0,
+                codec_name=codec_name,
+                is_default=True,
+                channels=2,
+                sample_rate=44_100,
+                bit_rate=bit_rate,
+            ),
+        ),
+        selected_track_index=0,
+        selected_track_is_fallback=False,
+        chapters=(),
+        required_metadata={},
+        cover_present=False,
+        eligible=True,
+    )
+
+
+def _empty_plan(duration_ms: int = 10_000) -> RenderPlan:
+    return RenderPlan(
+        intervals=(), attenuation=AttenuationSettings(), source_duration_ms=duration_ms
+    )
+
+
+class TestRenderWorker:
+    def test_success_emits_result_validation_and_a_real_report_path(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        manifest = _manifest_with_track()
+        plan = _empty_plan()
+        output_path = tmp_path / "out.m4b"
+        fake_result = RenderResult(output_path=output_path, duration_ms=10_000)
+        fake_validation = ValidationReport(issues=())
+
+        with (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                side_effect=lambda name: f"/usr/bin/{name}",
+            ),
+            patch(
+                "m4bmaker.gui.filter.workers.render", return_value=fake_result
+            ) as mock_render,
+            patch("m4bmaker.gui.filter.workers.inspect", return_value=manifest),
+            patch("m4bmaker.gui.filter.workers.validate", return_value=fake_validation),
+        ):
+            worker = RenderWorker(
+                Path("/books/a.m4b"), manifest, plan, output_path, "128k"
+            )
+            results: list[tuple] = []
+            worker.result_ready.connect(lambda *args: results.append(args))
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert len(results) == 1
+        result, validation, report_path = results[0]
+        assert result is fake_result
+        assert validation is fake_validation
+        assert report_path.exists()  # write_filter_report() runs for real
+        mock_render.assert_called_once()
+        assert mock_render.call_args.args[0] == Path("/books/a.m4b")
+        assert mock_render.call_args.args[6] == "128k"
+
+    def test_failed_validation_still_emits_result_ready_not_error(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        """The worker only reports what happened — deciding that a failed
+        ValidationReport means "needs attention" is the step's job, not
+        the worker's (mirrors ScanWorker's own "worker reports, step
+        decides" split)."""
+        manifest = _manifest_with_track()
+        plan = _empty_plan()
+        output_path = tmp_path / "out.m4b"
+        fake_result = RenderResult(output_path=output_path, duration_ms=10_000)
+        from m4bmaker.filter.validator import Severity, ValidationIssue
+
+        failing_validation = ValidationReport(
+            issues=(
+                ValidationIssue(
+                    check="duration", severity=Severity.ERROR, message="bad"
+                ),
+            )
+        )
+
+        with (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                side_effect=lambda name: f"/usr/bin/{name}",
+            ),
+            patch("m4bmaker.gui.filter.workers.render", return_value=fake_result),
+            patch("m4bmaker.gui.filter.workers.inspect", return_value=manifest),
+            patch(
+                "m4bmaker.gui.filter.workers.validate",
+                return_value=failing_validation,
+            ),
+        ):
+            worker = RenderWorker(
+                Path("/books/a.m4b"), manifest, plan, output_path, "128k"
+            )
+            results: list[tuple] = []
+            errors: list[str] = []
+            worker.result_ready.connect(lambda *args: results.append(args))
+            worker.error.connect(errors.append)
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert errors == []
+        assert len(results) == 1
+        assert results[0][1].passed is False
+
+    def test_missing_ffmpeg_emits_recoverable_error(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        errors: list[str] = []
+        with patch("m4bmaker.gui.filter.workers.find_binary", return_value=None):
+            worker = RenderWorker(
+                Path("/books/a.m4b"),
+                _manifest_with_track(),
+                _empty_plan(),
+                tmp_path / "out.m4b",
+                "128k",
+            )
+            worker.error.connect(errors.append)
+            worker.start()
+            worker.wait(3000)
+        qapp.processEvents()
+        assert len(errors) == 1
+        assert "ffmpeg" in errors[0]
+
+    def test_missing_ffprobe_emits_recoverable_error(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        errors: list[str] = []
+        with patch(
+            "m4bmaker.gui.filter.workers.find_binary",
+            side_effect=lambda name: "/usr/bin/ffmpeg" if name == "ffmpeg" else None,
+        ):
+            worker = RenderWorker(
+                Path("/books/a.m4b"),
+                _manifest_with_track(),
+                _empty_plan(),
+                tmp_path / "out.m4b",
+                "128k",
+            )
+            worker.error.connect(errors.append)
+            worker.start()
+            worker.wait(3000)
+        qapp.processEvents()
+        assert len(errors) == 1
+        assert "ffprobe" in errors[0]
+
+    def test_render_error_emits_error_not_result_ready(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        errors: list[str] = []
+        results: list[tuple] = []
+        with (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                side_effect=lambda name: f"/usr/bin/{name}",
+            ),
+            patch(
+                "m4bmaker.gui.filter.workers.render",
+                side_effect=RenderError("ffmpeg exploded"),
+            ),
+        ):
+            worker = RenderWorker(
+                Path("/books/a.m4b"),
+                _manifest_with_track(),
+                _empty_plan(),
+                tmp_path / "out.m4b",
+                "128k",
+            )
+            worker.error.connect(errors.append)
+            worker.result_ready.connect(lambda *args: results.append(args))
+            worker.start()
+            worker.wait(3000)
+        qapp.processEvents()
+        assert errors == ["ffmpeg exploded"]
+        assert results == []
+
+    def test_validate_exception_emits_error(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        manifest = _manifest_with_track()
+        output_path = tmp_path / "out.m4b"
+        fake_result = RenderResult(output_path=output_path, duration_ms=10_000)
+        errors: list[str] = []
+
+        with (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                side_effect=lambda name: f"/usr/bin/{name}",
+            ),
+            patch("m4bmaker.gui.filter.workers.render", return_value=fake_result),
+            patch("m4bmaker.gui.filter.workers.inspect", return_value=manifest),
+            patch(
+                "m4bmaker.gui.filter.workers.validate",
+                side_effect=RuntimeError("validate boom"),
+            ),
+        ):
+            worker = RenderWorker(
+                Path("/books/a.m4b"), manifest, _empty_plan(), output_path, "128k"
+            )
+            worker.error.connect(errors.append)
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert errors == ["validate boom"]
+
+    def test_validating_signal_fires_between_render_and_result(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        manifest = _manifest_with_track()
+        output_path = tmp_path / "out.m4b"
+        fake_result = RenderResult(output_path=output_path, duration_ms=10_000)
+        fake_validation = ValidationReport(issues=())
+        events: list[str] = []
+
+        with (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                side_effect=lambda name: f"/usr/bin/{name}",
+            ),
+            patch("m4bmaker.gui.filter.workers.render", return_value=fake_result),
+            patch("m4bmaker.gui.filter.workers.inspect", return_value=manifest),
+            patch("m4bmaker.gui.filter.workers.validate", return_value=fake_validation),
+        ):
+            worker = RenderWorker(
+                Path("/books/a.m4b"), manifest, _empty_plan(), output_path, "128k"
+            )
+            worker.validating.connect(lambda: events.append("validating"))
+            worker.result_ready.connect(lambda *a: events.append("result_ready"))
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert events == ["validating", "result_ready"]

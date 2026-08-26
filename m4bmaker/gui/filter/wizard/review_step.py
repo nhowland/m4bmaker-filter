@@ -22,10 +22,15 @@ codebase's own existing conventions rather than porting it verbatim:
   extra column was working around a limitation plain HTML has that Qt
   doesn't.
 
-Nothing calls :meth:`set_scan` yet — the Scan step it would come from is
-still a placeholder (ADR-0010) — so this widget also has to render
-sensibly with no scan at all, which is exercised directly by its own
-tests rather than only through a future end-to-end wizard flow.
+:meth:`set_scan` is now called for real, by the wizard shell, once the
+Scan step (ADR-0018) produces a completed ``Scan`` — but this widget was
+built and tested well before that existed, so it also has to render
+sensibly with no scan at all, which its own tests still exercise
+directly rather than only through the now-real end-to-end wizard flow.
+:meth:`current_render_plan` (ADR-0019) is the one thing this step adds
+purely to unblock its own successor: Render needed a public way to read
+this screen's *live* include/exclude decisions as a real ``RenderPlan``,
+which nothing outside this widget could reach before.
 """
 
 from __future__ import annotations
@@ -48,7 +53,12 @@ from PySide6.QtWidgets import (
 
 from m4bmaker.filter.catalog import CatalogService
 from m4bmaker.filter.interval_planner import build_render_plan
-from m4bmaker.filter.models import AttenuationSettings, ReviewStatus, ScanHit
+from m4bmaker.filter.models import (
+    AttenuationSettings,
+    RenderPlan,
+    ReviewStatus,
+    ScanHit,
+)
 from m4bmaker.filter.scan import Scan, TranscriptWordIndex, build_report
 from m4bmaker.filter.transcript import Transcript
 
@@ -140,7 +150,9 @@ class ReviewStep(WizardStep):
 
         self._confidence_combo = QComboBox()
         self._confidence_combo.addItem("All", _FILTER_ALL)
-        self._confidence_combo.addItem("Available", "available")
+        self._confidence_combo.addItem("Below 25%", "below_25")
+        self._confidence_combo.addItem("Below 75%", "below_75")
+        self._confidence_combo.addItem("Below 90%", "below_90")
         self._confidence_combo.addItem("Not available", "unavailable")
         self._confidence_combo.currentIndexChanged.connect(self._on_confidence_changed)
         filter_row.addWidget(QLabel("Confidence:"))
@@ -243,7 +255,7 @@ class ReviewStep(WizardStep):
         attenuation: AttenuationSettings | None = None,
     ) -> None:
         """Load a completed :class:`~m4bmaker.filter.scan.Scan` for review.
-        The caller (eventually the Scan step) owns producing the scan;
+        The caller (the Scan step, ADR-0018) owns producing the scan;
         this step only displays and records decisions against it."""
         self._scan = scan
         self._catalog = catalog
@@ -255,6 +267,23 @@ class ReviewStep(WizardStep):
         self._filter_confidence = _FILTER_ALL
         self._filter_state = _FILTER_ALL
         self._refresh()
+
+    def current_render_plan(self) -> RenderPlan | None:
+        """The real :class:`~m4bmaker.filter.models.RenderPlan` reflecting
+        this screen's *current* include/exclude decisions — recomputed
+        live from ``self._scan`` on every call, never cached, so it is
+        always exactly what a Render step would need to act on right now
+        (the same computation :meth:`_refresh_plan_tab` already does for
+        its own on-screen preview). ``None`` before a scan is loaded —
+        the first real predecessor Render is wired to (ADR-0019)."""
+        if self._scan is None:
+            return None
+        effective_attenuation = (
+            self._attenuation or self._scan.profile_snapshot.attenuation
+        )
+        return build_render_plan(
+            self._scan.included_hits(), self._source_duration_ms, effective_attenuation
+        )
 
     # ── derived data ─────────────────────────────────────────────────────
 
@@ -284,8 +313,12 @@ class ReviewStep(WizardStep):
             hits = [h for h in hits if h.category_id == self._filter_category]
         if self._filter_term != _FILTER_ALL:
             hits = [h for h in hits if h.entry_id == self._filter_term]
-        if self._filter_confidence == "available":
-            hits = [h for h in hits if h.confidence is not None]
+        if self._filter_confidence == "below_25":
+            hits = [h for h in hits if h.confidence is not None and h.confidence < 0.25]
+        elif self._filter_confidence == "below_75":
+            hits = [h for h in hits if h.confidence is not None and h.confidence < 0.75]
+        elif self._filter_confidence == "below_90":
+            hits = [h for h in hits if h.confidence is not None and h.confidence < 0.90]
         elif self._filter_confidence == "unavailable":
             hits = [h for h in hits if h.confidence is None]
         if self._filter_state != _FILTER_ALL:

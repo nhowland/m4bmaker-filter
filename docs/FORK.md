@@ -48,7 +48,7 @@ unchanged, and is intentionally left untouched to keep future
      real implementation (chapter-aligned chunking and GPU acceleration
      put into real code for the first time, real pause/resume/retry via
      the job state machine), live-verified with a real GPU-accelerated
-     transcription that actually completed.
+     transcription that actually completed; `0016` — the Profile editor's design (a modal dialog owned by the wizard, not a third `CatalogWindow` pane — that pane idea was this fork's own false start, corrected against `catalog_window.py`'s pre-existing docstring before any code was written against it), covering the checkable category/entry tree and the attenuation-settings form; `0017` — the Profile step and editor's real implementation, plus a thoroughly investigated, disclosed local-test-environment limitation (a full local `pytest` run spanning both GUI and non-GUI tests can segfault; this project's actual CI command already excludes `tests/gui/` and is unaffected); `0018` — the Scan step's real implementation (a plain indeterminate-progress worker, not a job-orchestrator-backed one — no chunk boundary exists to checkpoint at, and no evidence yet that one's needed), wiring Profile's chosen profile and whichever real Transcript exists straight into a real scan, and that scan straight into Review, which had been waiting on it since before Scan itself existed; `0019` — the Render step's real implementation (a real determinate progress bar, unlike Scan's — render() already had four real stages to report; no Cancel button, since there's no real stop mechanism underneath it to offer one for), closing three small backend gaps the wireframe pass itself flagged (a default output-path helper, a ported bitrate auto-selection function, and a real persisted filter-report.json ADR-0007 had explicitly deferred to this exact round) and giving Review a small new public getter so Render could finally read its live render plan; `0020` — the Complete step's real implementation, the last of the eight PRD §7.2 stages — a real single "passed validation" statement instead of the original sketch's invented per-check deltas, the "Done closes the window" decision settled directly with the product owner rather than assumed, and one real, confirmed gap (WizardWindow's documented-but-never-built mid-Transcribe/mid-Render close confirmation) flagged for its own follow-up rather than folded in; `0021` — that follow-up, implemented: a real `closeEvent`, asymmetric on purpose — mid-Transcribe gets asked to pause (real, resumable progress) since it can be; mid-Render can only be warned about, since RenderWorker has no stop mechanism at all (ADR-0019's own deliberate choice).
 3. **`docs/TESTING.md`** — test conventions specific to the new code.
 
 ## Status
@@ -779,3 +779,560 @@ Profile step; Profile's own real design; UI surfacing of which backend
 (CPU/GPU) is active during a run (a diagnostics nicety, still not
 built); verification of the GPU/chunking decisions on non-Apple-Silicon
 hardware.
+
+## G5: Profile step and editor — real PySide6 code (2026-08-25)
+
+The Profile step (PRD §7.2 stage 4) moves from placeholder to real,
+working code — the wizard's fifth fully-built step. Full rationale in
+[docs/adr/0016-profile-editor-design.md](adr/0016-profile-editor-design.md)
+(design) and
+[docs/adr/0017-profile-step-and-editor-implementation.md](adr/0017-profile-step-and-editor-implementation.md)
+(implementation).
+
+The design pass corrected a real false start along the way: the first
+instinct was a third "Profiles" pane in `CatalogWindow`, but that
+window's own docstring had already ruled that out (ADR-0008) — profile
+authoring belongs with the wizard, not the Catalog window. New
+`ProfileEditorDialog` (`gui/filter/profile_editor_dialog.py`) is the real
+result: a modal dialog with a name field, a checkable category/entry
+`QTreeWidget` (tri-state propagation, archived-but-referenced entries
+still shown per the "historical snapshots remain readable" rule), and an
+`AttenuationSettings` form with every widget's range pinned to the exact
+bounds `models.py` already validates. New `ProfileStep`
+(`gui/filter/wizard/profile_step.py`): real saved profiles with
+live-computed category/word counts, a first-run empty state (the
+realistic default — PRD §9.2 ships no starter catalog), and
+new/edit/archive actions. `CatalogWindow` gained one small addition of
+its own: a `closed` signal, so Profile's own "Manage Word Catalog…" can
+refresh its counts after an edit without polling.
+
+54 new tests, all against real `CatalogService`/`FilterProfile`/
+`AttenuationSettings` objects, `black`/`flake8`/`mypy` clean.
+
+**A real, disclosed, thoroughly investigated test-environment
+limitation** turned up while stress-testing this round, not a defect in
+the feature itself: running this machine's entire local test suite as
+one `pytest` invocation (GUI and non-GUI together) can segfault once
+enough GUI test modules accumulate — traced, after extensive bisection,
+to a PySide6 6.11.2/shiboken6 interaction that reproduces with even a
+trivial, empty custom `QWidget`, completely independent of this
+feature's own code or design. This project's actual CI command
+(`pytest tests/ --ignore=tests/gui`) already excludes `tests/gui/`
+entirely and is completely unaffected — confirmed clean, repeatedly.
+Full disclosure and the investigation trail: ADR-0017.
+
+## G5: Scan step — real PySide6 code (2026-08-25)
+
+The Scan step (PRD §7.2 stage 5, §9.4) moves from placeholder to real,
+working code — the wizard's sixth fully-built step, and the first one
+wired to two real predecessors that both matter (Transcript/Transcribe
+for the completed `Transcript`, Profile for the chosen profile). Full
+rationale in
+[docs/adr/0018-scan-step-implementation.md](adr/0018-scan-step-implementation.md).
+
+No backend changes at all — `scan.py`/`matcher.py` (`run_scan()`,
+`Scan`, `ScanReport`, `build_report()`) already existed from G2/G3 and
+needed nothing added; this round is UI-only. New `ScanWorker` mirrors
+`MediaInspectWorker`'s simple one-call shape, not `TranscribeWorker`'s
+chunked/durable one — `matcher.scan_transcript()` has no chunk boundary
+to checkpoint at, and its own docstring already flags it as
+unbenchmarked against a real long transcript, so building job-orchestrator
+durability for it now would repeat the exact over-engineering mistake the
+original 30s/5s pause-latency chunking default turned out to be. New
+`ScanStep`: Ready/Running/Needs attention/Complete, real `ScanReport`
+fields, a re-entry guard shaped like `TranscribeStep`'s own but with an
+extra case Transcribe never needed — if the transcript or chosen profile
+actually changed since the last visit, the old scan is stale by
+construction and this resets to "ready to scan" rather than keeping it.
+
+`WizardWindow` gained two new hand-offs: Profile's chosen profile plus
+whichever real `Transcript` exists into Scan, and Scan's completed result
+straight into `ReviewStep.set_scan()` — the exact hand-off Review had
+already defined in its own docstring, written before Scan existed to
+receive it.
+
+15 new tests, all against real `CatalogService`/`Scan`/`ScanReport`/
+`Transcript` objects, `black`/`flake8`/`mypy` clean. The same disclosed
+test-environment limitation from the Profile round (ADR-0017) still
+applies for the same pre-existing, environment-level reason — nothing
+new about it this round; this project's actual CI command remains
+completely unaffected.
+
+## G5: Render step — real PySide6 code (2026-08-25)
+
+The Render step (PRD §7.2 stage 7, §8) moves from placeholder to real,
+working code — the wizard's seventh fully-built step, and the one with
+the most already-built backend of any step so far. Full rationale in
+[docs/adr/0019-render-step-implementation.md](adr/0019-render-step-implementation.md).
+
+`renderer.py`/`validator.py` (`render()`/`validate()`, ADR-0006/0007)
+needed zero changes — already complete, tested, and benchmarked against
+a real ~13.5-hour production audiobook before this round started. Three
+small backend pieces the wireframe pass itself flagged as missing got
+built instead: `renderer.default_output_path()` (the base app's own
+output-path logic turned out to be shaped for a different flow and
+didn't transfer), `renderer.pick_default_bitrate()` (porting, not
+reinventing, the base app's real bitrate-auto-selection logic — verified
+against the same real reference book's own ~126kbps track, snapping to
+128k exactly as predicted), and a new `filter_report.py` module
+(`write_filter_report()`) — the real, persisted `filter-report.json`
+ADR-0007 explicitly deferred as "UI/orchestration-layer work (G5), not
+blocked by anything in this ADR." `ReviewStep` gained one small public
+method, `current_render_plan()`, so Render could finally read Review's
+*live* include/exclude decisions as a real `RenderPlan` — nothing outside
+Review could reach that before.
+
+New `RenderWorker`: unlike `ScanWorker`'s indeterminate bar, `render()`
+already has four real stages to report via its own progress callback, so
+this one relays real determinate progress. No Cancel button in the real
+UI, on purpose — `render()` has no handle back to its own ffmpeg
+subprocesses to interrupt, so a Cancel that couldn't actually stop
+anything was left out rather than shipped as a lie; the wizard's own
+confirm-before-close is the real, working escape hatch. New `RenderStep`:
+Ready/Running/Needs attention/Complete, real editable output-path/bitrate
+defaults, a re-entry guard shaped like Scan's own (structural equality on
+the frozen `RenderPlan` dataclass decides "did anything really change").
+Deliberately does *not* show a numeric duration/chapter delta on a
+successful validation — `validator.py`'s checks only ever produce a
+structured issue when something *fails*, so there's no honestly
+displayable "matched within Xms" value on the passing path; a richer
+Complete/Render summary would need a real `validator.py` change first,
+flagged rather than faked.
+
+51 new tests, all against real `RenderResult`/`ValidationReport`/
+`RenderPlan`/`MediaManifest` objects — only the ffmpeg-touching calls
+(`render`/`validate`/`inspect`) are mocked at the worker boundary, same
+as every other worker test in this codebase. `black`/`flake8`/`mypy`
+clean. The same disclosed test-environment limitation from the Profile/
+Scan rounds (ADR-0017) still applies for the same pre-existing reason;
+this project's actual CI command remains completely unaffected, and
+every realistic scoped test run — including all wizard-step test files
+together (175 tests) — is clean, repeatedly.
+
+Only Complete remains a placeholder now — the last PRD §7.2 stage
+without its own wireframe pass.
+
+## G5: Complete step — real PySide6 code (2026-08-25)
+
+The Complete step (PRD §7.2 stage 8) moves from placeholder to real,
+working code — the wizard's eighth and final step. All eight PRD §7.2
+stages are now real, end to end. Full rationale in
+[docs/adr/0020-complete-step-implementation.md](adr/0020-complete-step-implementation.md).
+
+`RenderStep` gained three small public properties (`result`/
+`validation`/`report_path`) so Complete could finally read what it
+produces — the last "nothing downstream consumes this yet" gap in the
+whole wizard. New `CompleteStep`: one real state (unlike every earlier
+step, no re-entry guard is needed — nothing here runs or can be
+clobbered, so re-displaying the latest result on a later visit is always
+exactly correct), a real single "✓ Passed validation" (or "✓ Passed, with
+warnings" plus the real warning text) statement rather than the original
+wireframe sketch's invented per-check deltas ("duration match Δ 0 ms,"
+"chapters 50/50") — corrected once building Render made clear
+`validator.py` has no such value to report honestly on a passing check.
+A real "Open Folder" button — confirmed via search this had no
+precedent anywhere in the codebase before now.
+
+The "Done" question from the Complete wireframe pass got a real answer
+instead of a guess: asked directly, settled as "Done closes the wizard
+window," with no separate "filter another book" reset needed — every
+step's own re-entry guard already makes picking a new file from the
+Source rail cell work as that path. Implemented as one new branch in
+`WizardWindow._on_continue()`. `placeholder_step.py` is deleted — with
+all eight steps real, it had zero remaining callers or tests left
+anywhere in the codebase.
+
+A real, confirmed gap turned up while wiring this, flagged rather than
+silently folded in: `WizardWindow`'s own docstring has claimed since
+ADR-0010 that closing the wizard mid-Transcribe or mid-Render prompts
+for confirmation, mirroring `ModelManagerWindow`'s pattern — but it has
+no `closeEvent` override at all. That documented intention was never
+actually built in any implementation round since. Spun off as its own
+follow-up task, since it's a cross-cutting concern touching Transcribe
+and Render, not something Complete's own implementation should absorb.
+
+14 new tests (9 for `CompleteStep`, 2 for `RenderStep`'s new properties,
+3 for `WizardWindow`'s Render→Complete hand-off and the Done-closes-the-
+window behavior), plus removal of a test that no longer applied
+(`test_every_other_step_is_a_placeholder`) and a fix to a stale, wrong
+code comment in `test_wizard_window.py` (it claimed to flip a
+"PlaceholderStep's" advance-ability; the test actually monkeypatches
+`ReviewStep`, a leftover from before Review itself was real). `black`/
+`flake8`/`mypy` clean. Every realistic test scope — this step's own
+tests, all wizard-step test files together (189), a broader batch
+alongside `CatalogWindow`/`ModelManagerWindow`/`ProfileEditorDialog`
+(281) — is clean, repeatedly, and this project's real CI command
+remains unaffected.
+
+## G5: Wizard close confirmation, actually implemented (2026-08-25)
+
+Closes the one real gap the Complete round surfaced rather than folded
+in: `WizardWindow`'s own docstring (and ADR-0010's original wireframe
+review before it) has claimed since this fork's early G5 work that
+closing the wizard mid-Transcribe or mid-Render prompts for
+confirmation, mirroring `ModelManagerWindow`'s own pattern — but no
+`closeEvent` override existed anywhere in `wizard_window.py`. That
+documented intention was never actually built in any round since. Full
+rationale in
+[docs/adr/0021-wizard-close-confirmation.md](adr/0021-wizard-close-confirmation.md).
+
+New `WizardWindow.closeEvent()`, deliberately asymmetric: mid-Transcribe
+gets asked to pause (`TranscribeWorker.request_pause()` — real,
+resumable progress via the SQLite Job Orchestrator, ADR-0015), then a
+bounded `wait(5000)` before the window closes, exactly mirroring
+`ModelManagerWindow`'s own cancel-and-wait sequence. Mid-Render can only
+be warned about — `RenderWorker` has no stop mechanism at all (ADR-0019's
+own deliberate choice, since there's no handle back to the underlying
+ffmpeg subprocess) — so confirming there just acknowledges the work will
+be abandoned, with nothing to call. Safe to just let an abandoned
+`RenderWorker` keep running in the background afterward: `WizardWindow`
+is never destroyed on close (no `Qt.WA_DeleteOnClose`, the same
+lazy-create-and-reuse pattern every other secondary window in this
+codebase already uses), so nothing destroys the `QThread` object out
+from under it.
+
+6 new tests, workers stubbed as `MagicMock`s (same "test the shell, not
+the step" split every other shell-level test in this file already
+uses) — nothing running closes silently; declining either prompt keeps
+the window open (verified via `close()`'s own `False` return, proving
+`event.ignore()` actually ran); confirming mid-Transcribe pauses and
+waits; confirming mid-Render calls nothing; both running at once
+confirms both in order. `black`/`flake8`/`mypy` clean. Full wizard-step
+suite (195 tests) and this project's real CI command remain clean.
+
+## G5: Dry-run review remediation — Complete/Render merge, catalog seed, transcript viewing, interface polish (2026-08-26)
+
+The User personally drove the real GUI application end-to-end (a live
+dry run, not an automated walkthrough) and reported 19 distinct issues
+screen by screen — copy that leaked internal/spec language, contrast
+bugs, a progress bar giving a misleading sense of where a render
+actually stood, a completely unseeded Word Catalog, and more. Full plan,
+the four decisions that needed the User's input before any code
+changed, and the itemized list of what changed is in
+[docs/adr/0022-dry-run-review-remediation.md](adr/0022-dry-run-review-remediation.md).
+
+**Complete merged into Render (D1).** Once Render's own completed panel
+grew an Open Folder button, its content became functionally identical
+to the separate Complete step's — same pass/warning heading, output
+path, duration, report path. `CompleteStep`/`complete_step.py` are
+deleted; `STEP_LABELS` drops `"Complete"`; the wizard is 7 steps now,
+not 8. [docs/adr/0020-complete-step-implementation.md](adr/0020-complete-step-implementation.md)
+is marked superseded rather than deleted, to keep the historical record
+of why the step existed in the first place. No new logic was needed in
+`WizardWindow._on_continue()` — "Done closes the window" already
+applied generically to whichever step is last; Render is just that step
+now.
+
+**Catalog seeding (D2).** `catalog_seed.py` (new) seeds a "Profanity"
+category from a bundled, well-known public word list on first run only
+— `catalog_store.load_catalog()`'s existing "file doesn't exist yet"
+branch now seeds and immediately saves, rather than returning a
+never-populated service. Deliberately Profanity-only: a "Slurs" (or any
+other sensitive) category stays entirely User-curated, since picking
+specific terms for a shipped default is a subjective call this app
+shouldn't make unilaterally. This also closes the actual root cause the
+dry run found behind an apparent "scan found zero hits" bug: the
+selected profile had zero linked catalog entries, which was only
+discoverable at all because of a second, real bug below.
+
+**Transcript viewing across Transcribe/Profile/Scan (D3).**
+`Transcript` gains a `path` field (`transcript.py`) — deliberately
+excluded from the JSON schema itself (`transcript_to_dict`/
+`transcript_from_dict`), since a path is local-session metadata, not
+portable artifact content. New `transcript_text.py` writes a plain-text
+companion (just the words, reading order) lazily, only when a "View
+Transcript" action is actually clicked — not on every
+`write_transcript()` call, so fixture-building code doesn't grow a
+surprise side file. `WizardWindow` gained a `_current_transcript()`
+helper (de-duplicating logic that used to exist only inside the
+Profile→Scan hand-off) and a new Transcribe→Profile hand-off, wired on
+both paths a transcript can reach Profile by — the normal advance, and
+the "reuse a compatible transcript" skip path, which bypasses
+`_on_continue()`'s own dispatch entirely.
+
+**Interface polish, mostly copy and contrast, several with one shared
+root cause:**
+- Transcribe/Profile/Scan subtitles and Render's "No Pause or Cancel…"
+  line rewritten — all previously read like internal spec/ADR notes
+  ("immutable snapshot", literal PRD section citations, `render()` and
+  `ADR-0019` by name) rather than something aimed at the person running
+  the wizard.
+- No step body had left/right padding, window-wide — traced to a single
+  shared cause (the `QStackedWidget` wrapper in `wizard_window.py` had
+  none, and every step's own root layout deliberately has none either,
+  expecting a parent to supply it) and fixed at that one point rather
+  than in all 7 step files individually.
+- Checkbox contrast was unreadable in dark mode in three separate
+  places — Word Catalog, the Profile editor's category/word tree, and
+  Review's Included column — all for the same reason: checkable
+  `QTreeWidgetItem`/`QTableWidgetItem`s render with Qt's unstyled native
+  indicator, since `styles.py` only ever defined `QCheckBox::indicator`.
+  One new shared `QTreeWidget::indicator`/`QTableWidget::indicator` rule
+  (light + dark) fixes all three.
+- The Transcribe and Render progress bars were both stuck at a 6px
+  unstyled default with no visible percentage text — the app already had
+  a taller, readable `QProgressBar#jobProgress` variant built for job
+  progress elsewhere, just never wired onto either of these.
+- The Continue/Done button had no visual weight — given the app's
+  existing primary-CTA treatment via a new `QPushButton#primaryBtn` rule
+  mirroring `#convertBtn`, rather than reusing `#convertBtn` itself
+  (semantically a different button) or touching it.
+- A literal typo, "Categories && words", plus a missing instruction
+  telling the User to actually check entries in the Profile editor —
+  the same screen whose invisible-in-dark-mode checkboxes (above) is
+  what made an apparently-populated profile actually have zero entries.
+
+**Review's confidence filter now filters by confidence.** It used to
+offer only "Available"/"Not available" — presence, not the actual
+percentage. Replaced with real threshold buckets (below 25%/75%/90%,
+plus "Not available" for hits with no confidence at all).
+
+**Render's progress-accuracy problem (D4) got the cheap, honest fix,
+not the expensive one.** `render()`'s callback marks each of its four
+stages' *start* at a fixed quarter, so a long `encode_and_mux()` stage
+(the longest by far on a real audiobook) can sit at the same percentage
+for most of a render — confirmed as the real mechanism behind the User
+watching the bar reach 75% in about a minute, then stay there for five.
+Rather than weighting the stage fractions by expected duration or
+parsing ffmpeg's own progress stream, Render got an elapsed-time display
+instead (`RenderStep`'s own `QTimer`, mirroring `TranscribeStep`'s
+already-proven one exactly) — it can't lie about how long the render
+has actually been running the way the percentage can.
+
+**Verification:** 33 new/changed tests across `test_catalog_seed.py`
+(new), `test_transcript_text.py` (new), `test_catalog_store.py`,
+`test_transcript.py`, `test_profile_step.py`, `test_scan_step.py`,
+`test_transcribe_step.py`, `test_review_step.py`, and
+`test_wizard_window.py` (the last with `CompleteStep` removed
+entirely — `TestRenderToCompleteWiring` deleted, `TestDoneClosesWizard`
+rewritten against Render as the last step). Every scope actually
+touched by this round is clean: `tests/filter/` (392 passed, 2 skipped),
+`tests/gui/filter/` — every wizard step plus catalog/profile-editor/
+workers (287 passed), and this project's real CI command,
+`pytest tests/ --ignore=tests/gui` (927 passed, 2 skipped). One
+newly-surfaced, out-of-scope finding, not fixed here: running a large
+enough combination of `tests/gui/` files together in one process
+(specifically `tests/gui/filter/` alongside the base app's own
+`tests/gui/test_window.py`) segfaults in native Qt/Shiboken teardown
+code — reproducible even against this round's own unmodified files, and
+confirmed as a volume-triggered pre-existing ceiling in this offscreen-
+Qt test configuration (not a logic bug this round introduced) by
+bisecting against the pre-round commit, where the same combined run was
+too small to reach it. Flagged as its own follow-up rather than folded
+in here, since it's an environment/tooling question, not a UI or wiring
+one — and moot for this project's real CI gate either way, since that
+already never runs `tests/gui/` at all.
+
+## Combined-run GUI test segfault, root-caused and fixed (2026-08-26)
+
+Follow-up to the open finding at the end of the previous round: root
+cause and fix for `pytest tests/gui/filter/ tests/gui/test_window.py`
+(and the larger `pytest tests/gui/`) segfaulting in native Qt/Shiboken
+teardown code. Full mechanism and evidence in
+[docs/adr/0023-gui-test-segfault-gc-teardown.md](adr/0023-gui-test-segfault-gc-teardown.md).
+
+**Root cause: CPython's cyclic GC racing Qt's own native teardown.**
+Nearly every `win` fixture outside `test_window.py` — `test_catalog_
+window.py`, `test_model_manager_window.py`, every `tests/gui/filter/
+wizard/*.py` file — just does `return Window(...)` with no teardown at
+all. Each is a top-level, unparented `QObject`, so nothing Qt-side
+destroys its C++ half when the test ends; it just waits for CPython's
+garbage collector to notice it's unreachable. A `QWidget` tree is full
+of reference cycles (parent↔child pointers, signal/slot connections),
+so these are cyclic garbage — collected only whenever CPython's
+generational GC happens to run. Across `tests/gui/filter/` plus the
+wizard step files, several hundred such orphaned widget trees
+accumulate uncollected in the same process. By the time `test_window.
+py`'s own `win` fixture — the one fixture in the tree that explicitly
+does real Qt-side teardown (`deleteLater()` +
+`QCoreApplication.sendPostedEvents(None, DeferredDelete)`, per its own
+docstring) — reaches that `sendPostedEvents` call, enough allocations
+have happened that CPython's GC threshold trips *during* it, destroying
+a batch of orphaned widgets via Shiboken while Qt's own native
+object/event bookkeeping is mid-traversal on the same call stack. Two
+independent native teardown paths going reentrant on one thread is what
+segfaults, not any single widget being wrong — which is exactly why the
+crash only ever showed up at that one line, only past a volume
+threshold, and with no project code anywhere in the native crash frames.
+
+**Fix: disable the cyclic collector for the GUI test session, not
+retrofit teardown into every leaking fixture.** A new session-scoped,
+autouse `_disable_cyclic_gc` fixture in `tests/gui/conftest.py` calls
+`gc.disable()` before any GUI test runs and restores the prior state
+after the session ends. Reference counting alone still frees everything
+that isn't a cycle; only the cyclic collector — the part that can fire
+at an arbitrary, Qt-hostile moment — is turned off, and only for the
+lifetime of a short pytest process. This was chosen over retrofitting
+`test_window.py`'s explicit `deleteLater()`/`sendPostedEvents` pattern
+into all ~15 other `win` fixtures: that's real work for a defect that's
+purely a test-process object-lifetime artifact (the real application
+creates one window per run and shuts down normally — it never gets
+near the widget volume a 700+-test pytest process accumulates).
+
+**Verification:** confirmed experimentally before implementing — manually
+disabling GC around both the original combined repro and the full
+`tests/gui/` suite eliminated the segfault completely and repeatably,
+before any fixture was touched. With the fixture in place: the original
+repro, `pytest tests/gui/filter/ tests/gui/test_window.py`, passes
+467/467 (previously segfaulted, exit 139); the full `pytest tests/gui/`
+passes 784/784 (previously segfaulted); both stable across repeated
+runs. This project's real CI command, `pytest tests/
+--ignore=tests/gui`, is untouched by the change and remains clean: 927
+passed, 2 skipped.
+
+## G5: Attenuation timing accuracy — real whisper.cpp word-timestamp error, not a renderer bug (2026-08-26)
+
+The User listened back to a real ~13.5-hour audiobook rendered through
+the full wizard and found silenced segments landing too soon and
+lasting too short relative to the actual spoken words — the single most
+load-bearing metric in this whole feature, so this got the deepest
+investigation of any round so far. Full narrative and every measurement
+in
+[docs/adr/0024-attenuation-timing-accuracy.md](adr/0024-attenuation-timing-accuracy.md).
+
+**The renderer was cleared first, not assumed innocent.**
+`generate_envelope_pcm`, `apply_gain_envelope`, and `encode_and_mux`
+were each reproduced by hand against real audio and found to implement
+the documented math exactly — the gain envelope reaches the configured
+floor precisely where the interval planner says it should. The real
+culprit is whisper.cpp's own word-level timestamps, which this round
+measured directly rather than assumed: a purpose-built harness
+(`say`'s embedded `[[slnc N]]` command to engineer *real* digital
+silence around target words, so true onset/offset can be found by
+energy thresholding with no manual judgment call) put a real number on
+an error that turned out to be substantial and inconsistent in
+direction — sometimes 100s of ms early, sometimes 100s of ms late, and
+in ~29% of an early 8-word sample, disconnected from the real word
+entirely.
+
+**A second, categorically different problem turned up along the way:**
+`crap`/`piss`/`bitch`/`goddamn` scored zero hits at any padding value,
+because whisper.cpp consistently tokenizes them as two separate words
+(`"C"+"rap"`, `"B"+"itch"`, `"P"+"iss"`, `"God"+"damn"`) — confirmed
+identical across base.en and small.en, and confirmed against the User's
+own listening test that this is whisper's behavior, not a synthesis
+artifact, for at least "crap"/"bitch". This is a recognition problem,
+not a timing one, and had a free fix: the matcher already supports
+exact multi-word phrase entries (PRD §9.3) — adding phrase entries that
+match what whisper actually outputs recovered 26 of 30 previously-missed
+instances (67% → 96% recognition) with zero code changes.
+
+**Model comparison** (base.en/small.en/medium.en, same audio): small.en
+showed much tighter, one-directional timing error but missed more words
+outright; medium.en was a lateral move despite its 10x larger download
+— nearly identical results to small.en except trading one failure mode
+for another on a single word. base.en (the existing default) stayed the
+better overall choice once the word-splitting fix closed most of its
+recognition gap.
+
+**Decision: `lead_padding_ms` 60→300ms, `tail_padding_ms` 80→400ms** —
+derived from the 90-instance pass's stable percentiles plus every
+hand-verified real case, deliberately not chasing the automated
+harness's own least-reliable tail-percentile numbers (two separate
+measurement-tooling bugs were found and fixed mid-investigation, both
+disclosed rather than silently folded into the reported figures). This
+exceeds the PRD's own enforced valid range (250ms/300ms) — confirmed
+directly with the User before widening `AttenuationSettings.
+__post_init__`'s range checks, `docs/PRD.md` §8.3's table, and the
+Profile editor's spin-box ranges together, rather than treating a
+PRD-encoded range as just an implementation detail.
+
+**Verified against the real pipeline, not just theory:** rendering the
+90-instance sample with the new defaults plus the phrase-entry fix, then
+re-transcribing the filtered output, found only 7 of 86 recognized
+target words (8%) still recognizable as clean, unattenuated speech — a
+92% real-world success rate, up from the roughly 30% the old defaults'
+own measured data implied. The 7 survivors match the investigation's
+own hand-confirmed genuinely-unfixable cases, not a new failure mode —
+disclosed as a real, remaining ceiling, not eliminated.
+
+**One unrelated, genuine bug found and fixed as a direct side effect,
+not deferred:** `test_wizard_window.py`'s `win` fixture never passed an
+explicit `catalog_service`, so it silently read whatever real,
+persisted catalog exists on the machine running the tests — invisible
+until this round's default change diverged from what a leftover real
+profile had historically saved to disk. Fixed with an explicit, empty
+`CatalogService()`, the same isolation every other wizard-step test file
+already used.
+
+`black`/`flake8`/`mypy` clean. `tests/filter/` (392 passed, 2 skipped),
+`tests/gui/filter/` (287 passed), and this project's real CI command
+(927 passed, 2 skipped) all clean.
+
+## G5: DTW-based word timestamps, replacing whisper.cpp's default heuristic (2026-08-26)
+
+Rendering real chapters with ADR-0024's new padding defaults produced
+the *opposite*-looking symptom from the original report: silence now
+landing consistently *after* the word, not before it. Direct
+verification — the actual rendered interval boundaries drawn onto a
+waveform image and visually inspected, not just an automated number —
+confirmed it precisely: the start marker sat in the middle of the
+target word, the end marker well past its natural finish. Real
+narration was showing a materially different (more consistently late)
+timing bias than the synthetic-TTS characterization ADR-0024's padding
+values were derived from, so a bigger `tail_padding_ms` just extended
+an already-late interval further into subsequent speech. Full
+investigation and every measurement in
+[docs/adr/0025-dtw-word-timestamps.md](adr/0025-dtw-word-timestamps.md).
+
+Rather than chase padding values further against a wrong root
+assumption, this fixed the actual input: whisper.cpp has its own more
+accurate word-timing mode (`-dtw MODEL`, real per-token Dynamic Time
+Warping alignment) that this fork simply wasn't using — a much smaller,
+more targeted change than evaluating a different transcription engine
+outright, tried first per the User's own explicit "exhaust the smaller
+levers before the bigger one" framing.
+
+**Two non-obvious things had to be discovered directly against the real
+binary, not assumed from docs:** DTW silently produces no data at all
+under flash attention in this build (`whisper-cli` logs the reason,
+`t_dtw` comes back `-1` for every token, no error surfaces anywhere
+else) — flash attention must always be disabled together with enabling
+DTW, not as a second setting a caller could forget. And DTW gives each
+token a single aligned *start* point, not a start/end pair — a token's
+end is the *next* token's DTW start, since tokens are contiguous in a
+decode sequence, falling back to the existing heuristic per-token
+wherever a DTW value is missing (either DTW wasn't requested, or a
+boundary token came back `-1` even though it was).
+
+**Speed cost, measured directly** (5 minutes of real narration, same
+hardware, GPU/Metal both ways): ~1.5x slower than the flash-attn
+default — a real but moderate cost, not the multi-x hit originally
+feared, since ADR-0001's older "4-5x speedup" figure was GPU-vs-CPU
+overall, not flash attention's own isolated share of it.
+
+**What changed:** `transcript_engine.run_whisper()` gained
+`dtw_model_name`, appending `-dtw <name> -nfa` together when given; new
+`dtw_model_name_for()` derives whisper.cpp's own bare model identifier
+from the model file's path, reusing `model_manager`'s existing
+`ggml-{name}.bin` naming convention rather than threading a second
+parameter through every caller; `whisper_result_to_segment()` now
+prefers each token's DTW timing over the heuristic offsets wherever
+valid, falling back per-token otherwise — a transcript produced without
+DTW parses identically to before. Both the real chunked orchestrator
+and the single-shot spike/test path now always request DTW — it's the
+fork's actual default behavior now, not an opt-in flag sitting unused.
+No GUI toggle was added; no change to `renderer.py`, the interval
+planner, or ADR-0024's padding defaults, which needed the *input*
+timestamps fixed, not the padding arithmetic around them.
+
+**Verification, real pipeline not just units:** all 4 real chapters
+were re-transcribed, re-scanned, and re-rendered through the actual
+production path with DTW built in; all 4 still pass the app's own
+validator. Four real hits across three chapters were checked the exact
+same rigorous way the original bug was confirmed — rendered interval
+boundaries drawn directly on the waveform and visually inspected. Where
+the pre-DTW render showed the start marker buried mid-word and the end
+marker well past it on the identical hit, the DTW-based render shows
+both markers landing at the word's real edges. A quick automated
+numeric cross-check (energy-derivative onset detection) was also tried
+across all 23 real hits, but it directly contradicted the visual
+ground-truth check on the one hit both methods examined — disclosed as
+unreliable for continuous narration and not used as evidence; the
+visual check is what this claim rests on. A fresh before/after audio
+pack went to the User for final confirmation — the same discipline
+that caught both the original bug and the regression the padding-only
+fix introduced.
+
+`black`/`flake8`/`mypy` clean. `tests/filter/` (398 passed, 2 skipped)
+and this project's real CI command (933 passed, 2 skipped) both clean.

@@ -20,7 +20,7 @@ def _hit(hit_id: str, start_ms: int, end_ms: int) -> ScanHit:
     )
 
 
-DEFAULT = AttenuationSettings()  # lead=60 tail=80 merge=20 fade_in=15 fade_out=15
+DEFAULT = AttenuationSettings()  # lead=300 tail=400 merge=20 fade_in=15 fade_out=15
 
 
 class TestSingleHit:
@@ -28,8 +28,8 @@ class TestSingleHit:
         plan = build_render_plan([_hit("h-1", 1000, 1400)], 60_000, DEFAULT)
         assert len(plan.intervals) == 1
         iv = plan.intervals[0]
-        assert iv.start_ms == 1000 - 60
-        assert iv.end_ms == 1400 + 80
+        assert iv.start_ms == 1000 - 300
+        assert iv.end_ms == 1400 + 400
         assert iv.hit_ids == ("h-1",)
         assert iv.fade_in_ms == 15
         assert iv.fade_out_ms == 15
@@ -45,29 +45,29 @@ class TestSingleHit:
     def test_zero_duration_disables_end_clamp(self) -> None:
         # source_duration_ms == 0 means "unknown" — must not clamp end to 0.
         plan = build_render_plan([_hit("h-1", 1000, 1400)], 0, DEFAULT)
-        assert plan.intervals[0].end_ms == 1400 + 80
+        assert plan.intervals[0].end_ms == 1400 + 400
 
 
 class TestMerging:
     def test_overlapping_intervals_merge(self) -> None:
-        # h-1 padded: [940, 1480]; h-2 padded: [1440, 1880] — overlap.
+        # h-1 padded: [700, 1800]; h-2 padded: [1200, 2200] — overlap.
         hits = [_hit("h-1", 1000, 1400), _hit("h-2", 1500, 1800)]
         plan = build_render_plan(hits, 60_000, DEFAULT)
         assert len(plan.intervals) == 1
         assert plan.intervals[0].hit_ids == ("h-1", "h-2")
-        assert plan.intervals[0].start_ms == 940
-        assert plan.intervals[0].end_ms == 1880
+        assert plan.intervals[0].start_ms == 700
+        assert plan.intervals[0].end_ms == 2200
 
     def test_near_adjacent_within_merge_threshold_merges(self) -> None:
         # gap between padded intervals must be <= merge_adjacency_ms (20ms).
-        hits = [_hit("h-1", 1000, 1100), _hit("h-2", 1260, 1400)]
-        # h-1 padded end = 1180; h-2 padded start = 1200 -> gap 20ms, merges.
+        hits = [_hit("h-1", 1000, 1100), _hit("h-2", 1810, 1900)]
+        # h-1 padded end = 1500; h-2 padded start = 1510 -> gap 10ms, merges.
         plan = build_render_plan(hits, 60_000, DEFAULT)
         assert len(plan.intervals) == 1
 
     def test_gap_above_merge_threshold_stays_separate(self) -> None:
-        hits = [_hit("h-1", 1000, 1100), _hit("h-2", 1300, 1400)]
-        # h-1 padded end = 1180; h-2 padded start = 1240 -> gap 60ms > 20ms.
+        hits = [_hit("h-1", 500, 1000), _hit("h-2", 1800, 1900)]
+        # h-1 padded end = 1400; h-2 padded start = 1500 -> gap 100ms > 20ms.
         plan = build_render_plan(hits, 60_000, DEFAULT)
         assert len(plan.intervals) == 2
 

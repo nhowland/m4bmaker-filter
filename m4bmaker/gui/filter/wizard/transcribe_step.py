@@ -35,7 +35,8 @@ import time
 import uuid
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -58,6 +59,7 @@ from m4bmaker.filter.jobs import JobState, JobType
 from m4bmaker.filter.model_manager import ModelSpec, model_path
 from m4bmaker.filter.models import MediaManifest
 from m4bmaker.filter.transcript import Transcript, TranscriptSource
+from m4bmaker.filter.transcript_text import ensure_transcript_text
 
 from ..workers import TranscribeWorker
 from .step_base import WizardStep
@@ -101,9 +103,9 @@ class TranscribeStep(WizardStep):
         super().__init__(parent)
         self.step_title = "Transcribe"
         self.step_subtitle = (
-            "Durable and resumable — progress persists across app "
-            "restarts, picking up from the first uncommitted chunk, not a "
-            "re-run from zero."
+            "Converting your audio to text. This can take a while — if "
+            "you close the app, it'll pick up where it left off next "
+            "time."
         )
         self._models_dest_dir = models_dest_dir or storage.models_dir()
         self._transcripts_dest_dir = transcripts_dest_dir or storage.transcripts_dir()
@@ -292,8 +294,10 @@ class TranscribeStep(WizardStep):
         layout.addWidget(heading)
 
         self._progress_bar = QProgressBar()
+        self._progress_bar.setObjectName("jobProgress")
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(int(self._last_progress_fraction * 100))
+        self._progress_bar.setTextVisible(True)
         layout.addWidget(self._progress_bar)
 
         self._progress_label = QLabel(self._progress_display_text())
@@ -409,7 +413,20 @@ class TranscribeStep(WizardStep):
         heading = QLabel("✓ Transcription complete")
         heading.setStyleSheet("font-weight: 600;")
         layout.addWidget(heading)
+
+        view_btn = QPushButton("View Transcript")
+        view_btn.clicked.connect(self._on_view_transcript)
+        row = QHBoxLayout()
+        row.addWidget(view_btn)
+        row.addStretch(1)
+        layout.addLayout(row)
         return panel
+
+    def _on_view_transcript(self) -> None:
+        if self._transcript is None:
+            return
+        text_path = ensure_transcript_text(self._transcript)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(text_path)))
 
     # ── worker lifecycle ─────────────────────────────────────────────────
 

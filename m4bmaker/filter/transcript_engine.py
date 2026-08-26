@@ -106,6 +106,7 @@ def run_whisper(
     *,
     language: str = "en",
     whisper_cli: str | None = None,
+    dtw_model_name: str | None = None,
 ) -> dict[str, Any]:
     """Run whisper.cpp against *audio_path* and return its parsed
     "full JSON" output (whisper.cpp's own schema — see
@@ -126,6 +127,20 @@ def run_whisper(
     audiobook measured a 4.1-5.6x speedup with no accuracy loss before this
     reversal, on both approved models (ADR-0001's "GPU acceleration"
     section has the full figures).
+
+    *dtw_model_name*, when given (ADR-0025), requests whisper.cpp's DTW
+    (Dynamic Time Warping) token-level timestamp mode — its own bare model
+    identifier (e.g. ``"base.en"``), not a file path. Passing this also
+    disables flash attention (``-nfa``): DTW timestamps are silently
+    computed as all ``-1`` under flash attention in this build
+    (confirmed directly — whisper-cli logs "dtw_token_timestamps is not
+    supported with flash_attn - disabling" rather than erroring), so
+    enabling one requires disabling the other. Real measurement (5
+    minutes of real narrated audio, this fork's own reference audiobook):
+    ~1.5x slower than flash-attn's default heuristic timestamps — a real
+    but moderate cost, chosen because the default heuristic was measured
+    (ADR-0024) to place word boundaries hundreds of milliseconds off on
+    real narration, which DTW's actual per-token alignment corrects.
     """
     binary = whisper_cli or find_whisper_cli()
     if binary is None:
@@ -149,6 +164,8 @@ def run_whisper(
             out_stem,
             "-np",
         ]
+        if dtw_model_name is not None:
+            cmd += ["-dtw", dtw_model_name, "-nfa"]
         result = subprocess.run(
             cmd, capture_output=True, encoding="utf-8", **subprocess_flags()
         )
@@ -160,6 +177,29 @@ def run_whisper(
         out_path = Path(out_stem + ".json")
         parsed: dict[str, Any] = json.loads(out_path.read_text(encoding="utf-8"))
         return parsed
+
+
+def dtw_model_name_for(model_path: Path) -> str:
+    """The bare model identifier ``-dtw`` expects (e.g. ``"base.en"``),
+    derived from *model_path*'s filename — every model this fork installs
+    follows ``model_manager.ModelSpec.filename()``'s own
+    ``f"ggml-{name}.bin"`` convention, so stripping that prefix recovers
+    *name* without needing a second parameter threaded through every
+    caller that already has the path."""
+    return model_path.stem.removeprefix("ggml-")
+
+
+def _dtw_start_ms(token: dict[str, Any]) -> int | None:
+    """A token's DTW-aligned start time in ms, or ``None`` if this token
+    has no valid DTW value (``t_dtw`` absent entirely when DTW mode
+    wasn't requested; ``-1`` for a handful of boundary tokens even when it
+    was — both observed directly against real whisper.cpp output, ADR-0025).
+    whisper.cpp reports ``t_dtw`` in 10ms units (its mel-spectrogram frame
+    resolution), hence the ``* 10``."""
+    t_dtw = token.get("t_dtw")
+    if isinstance(t_dtw, (int, float)) and t_dtw >= 0:
+        return round(t_dtw * 10)
+    return None
 
 
 def whisper_result_to_segment(
@@ -181,19 +221,43 @@ def whisper_result_to_segment(
     tokens are dropped — they carry timestamps in whisper.cpp's output but
     are not spoken words, and PRD §9.3 matching operates on recognized
     words.
+
+    **Timestamp source, per token (ADR-0025):** whisper.cpp's DTW mode
+    (``run_whisper``'s ``dtw_model_name``) gives each token a single
+    aligned *start* point (``t_dtw``), not a start/end pair — a token's
+    end is taken as the *next* token's DTW start (tokens are contiguous
+    in a decode sequence, so one token's alignment boundary is the next
+    one's), falling back to whisper.cpp's own heuristic ``offsets``
+    wherever a DTW value is missing (either because DTW wasn't requested
+    at all, or for the handful of boundary tokens real output showed
+    without one even when it was). This means a transcript produced
+    without DTW parses exactly as before — this function doesn't need to
+    know whether DTW was requested, only whether each token's own data
+    has it.
     """
     words: list[TranscriptWord] = []
     for entry in raw.get("transcription", []):
-        for token in entry.get("tokens", []):
+        tokens = entry.get("tokens", [])
+        dtw_starts = [_dtw_start_ms(token) for token in tokens]
+
+        for i, token in enumerate(tokens):
             text = token.get("text", "")
             if _is_special_token(text) or _is_punctuation_only(text):
                 continue
             stripped = text.strip()
             if not stripped:
                 continue
+
             offsets = token.get("offsets", {})
-            start_ms = offsets.get("from")
-            end_ms = offsets.get("to")
+            start_ms = (
+                dtw_starts[i] if dtw_starts[i] is not None else offsets.get("from")
+            )
+            end_ms = None
+            if i + 1 < len(dtw_starts) and dtw_starts[i] is not None:
+                end_ms = dtw_starts[i + 1]
+            if end_ms is None:
+                end_ms = offsets.get("to")
+
             if start_ms is None or end_ms is None or end_ms <= start_ms:
                 # Observed occasionally at segment boundaries in real
                 # output — skip rather than construct an invalid
@@ -234,9 +298,17 @@ def transcribe_short_audio(
     transcription of a multi-hour source must chunk audio into durable,
     independently resumable segments (PRD §11.3); this function proves the
     engine call and JSON mapping are correct end-to-end, nothing more.
+
+    Uses DTW timestamps by default (ADR-0025) — same as the production
+    orchestrator, so a transcript built here isn't a different, less
+    accurate code path than what the real app uses.
     """
     raw = run_whisper(
-        audio_path, model_path, language=language, whisper_cli=whisper_cli
+        audio_path,
+        model_path,
+        language=language,
+        whisper_cli=whisper_cli,
+        dtw_model_name=dtw_model_name_for(model_path),
     )
     segment = whisper_result_to_segment(
         raw,

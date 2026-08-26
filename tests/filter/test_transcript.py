@@ -129,7 +129,12 @@ class TestRoundTrip:
         path = tmp_path / "book.m4bt.json"
         write_transcript(path, t)
         restored = read_transcript(path)
-        assert restored == t
+        # read_transcript tags the result with the path it was read from
+        # (ADR-0022) — path is deliberately excluded from the JSON schema
+        # itself (transcript_to_dict), so it's the one attribute that
+        # doesn't round-trip identically; everything else must.
+        assert restored == replace(t, path=path)
+        assert restored.path == path
 
     def test_null_confidence_round_trips_as_none(self) -> None:
         t = _sample_transcript()
@@ -216,10 +221,11 @@ class TestStatusEnums:
 class TestFindCompatibleTranscript:
     def test_finds_matching_complete_transcript(self, tmp_path: Path) -> None:
         t = _sample_transcript()
-        write_transcript(tmp_path / "book.m4bt.json", t)
+        path = tmp_path / "book.m4bt.json"
+        write_transcript(path, t)
 
         found = find_compatible_transcript("sha256:abc", transcripts_dir=tmp_path)
-        assert found == t
+        assert found == replace(t, path=path)
 
     def test_no_match_returns_none(self, tmp_path: Path) -> None:
         write_transcript(tmp_path / "book.m4bt.json", _sample_transcript())
@@ -273,10 +279,11 @@ class TestFindCompatibleTranscript:
 
     def test_corrupted_file_is_skipped_not_raised(self, tmp_path: Path) -> None:
         (tmp_path / "corrupt.m4bt.json").write_text("{not valid json", encoding="utf-8")
-        write_transcript(tmp_path / "good.m4bt.json", _sample_transcript())
+        good_path = tmp_path / "good.m4bt.json"
+        write_transcript(good_path, _sample_transcript())
 
         found = find_compatible_transcript("sha256:abc", transcripts_dir=tmp_path)
-        assert found == _sample_transcript()
+        assert found == replace(_sample_transcript(), path=good_path)
 
     def test_non_transcript_json_files_are_ignored(self, tmp_path: Path) -> None:
         (tmp_path / "notes.txt").write_text("hello", encoding="utf-8")

@@ -30,7 +30,8 @@ Mask still applies even if its category isn't masked
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -65,7 +66,18 @@ _ID_ROLE = Qt.ItemDataRole.UserRole
 
 
 class CatalogWindow(QMainWindow):
-    """Secondary window for category/word catalog management."""
+    """Secondary window for category/word catalog management.
+
+    :attr:`closed` fires whenever this window is closed (including a
+    plain "hide, don't destroy" close under the lazy-create-and-reuse
+    pattern ``MainWindow``/the wizard's Profile step both use) — added so
+    a caller holding the same ``CatalogService`` instance (e.g.
+    ``ProfileStep``, ADR-0016) can refresh anything it derived from the
+    catalog (category/word counts) once editing here is done, without
+    polling.
+    """
+
+    closed = Signal()
 
     def __init__(self, service: CatalogService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -230,6 +242,12 @@ class CatalogWindow(QMainWindow):
         from m4bmaker.gui.styles import get_stylesheet
 
         self.setStyleSheet(get_stylesheet(dark))
+
+    # ── lifecycle ────────────────────────────────────────────────────────────
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        super().closeEvent(event)
+        self.closed.emit()
 
     # ── status ───────────────────────────────────────────────────────────────
 

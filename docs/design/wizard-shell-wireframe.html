@@ -853,29 +853,94 @@
     {
       id: "profile", label: "Profile", eyebrow: "Step 4 · Select profile",
       title: "Select Profile",
-      sub: "Pick a saved filter profile, or manage the underlying word catalog without leaving the wizard.",
-      body: `
+      sub: "Pick a saved filter profile — every scan freezes its current entries and settings into an immutable snapshot (PRD §9.1/§9.4). First-run empty states (PRD §7.3) render inline here too.",
+      scenarios: [
+        {
+          id: "choose", label: "Choose a profile",
+          html: `
         <div class="sketch">
           <p class="sketch-label">saved profiles</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Real <code>CatalogService.list_profiles(include_archived=False)</code> — each row is one <code>FilterProfile</code> (id, name, <code>entry_ids</code>, <code>attenuation</code>, revision). Counts are computed from <code>entry_ids</code> resolved through <code>get_entry().category_id</code> — unique categories touched, and total entries — not stored fields on the profile itself.</p>
           <div class="row"><input type="radio" name="prof" checked disabled> <span class="grow">Family Friendly <span class="chip">2 categories · 34 words</span></span></div>
           <div class="row"><input type="radio" name="prof" disabled> <span class="grow">Profanity Only <span class="chip">1 category · 19 words</span></span></div>
           <div class="row" style="margin-top:12px;">
-            <button class="btn ghost">+ New Profile</button>
+            <button class="btn ghost">+ New Profile <span class="chip warn">not built anywhere yet</span></button>
             <button class="btn link">Manage Word Catalog… →</button>
           </div>
+        </div>
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">where profile authoring lives <span class="chip ok">resolved — see ADR-0016</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0;"><strong>Not in <code>CatalogWindow</code> — its own docstring already settled this.</strong> <code>catalog_window.py</code>: "Profile management ... is deliberately not built here; it belongs with the wizard's 'select profile' step, a later increment" (ADR-0008). So "+ New Profile" opens a modal profile editor that lives in the wizard itself — name, a checkable category/entry tree sourced from the same <code>CatalogService</code>, and an <code>AttenuationSettings</code> form — not a new <code>CatalogWindow</code> pane. Design and scope: ADR-0016.</p>
         </div>`
+        },
+        {
+          id: "empty", label: "No profiles yet",
+          html: `
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">first run <span class="chip warn">⚠ nothing to select</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">The realistic default, not an edge case — PRD §9.2: "The app may ship with no active offensive-word terms," no starter catalog enabled by default. A brand-new install has zero categories, zero entries, and <code>list_profiles()</code> returns <code>[]</code>. Continue must stay disabled: <code>create_snapshot(profile_id)</code> needs a real profile id, and PRD §9.4 requires a scan to consume "an immutable profile snapshot" — there is nothing to snapshot yet.</p>
+          <p style="margin:0 0 12px;color:var(--muted);font-size:.85rem;">No filter profiles yet.</p>
+          <div class="row">
+            <button class="btn primary">+ Create a Profile <span class="chip warn">not built anywhere yet</span></button>
+            <button class="btn ghost">Manage Word Catalog… →</button>
+          </div>
+        </div>`
+        }
+      ]
     },
     {
       id: "scan", label: "Scan", eyebrow: "Step 5 · Scan",
       title: "Scan",
-      sub: "Matches the transcript against an immutable snapshot of the selected profile.",
-      body: `
+      sub: "Matches the transcript against an immutable snapshot of the selected profile — a persisted, immutable raw result (PRD §9.4). Re-scanning always starts a new scan revision; it never copies decisions from the last one.",
+      scenarios: [
+        {
+          id: "ready", label: "Ready to scan",
+          html: `
         <div class="sketch">
-          <p class="sketch-label">scan summary</p>
+          <p class="sketch-label">plan</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Real inputs, both already produced by earlier steps — nothing new to configure here. <code>CatalogService.create_snapshot(profile_id)</code> freezes the chosen profile's current entries and revision the moment Scan runs, not before — so an edit made back on the Profile step right up until you click Start is still captured.</p>
+          <dl class="kv">
+            <dt>Transcript</dt><dd>whisper.cpp 1.9.2 · base.en · 13h 31m 33s</dd>
+            <dt>Profile</dt><dd>Family Friendly — will snapshot as rev. 3 when Scan starts</dd>
+          </dl>
+          <div class="row" style="margin-top:14px;"><button class="btn primary">▶ Start Scan</button></div>
+        </div>
+        <details class="disclosure">
+          <summary>Advanced: padding &amp; merge settings</summary>
+          <div class="disclosure-body">
+            <p style="font-size:.78rem;color:var(--muted);margin:0 0 8px;">Read-only here — these are the selected profile's own <code>AttenuationSettings</code>, authored in its editor (ADR-0016/0017), not re-configurable per scan.</p>
+            <div class="kv" style="grid-template-columns:auto 1fr;">
+              <dt>Lead / tail padding</dt><dd>60&nbsp;ms / 80&nbsp;ms</dd>
+              <dt>Merge adjacency</dt><dd>20&nbsp;ms</dd>
+              <dt>Gain floor</dt><dd>-80&nbsp;dBFS</dd>
+            </div>
+          </div>
+        </details>`
+        },
+        {
+          id: "running", label: "Running",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">progress <span class="chip warn">not chunked — open question</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;"><code>matcher.scan_transcript()</code> is a single pure function over the whole transcript at once — no natural chunk boundary the way Transcribe's chunks give it one, and its own docstring already flags that it "has not been benchmarked against a reference fixture yet." Shown here as a simple indeterminate busy state, not a job-orchestrator-backed pause/resume flow like Transcribe's — that's real infrastructure this step doesn't yet have a proven need for. If a real long-book benchmark someday shows this taking long enough to want interruptibility, that's a real re-scoping, not a small tweak.</p>
+          <div class="row"><span class="chip">Matching against 2 categories · 34 words…</span></div>
+        </div>`
+        },
+        {
+          id: "complete", label: "Complete",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">scan summary <span class="chip ok">✓ complete</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Every field below is a real <code>ScanReport</code> field (<code>scan.build_report()</code>) — not invented for the mockup. Raw hits are immutable from this point; Review only records include/exclude/manual decisions against them.</p>
           <dl class="kv">
             <dt>Hits found</dt><dd>14 — Profanity ×10, Slurs ×4 (see Review)</dd>
+            <dt>Unique terms hit</dt><dd>4</dd>
             <dt>Profile snapshot</dt><dd>Family Friendly · rev. 3</dd>
+            <dt>Planned attenuated duration</dt><dd>~5.6s (from the current include/exclude state — recalculates live as Review decisions change)</dd>
           </dl>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn ghost">↻ Re-scan</button>
+          </div>
         </div>
         <details class="disclosure">
           <summary>Advanced: padding &amp; merge settings</summary>
@@ -887,6 +952,8 @@
             </div>
           </div>
         </details>`
+        }
+      ]
     },
     {
       id: "review", label: "Review", eyebrow: "Step 6 · Review",
@@ -897,35 +964,113 @@
     {
       id: "render", label: "Render", eyebrow: "Step 7 · Render",
       title: "Render",
-      sub: "Confirm the output plan, then attenuate, encode, mux, and validate.",
-      body: `
+      sub: "Confirm the output plan, then attenuate, encode, mux, and validate — all real, already-built backend (ADR-0006/0007), wired to this screen for the first time.",
+      scenarios: [
+        {
+          id: "ready", label: "Ready to render",
+          html: `
         <div class="sketch">
           <p class="sketch-label">output plan</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Nothing runs until this is confirmed — Start is its own explicit action, same as every other commit-point in this wizard.</p>
           <dl class="kv">
-            <dt>Output</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).m4b</dd>
-            <dt>Intervals to attenuate</dt><dd>13 (merged from 14 hits — see Review)</dd>
-            <dt>Est. render time</dt><dd>~10–11 min</dd>
+            <dt>Output</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).m4b <span class="chip warn">default-naming helper not built yet</span> <button class="btn ghost small">Change…</button></dd>
+            <dt>Bitrate</dt><dd>128 kbps <span class="chip">auto-selected from source's own ~126 kbps</span> <button class="btn ghost small">Change…</button></dd>
+            <dt>Est. storage needed</dt><dd>~24.7 GB <span class="chip ok">real — same figure Source step already computed</span></dd>
+            <dt>Intervals to attenuate</dt><dd>13 (merged from 14 hits — see Review) <span class="chip warn">blocked on a small Review addition</span></dd>
+            <dt>Est. render time</dt><dd>~10–11 min <span class="chip ok">real measurement, one fixture</span></dd>
           </dl>
-          <div class="row" style="margin-top:14px;"><button class="btn primary">Start Render</button></div>
+          <div class="row" style="margin-top:14px;"><button class="btn primary">▶ Start Render</button></div>
+        </div>
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">open questions <span class="chip warn">flagged, not solved</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0;"><strong>Output path default</strong> — no helper computes "&lt;source stem&gt; (filtered).m4b" yet; the base app's own <code>_computed_output_path()</code> is shaped for a different flow (building a new M4B from a folder of files) and doesn't transfer directly. <strong>Bitrate default</strong> — the base app's real "snap to nearest of <code>_BITRATES</code> given the source's own bitrate" logic (<code>window.py</code>) is exactly the right behavior here too, but it's private/inline, not an exported, reusable function yet — porting it, not reinventing it differently, is the real scoped work. <strong>Intervals to attenuate</strong> — needs a real <code>RenderPlan</code> from Review, but <code>ReviewStep</code> has no public getter for its current scan/attenuation/plan today (everything is a private <code>_scan</code>/<code>_attenuation</code>) — the same "nothing downstream consumes this yet" situation every previous step passed through on its own way to being wired up. <strong>Est. render time</strong> — real for this one fixture (615s/10.25min for this exact 13.5-hour book, ADR-0007), but ADR-0007 itself already cautions every number there comes from one real 44.1kHz/~126kbps/stereo file — a production estimate for an arbitrary source needs either a real duration-proportional extrapolation or, like Transcribe's own "Est. remaining," honestly showing nothing until more fixtures exist.</p>
         </div>`
+        },
+        {
+          id: "running", label: "Running",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">progress <span class="chip ok">RUNNING</span></p>
+          <div class="row"><div class="grow"><div class="progress"><i style="width:50%"></i></div></div><span class="chip">50%</span></div>
+          <p style="font-size:.78rem;color:var(--muted);margin:6px 0 0;">Real, determinate — <code>renderer.render()</code>'s own <code>progress_callback(message, fraction)</code> already reports four real stages at 0.0 / 0.25 / 0.5 / 0.75 / 1.0: "Extracting source audio…", "Generating gain envelope…", "Applying attenuation…", "Encoding and muxing output…" This is genuinely different ground than Scan's indeterminate bar — render() already has real stage granularity to show, nothing invented for this mockup.</p>
+          <div class="row" style="margin-top:10px;"><span class="chip">Applying attenuation…</span></div>
+          <p style="font-size:.78rem;color:var(--muted);margin:8px 0 0;">After render() finishes, <code>validator.validate()</code> runs as one more (indeterminate — it has no progress callback of its own) tail phase before Complete, labeled "Validating output…" — same reasoning as Scan's own indeterminate state: no chunk boundary to report a fraction of.</p>
+          <div class="row" style="margin-top:10px;"><button class="btn ghost">✕ Cancel</button></div>
+          <p style="font-size:.78rem;color:var(--muted);margin:8px 0 0;">No Pause, and Cancel/a crash both mean starting over, not resuming — ADR-0007's own already-decided position: "given the real 615s/10.25-minute total render time... full-restart-on-failure is a reasonable MVP position," matching PRD §11.4's mandatory-fallback tier. Not an open question here — already settled, cited rather than re-argued.</p>
+        </div>`
+        },
+        {
+          id: "needs-attention", label: "Needs attention",
+          html: `
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">progress <span class="chip warn">NEEDS_ATTENTION</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Two real, distinct failure sources land here, not just render() itself: a <code>RenderError</code> from any of the four ffmpeg/Python stages, <em>or</em> a failed <code>ValidationReport</code> (real ERROR-severity issues — PRD §8.1 never allows presenting a failed validation as success). Either way the output file is left on disk, not auto-deleted — <code>encode_and_mux()</code>'s own atomic staging means Retry safely overwrites it, no manual cleanup needed.</p>
+          <div class="row"><span class="chip warn">Chapter 3 start time differs by 340ms (tolerance 50ms)</span></div>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn primary">↻ Retry</button>
+            <button class="btn ghost">✕ Cancel</button>
+          </div>
+        </div>`
+        },
+        {
+          id: "complete", label: "Complete",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">result <span class="chip ok">✓ passed validation</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Real <code>RenderResult</code>/<code>ValidationReport</code> fields — nothing invented. Continue hands these to the not-yet-built Complete step, the same "nothing downstream consumes this yet" spot every earlier step was in before its own successor existed.</p>
+          <dl class="kv">
+            <dt>Duration match</dt><dd>Δ 0 ms</dd>
+            <dt>Chapters</dt><dd>50 / 50 match</dd>
+            <dt>Warnings</dt><dd>none</dd>
+          </dl>
+          <div class="row" style="margin-top:10px;"><span class="chip warn">filter-report.json not written yet</span></div>
+          <p style="font-size:.78rem;color:var(--muted);margin:6px 0 0;">ADR-0007 already flagged this precisely: <code>ValidationReport</code> exists as a real return value only — persisting it to a User-facing <code>filter-report.json</code> (PRD §14.4) is explicitly deferred "UI/orchestration-layer work (G5)," i.e. exactly this step, once it's actually implemented.</p>
+        </div>`
+        }
+      ]
     },
     {
       id: "complete", label: "Complete", eyebrow: "Step 8 · Complete",
       title: "Complete",
-      sub: "Validation status, output location, and the persisted filter report.",
-      body: `
+      sub: "Validation status, output location, and the persisted filter report (PRD §7.2 stage 8) — reached only after Render's own COMPLETED state, which already means validation passed.",
+      scenarios: [
+        {
+          id: "clean", label: "Passed, no warnings",
+          html: `
         <div class="sketch">
-          <p class="sketch-label">validation</p>
-          <div class="row"><span class="chip ok">✓ duration match — Δ 0 ms</span><span class="chip ok">✓ chapters 50 / 50</span><span class="chip ok">✓ metadata &amp; cover preserved</span></div>
-          <dl class="kv" style="margin-top:12px;">
+          <p class="sketch-label">result <span class="chip ok">✓ passed validation</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">This screen only ever shows a passing render — <code>RenderStep</code> already gatekeeps a failed <code>ValidationReport</code> into its own Needs Attention state (ADR-0019); Complete never has to handle failure itself.</p>
+          <dl class="kv">
             <dt>Output</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).m4b</dd>
-            <dt>Report</dt><dd>filter-report.json</dd>
+            <dt>Report</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).filter-report.json</dd>
+            <dt>Warnings</dt><dd>none</dd>
           </dl>
           <div class="row" style="margin-top:14px;">
             <button class="btn ghost">Open Folder</button>
-            <button class="btn primary">Done</button>
+          </div>
+        </div>
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">corrected from the original sketch</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0;">The very first version of this mockup showed three separate green checks — "duration match Δ 0 ms," "chapters 50/50," "metadata &amp; cover preserved" — as if each were individually confirmed with a real number. Building Render (ADR-0019) surfaced that this isn't achievable honestly: <code>validator.py</code>'s checks only ever produce a structured <code>ValidationIssue</code> when something <em>fails</em> — a passing <code>ValidationReport</code> has zero issues and no recorded "matched within Xms" value for any check. Showing three specific green numbers here would be exactly the "guess dressed as data" anti-pattern already rejected for Transcribe's "Est. remaining" and Render's own "Est. render time." One combined "passed validation" statement is what the real data actually supports — corrected here to match, not left as a nicer-looking but false sketch.</p>
+        </div>`
+        },
+        {
+          id: "warnings", label: "Passed with warnings",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">result <span class="chip warn">✓ passed, with warnings</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Real <code>ValidationReport.warnings</code> — WARNING-severity issues never block success (PRD §6.3: best-effort metadata isn't guaranteed), but they're still real information worth surfacing, not silently dropped just because the render passed overall.</p>
+          <div class="row"><span class="chip warn">Best-effort field "series" not preserved.</span></div>
+          <dl class="kv" style="margin-top:12px;">
+            <dt>Output</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).m4b</dd>
+            <dt>Report</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).filter-report.json</dd>
+          </dl>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn ghost">Open Folder</button>
           </div>
         </div>`
+        }
+      ]
     }
   ];
 
@@ -1438,11 +1583,19 @@
     },
     {
       tag: "Profile",
-      html: "<strong>Reuses the Catalog window.</strong> “Manage Word Catalog…” opens the already-shipped <code>CatalogWindow</code> (ADR-0008) instead of duplicating category/word CRUD inside the wizard."
+      html: "<strong>Selection here; authoring in its own editor, per ADR-0008/ADR-0016.</strong> “Manage Word Catalog…” still opens the already-shipped <code>CatalogWindow</code> (ADR-0008) for category/word CRUD, exactly as ADR-0010 decided. Profile CRUD — naming a profile, picking its <code>entry_ids</code>, setting its <code>AttenuationSettings</code> — turned out to already have a settled home: <code>catalog_window.py</code>'s own docstring says profile management \"belongs with the wizard's 'select profile' step, a later increment\", so “+ New Profile” opens a modal editor scoped to the wizard, not a new <code>CatalogWindow</code> pane (ADR-0016 is that later increment). Real per-profile counts shown here (categories touched, total words) are computed live from <code>entry_ids</code>, not stored fields. First-run is the realistic default, not an edge case: PRD §9.2 ships no starter catalog enabled, so a fresh install has zero profiles and Continue must stay blocked — there's nothing to freeze into a snapshot yet (PRD §9.4)."
     },
     {
       tag: "Scan",
-      html: "<strong>Advanced settings stay behind a disclosure.</strong> Padding, merge adjacency, and gain floor never show by default — PRD §7.1 requires the happy path stay unblocked by them."
+      html: "<strong>Every scan-summary field is real, and the running state is deliberately simple.</strong> <code>scan.run_scan()</code>/<code>build_report()</code> already exist (G2/G3) — the snapshot name/revision, hit/term/category counts, and planned attenuated duration shown here are real <code>ScanReport</code> fields, not invented for this pass. What's genuinely open: <code>matcher.scan_transcript()</code> has no chunk boundary the way Transcribe's chunks do, and its own docstring already flags it as unbenchmarked against a real long transcript — so \"Running\" is sketched as a plain indeterminate busy state, not a job-orchestrator-backed pause/resume flow. Building that anyway, with no evidence it's slow enough to need it, would be the same over-engineering mistake the original 30s/5s pause-latency chunking default turned out to be (see the Transcribe/chunking notes above) — if a real benchmark someday says otherwise, that's a real re-scoping decision, not a small tweak. Advanced settings (padding, merge adjacency, gain floor) stay behind a disclosure and read-only — PRD §7.1 keeps the happy path unblocked by them, and they're authored on the profile (ADR-0016/0017), not re-configurable per scan. Re-scan is its own explicit action (PRD §9.4: a re-scan is always a new revision, never a silent copy of old decisions)."
+    },
+    {
+      tag: "Render",
+      html: "<strong>The most already-built backend of any step so far — and the one open question here was already answered before this pass started.</strong> <code>renderer.render()</code>/<code>validator.validate()</code> (ADR-0006/0007) are real, tested, benchmarked against an actual ~13.5-hour production audiobook: real determinate progress (four real stages via <code>render()</code>'s own <code>progress_callback</code>), a real measured render time (615s/10.25min for that one fixture), and a real, already-<em>decided</em> stance on durability — ADR-0007 itself: \"given the real 615s/10.25-minute total render time... full-restart-on-failure is a reasonable MVP position,\" matching PRD §11.4's mandatory-fallback tier. That's the opposite of Scan's situation (genuinely unresolved, deliberately left open) — here the answer already exists, so the wireframe cites it rather than re-litigating it. What's actually open instead: three small, concrete, not-yet-built pieces surfaced by grounding this screen in the real code — an output-path default-naming helper (the base app's own <code>_computed_output_path()</code> is shaped for a different flow and doesn't transfer), a reusable export of the base app's own bitrate-snap-to-source logic (real and correct, just private/inline in <code>window.py</code> today), and <code>ReviewStep</code> needing a public getter for its current plan before Render can actually be wired to it (the same \"nothing downstream consumes this yet\" spot every earlier step passed through). A validation failure is treated exactly like a render failure — Needs Attention, real issue text, file left on disk since Retry safely overwrites it via the same atomic staging already proven in <code>encode_and_mux()</code>."
+    },
+    {
+      tag: "Complete",
+      html: "<strong>A real factual correction, not just a grounding pass.</strong> The original sketch for this step (drafted before Render existed) showed three separate green checks with specific numbers — \"duration match Δ 0 ms,\" \"chapters 50/50,\" \"metadata &amp; cover preserved\" — as if each were individually confirmed. Now that Render is real, that turns out not to be achievable honestly: <code>validator.py</code>'s checks only ever produce a structured <code>ValidationIssue</code> when something <em>fails</em>; a passing <code>ValidationReport</code> has zero issues and no recorded per-check value to display. Corrected to one combined \"passed validation\" statement (with real <code>.warnings</code> listed when present) — the same \"don't show a guess dressed as data\" standard already applied to Transcribe's \"Est. remaining\" and Render's \"Est. render time.\" Three things flagged, not solved, for whenever this step is actually implemented: (1) <code>RenderStep</code> has no public getter yet for its own <code>RenderResult</code>/<code>ValidationReport</code>/report path — the same \"nothing downstream consumes this yet\" gap every previous step passed through before its successor existed. (2) <strong>Resolved</strong> — the shell's own footer already renders \"Done\" as its button label on the last step (<code>WizardWindow._render()</code>: <code>is_last ? \"Done\" : \"Continue\"</code>), but <code>_on_continue()</code> had no special case for it, so clicking it did nothing at all — now decided: Done closes the wizard window. No separate \"filter another book\" reset action is needed alongside it — every step's own re-entry guard (Source through Render) already handles \"go back to Source, pick a different file\" correctly on its own, so clicking the Source rail cell and choosing a new file already works as the real \"start another book\" path without the window ever closing. Formalized in this step's own implementation ADR when built, not here. (3) \"Open Folder\" has no precedent anywhere in this codebase (checked — no existing reveal-in-Finder/Explorer helper) — a real, small, first-time addition (<code>QDesktopServices.openUrl(QUrl.fromLocalFile(...))</code> against the output's parent folder), not a port of something that already exists."
     },
     {
       tag: "Empty states",

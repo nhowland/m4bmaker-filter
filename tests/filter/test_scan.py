@@ -181,9 +181,9 @@ class TestBuildReport:
 
         report = build_report(scan, source_duration_ms=60_000)
 
-        # Merged into one interval: padded [940, 1280] = 340ms, not two
-        # separate padded spans summed (240ms + 160ms = 400ms).
-        assert report.total_planned_attenuated_duration_ms == 340
+        # Merged into one interval: padded [700, 1600] = 900ms, not two
+        # separate padded spans summed (800ms + 780ms = 1580ms).
+        assert report.total_planned_attenuated_duration_ms == 900
 
     def test_zero_hits_report(self, service: CatalogService) -> None:
         snapshot, _, _ = _profile_with_two_terms(service)

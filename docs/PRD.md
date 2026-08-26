@@ -317,12 +317,17 @@ MVP defaults:
 
 | Setting | Default | Allowed MVP range |
 |---|---:|---:|
-| Lead padding | 60 ms | 0–250 ms |
-| Tail padding | 80 ms | 0–300 ms |
+| Lead padding | 300 ms | 0–400 ms |
+| Tail padding | 400 ms | 0–500 ms |
 | Merge adjacency | 20 ms | 0–100 ms |
 | Fade in | 15 ms | 5–50 ms |
 | Fade out | 15 ms | 5–50 ms |
 | Gain floor | -80 dBFS equivalent | -60 to -96 dBFS equivalent |
+
+Lead/tail defaults and range revised 2026-08-26 (ADR-0023) from 60ms/
+0–250ms and 80ms/0–300ms, based on a controlled measurement of real
+whisper.cpp word-timestamp accuracy against ground-truth audio — see the
+ADR for the full investigation.
 
 The exact unit conversion and rounding behavior must be defined in ADR O-04.
 

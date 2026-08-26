@@ -153,18 +153,31 @@ class CatalogEntry:
 class AttenuationSettings:
     """Interval-plan and gain-envelope inputs. Defaults and ranges are the
     MVP table in PRD §8.3, enforced at construction time so an out-of-range
-    value fails immediately rather than surfacing as a rendering defect."""
+    value fails immediately rather than surfacing as a rendering defect.
 
-    lead_padding_ms: int = 60
-    tail_padding_ms: int = 80
+    Defaults and the lead/tail range ceiling were revised 2026-08-26
+    (ADR-0023) from 60ms/0-250ms and 80ms/0-300ms: a real-audiobook
+    listening report plus a controlled 90-word measurement pass (whisper.cpp
+    word timestamps against ground-truth audio onsets/offsets, base.en)
+    found the old defaults left real, audible fragments of target words
+    unattenuated — whisper's own word-level timestamps are frequently
+    biased by hundreds of milliseconds relative to where a word is actually
+    spoken, in either direction, and the old padding didn't have enough
+    margin to absorb that. See ADR-0023 for the full investigation and why
+    a fixed-padding approach still has a real, disclosed ceiling (a small
+    fraction of cases have errors too large or too structurally different
+    for padding to fix at all)."""
+
+    lead_padding_ms: int = 300
+    tail_padding_ms: int = 400
     merge_adjacency_ms: int = 20
     fade_in_ms: int = 15
     fade_out_ms: int = 15
     gain_floor_db: float = -80.0
 
     def __post_init__(self) -> None:
-        _check_range("lead_padding_ms", self.lead_padding_ms, 0, 250)
-        _check_range("tail_padding_ms", self.tail_padding_ms, 0, 300)
+        _check_range("lead_padding_ms", self.lead_padding_ms, 0, 400)
+        _check_range("tail_padding_ms", self.tail_padding_ms, 0, 500)
         _check_range("merge_adjacency_ms", self.merge_adjacency_ms, 0, 100)
         _check_range("fade_in_ms", self.fade_in_ms, 5, 50)
         _check_range("fade_out_ms", self.fade_out_ms, 5, 50)

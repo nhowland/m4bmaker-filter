@@ -31,6 +31,7 @@ from m4bmaker.filter.transcript import SegmentStatus, TranscriptSource
 from m4bmaker.filter.transcript_engine import (
     WhisperNotFoundError,
     WhisperTranscriptionError,
+    dtw_model_name_for,
     find_whisper_cli,
     get_whisper_version,
     run_whisper,
@@ -213,6 +214,61 @@ class TestRunWhisper:
                     whisper_cli="/bin/whisper-cli",
                 )
 
+    def test_dtw_model_name_omitted_by_default(self, tmp_path: Path) -> None:
+        captured_cmd = {}
+
+        def _side_effect(cmd, **kwargs):
+            captured_cmd["cmd"] = cmd
+            out_stem = cmd[cmd.index("-of") + 1]
+            Path(out_stem + ".json").write_text("{}", encoding="utf-8")
+            result = MagicMock()
+            result.returncode = 0
+            return result
+
+        with patch("subprocess.run", side_effect=_side_effect):
+            run_whisper(
+                tmp_path / "a.wav",
+                tmp_path / "model.bin",
+                whisper_cli="/bin/whisper-cli",
+            )
+        assert "-dtw" not in captured_cmd["cmd"]
+        assert "-nfa" not in captured_cmd["cmd"]
+
+    def test_dtw_model_name_adds_dtw_and_disables_flash_attn(
+        self, tmp_path: Path
+    ) -> None:
+        """ADR-0025: DTW timestamps come back all -1 under flash attention
+        in this build (confirmed directly against real whisper-cli output,
+        which logs "dtw_token_timestamps is not supported with flash_attn
+        - disabling" rather than erroring) -- -nfa must always accompany
+        -dtw, not be a second setting a caller could forget."""
+        captured_cmd = {}
+
+        def _side_effect(cmd, **kwargs):
+            captured_cmd["cmd"] = cmd
+            out_stem = cmd[cmd.index("-of") + 1]
+            Path(out_stem + ".json").write_text("{}", encoding="utf-8")
+            result = MagicMock()
+            result.returncode = 0
+            return result
+
+        with patch("subprocess.run", side_effect=_side_effect):
+            run_whisper(
+                tmp_path / "a.wav",
+                tmp_path / "model.bin",
+                whisper_cli="/bin/whisper-cli",
+                dtw_model_name="base.en",
+            )
+        cmd = captured_cmd["cmd"]
+        assert cmd[cmd.index("-dtw") + 1] == "base.en"
+        assert "-nfa" in cmd
+
+
+class TestDtwModelNameFor:
+    def test_strips_ggml_prefix_matching_model_manager_convention(self) -> None:
+        assert dtw_model_name_for(Path("/models/ggml-base.en.bin")) == "base.en"
+        assert dtw_model_name_for(Path("/models/ggml-small.en.bin")) == "small.en"
+
 
 class TestWhisperResultToSegment:
     def test_extracts_real_words_with_timestamps_and_confidence(self) -> None:
@@ -282,6 +338,77 @@ class TestWhisperResultToSegment:
     def test_empty_transcription_yields_no_words(self) -> None:
         segment = whisper_result_to_segment({"transcription": []}, "chunk-0", 0, 1000)
         assert segment.words == ()
+
+
+class TestWhisperResultToSegmentDtw:
+    """ADR-0025: a token's DTW start (t_dtw, whisper.cpp's own 10ms units)
+    takes priority over its heuristic offsets when present and valid; a
+    token's *end* comes from the *next* token's DTW start, not its own
+    heuristic 'to' -- tokens are contiguous in a decode sequence, so one
+    token's alignment boundary is the next one's."""
+
+    def test_uses_dtw_start_and_next_tokens_dtw_start_as_end(self) -> None:
+        raw = {
+            "transcription": [
+                {
+                    "tokens": [
+                        {
+                            "text": " one",
+                            "offsets": {"from": 0, "to": 300},
+                            "t_dtw": 5,  # -> 50ms
+                            "p": 0.9,
+                        },
+                        {
+                            "text": " two",
+                            "offsets": {"from": 300, "to": 600},
+                            "t_dtw": 40,  # -> 400ms
+                            "p": 0.9,
+                        },
+                    ]
+                }
+            ]
+        }
+        segment = whisper_result_to_segment(raw, "chunk-0", 0, 1000)
+        one, two = segment.words
+        assert one.start_ms == 50
+        assert one.end_ms == 400  # next token's DTW start, not one's own 'to' (300)
+        # last token has no "next" DTW start to borrow -- falls back to its
+        # own heuristic 'to'.
+        assert two.start_ms == 400
+        assert two.end_ms == 600
+
+    def test_falls_back_to_heuristic_offsets_when_t_dtw_is_negative_one(self) -> None:
+        """Real DTW output showed a handful of tokens (often segment
+        boundaries) with t_dtw == -1 even when DTW mode was requested --
+        must not be treated as a real 0.05ms timestamp."""
+        raw = {
+            "transcription": [
+                {
+                    "tokens": [
+                        {
+                            "text": " one",
+                            "offsets": {"from": 10, "to": 200},
+                            "t_dtw": -1,
+                            "p": 0.9,
+                        },
+                    ]
+                }
+            ]
+        }
+        segment = whisper_result_to_segment(raw, "chunk-0", 0, 1000)
+        assert segment.words[0].start_ms == 10
+        assert segment.words[0].end_ms == 200
+
+    def test_missing_t_dtw_key_behaves_exactly_like_no_dtw_requested(self) -> None:
+        """A transcript produced without DTW mode simply has no t_dtw key
+        at all -- this function doesn't need to know whether DTW was
+        requested, only whether each token's own data has it."""
+        segment_without_dtw = whisper_result_to_segment(
+            REAL_SPIKE_JSON, "chunk-0", 0, 4500
+        )
+        darn = segment_without_dtw.words[6]
+        assert darn.start_ms == 1060
+        assert darn.end_ms == 1250
 
 
 class TestTranscribeShortAudio:

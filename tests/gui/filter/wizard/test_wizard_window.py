@@ -6,19 +6,32 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
+from PySide6.QtWidgets import QMessageBox
 
+from m4bmaker.filter.catalog import CatalogService
 from m4bmaker.filter.model_manager import KNOWN_MODELS
-from m4bmaker.filter.models import MediaManifest
+from m4bmaker.filter.models import (
+    NORMALIZATION_VERSION,
+    AttenuationSettings,
+    MediaManifest,
+    RenderPlan,
+)
+from m4bmaker.filter.renderer import RenderResult
+from m4bmaker.filter.scan import run_scan
 from m4bmaker.filter.transcript import (
     Transcript,
     TranscriptEngine,
     TranscriptSource,
     TranscriptStatus,
 )
-from m4bmaker.gui.filter.wizard.placeholder_step import PlaceholderStep
+from m4bmaker.filter.validator import ValidationReport
+from m4bmaker.gui.filter.wizard.profile_step import ProfileStep
+from m4bmaker.gui.filter.wizard.render_step import RenderStep
 from m4bmaker.gui.filter.wizard.review_step import ReviewStep
+from m4bmaker.gui.filter.wizard.scan_step import ScanStep
 from m4bmaker.gui.filter.wizard.source_step import SourceStep
 from m4bmaker.gui.filter.wizard.stepper import STEP_LABELS
 from m4bmaker.gui.filter.wizard.transcribe_step import TranscribeStep
@@ -32,8 +45,16 @@ pytestmark = pytest.mark.usefixtures("qapp")
 def win(tmp_path: Path) -> WizardWindow:
     # models_dest_dir points TranscriptStep at tmp_path rather than the
     # real, user-wide models directory — see WizardWindow's own
-    # docstring for that param.
-    return WizardWindow(models_dest_dir=tmp_path)
+    # docstring for that param. catalog_service is likewise a fresh,
+    # empty in-memory instance, not the real per-user catalog.json —
+    # without this, WizardWindow.__init__'s own "catalog_service or
+    # load_catalog()" fallback reads whatever profiles genuinely exist
+    # on the machine running the tests, which is exactly what let one
+    # real, pre-existing profile's own persisted (and possibly stale)
+    # attenuation settings leak into these tests undetected until
+    # ADR-0023 changed the in-code default and broke the coincidental
+    # match.
+    return WizardWindow(models_dest_dir=tmp_path, catalog_service=CatalogService())
 
 
 def _make_source_eligible(win: WizardWindow) -> None:
@@ -125,6 +146,86 @@ def _make_transcribe_ready(win: WizardWindow) -> None:
     transcribe_step._on_result_ready(transcript)
 
 
+def _make_profile_ready(win: WizardWindow) -> None:
+    """Create one real profile directly through the shared
+    ``CatalogService`` and refresh ProfileStep's list — same "test the
+    shell, not the step" split as the helpers above; ProfileStep's own
+    picker/editor/archive logic has its own dedicated tests. A real
+    ``create_profile`` call (not a synthetic step-internal attribute) so
+    ProfileStep picks it up exactly the way it would after the editor
+    dialog saves one.
+    """
+    profile_step = win._steps[STEP_LABELS.index("Profile")]
+    assert isinstance(profile_step, ProfileStep)
+    win._catalog_service.create_profile("Family Friendly")
+    profile_step._refresh_profiles()
+
+
+def _make_scan_ready(win: WizardWindow) -> None:
+    """Deliver one real, freshly-run Scan directly to ScanStep's own
+    result handler, bypassing the real ScanWorker/matcher thread entirely
+    — same "test the shell, not the step" split as the helpers above;
+    ScanStep's own worker/state logic has its own dedicated tests. Still a
+    real ``run_scan()`` call against a real snapshot of whatever profile
+    ``_make_profile_ready`` created, matching the exact fingerprint
+    ``_make_transcribe_ready`` set up, so ScanStep's own re-entry guard
+    (same inputs -> no-op) behaves correctly against later real
+    navigation.
+    """
+    scan_step = win._steps[STEP_LABELS.index("Scan")]
+    profile_step = win._steps[STEP_LABELS.index("Profile")]
+    assert isinstance(scan_step, ScanStep)
+    assert isinstance(profile_step, ProfileStep)
+    profile_id = profile_step.selected_profile_id
+    assert profile_id is not None
+    transcript = Transcript(
+        schema_version=1,
+        status=TranscriptStatus.COMPLETE,
+        source=TranscriptSource(
+            fingerprint="sha256:x", duration_ms=10_000, selected_audio_stream=0
+        ),
+        engine=TranscriptEngine(
+            name="whisper.cpp", version="1.9.2", model="base.en", model_checksum="x"
+        ),
+        segments=(),
+    )
+    scan_step.set_inputs(transcript, win._catalog_service, profile_id)
+    snapshot = win._catalog_service.create_snapshot(profile_id)
+    scan = run_scan(transcript, snapshot, NORMALIZATION_VERSION)
+    scan_step._on_result_ready(scan)
+
+
+def _make_render_ready(win: WizardWindow) -> None:
+    """Deliver a fake completed render directly to RenderStep's own
+    result handler, bypassing the real RenderWorker/ffmpeg entirely —
+    same "test the shell, not the step" split as the helpers above;
+    RenderStep's own worker/state logic has its own dedicated tests. Uses
+    Source's own real manifest (set by ``_make_source_eligible``) rather
+    than a second, possibly-inconsistent one, and a real (if empty)
+    ``RenderPlan`` — an empty plan is a legitimate real case (nothing
+    included), not a shortcut.
+    """
+    render_step = win._steps[STEP_LABELS.index("Render")]
+    source_step = win._steps[STEP_LABELS.index("Source")]
+    assert isinstance(render_step, RenderStep)
+    assert isinstance(source_step, SourceStep)
+    manifest = source_step.manifest
+    assert manifest is not None
+    plan = RenderPlan(
+        intervals=(),
+        attenuation=AttenuationSettings(),
+        source_duration_ms=manifest.duration_ms,
+    )
+    render_step.set_inputs(manifest, plan)
+    result = RenderResult(
+        output_path=Path("/tmp/out.m4b"), duration_ms=manifest.duration_ms
+    )
+    validation = ValidationReport(issues=())
+    render_step._on_result_ready(
+        result, validation, Path("/tmp/out.filter-report.json")
+    )
+
+
 class TestConstruction:
     def test_window_creates_without_error(self, win: WizardWindow) -> None:
         assert win is not None
@@ -148,16 +249,17 @@ class TestConstruction:
         review_index = STEP_LABELS.index("Review")
         assert isinstance(win._steps[review_index], ReviewStep)
 
-    def test_every_other_step_is_a_placeholder(self, win: WizardWindow) -> None:
-        real_indices = {
-            STEP_LABELS.index("Source"),
-            STEP_LABELS.index("Transcript"),
-            STEP_LABELS.index("Transcribe"),
-            STEP_LABELS.index("Review"),
-        }
-        for i, step in enumerate(win._steps):
-            if i not in real_indices:
-                assert isinstance(step, PlaceholderStep)
+    def test_profile_step_is_the_real_widget(self, win: WizardWindow) -> None:
+        profile_index = STEP_LABELS.index("Profile")
+        assert isinstance(win._steps[profile_index], ProfileStep)
+
+    def test_scan_step_is_the_real_widget(self, win: WizardWindow) -> None:
+        scan_index = STEP_LABELS.index("Scan")
+        assert isinstance(win._steps[scan_index], ScanStep)
+
+    def test_render_step_is_the_real_widget(self, win: WizardWindow) -> None:
+        render_index = STEP_LABELS.index("Render")
+        assert isinstance(win._steps[render_index], RenderStep)
 
     def test_starts_on_first_step(self, win: WizardWindow) -> None:
         assert win._active == 0
@@ -174,6 +276,9 @@ class TestNavigation:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
+        _make_profile_ready(win)
+        _make_scan_ready(win)
+        _make_render_ready(win)
         win._on_continue()
         assert win._active == 1
         assert win._title_label.text() == "Choose Transcript Path"
@@ -182,6 +287,9 @@ class TestNavigation:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
+        _make_profile_ready(win)
+        _make_scan_ready(win)
+        _make_render_ready(win)
         win._on_continue()
         win._on_continue()
         assert win._furthest == 2
@@ -190,6 +298,9 @@ class TestNavigation:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
+        _make_profile_ready(win)
+        _make_scan_ready(win)
+        _make_render_ready(win)
         for _ in range(len(STEP_LABELS) + 2):
             win._on_continue()
         assert win._active == len(STEP_LABELS) - 1
@@ -203,6 +314,9 @@ class TestNavigation:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
+        _make_profile_ready(win)
+        _make_scan_ready(win)
+        _make_render_ready(win)
         win._on_continue()
         win._on_continue()
         win._on_back()
@@ -216,6 +330,9 @@ class TestNavigation:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
+        _make_profile_ready(win)
+        _make_scan_ready(win)
+        _make_render_ready(win)
         win._on_continue()
         win._on_continue()
         win._go_to_step(0)
@@ -227,6 +344,9 @@ class TestNavigation:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
+        _make_profile_ready(win)
+        _make_scan_ready(win)
+        _make_render_ready(win)
         win._on_continue()
         assert win._stepper._cells[0]._badge.property("stepState") == "done"
         assert win._stepper._cells[1]._badge.property("stepState") == "current"
@@ -239,6 +359,9 @@ class TestNavButtonsFollowStepCanAdvance:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
+        _make_profile_ready(win)
+        _make_scan_ready(win)
+        _make_render_ready(win)
         review_index = STEP_LABELS.index("Review")
         for _ in range(review_index):
             win._on_continue()
@@ -246,10 +369,9 @@ class TestNavButtonsFollowStepCanAdvance:
         review = win._steps[review_index]
         assert isinstance(review, ReviewStep)
 
-        # ReviewStep never blocks Continue (base default) — flip a
-        # PlaceholderStep's advance-ability via monkeypatch to prove the
-        # shell actually listens to can_advance_changed rather than
-        # ignoring it.
+        # ReviewStep never blocks Continue (base default) — flip its own
+        # advance-ability via monkeypatch to prove the shell actually
+        # listens to can_advance_changed rather than ignoring it.
         step = win._steps[win._active]
         step.can_advance = lambda: False  # type: ignore[method-assign]
         step.can_advance_changed.emit(False)
@@ -277,6 +399,9 @@ class TestSourceToTranscriptWiring:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
+        _make_profile_ready(win)
+        _make_scan_ready(win)
+        _make_render_ready(win)
         win._on_continue()  # Source -> Transcript
         win._on_back()  # Transcript -> Source
 
@@ -337,7 +462,216 @@ class TestTranscriptReuseSkipsTranscribe:
         win._go_to_step(STEP_LABELS.index("Transcript"))
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
+        _make_profile_ready(win)
+        _make_scan_ready(win)
+        _make_render_ready(win)
         win._on_continue()  # Transcript -> Transcribe, for real this time
 
         assert win._active == transcribe_index
         assert transcribe_index not in win._skipped
+
+
+class TestTranscriptToProfileWiring:
+    """ADR-0022: Profile only needs the real Transcript to offer "View
+    Transcript" — it never affects profile selection — but it has to
+    arrive on both paths a Transcript can reach Profile by."""
+
+    def test_advancing_past_transcribe_hands_the_transcript_to_profile(
+        self, win: WizardWindow
+    ) -> None:
+        _make_source_eligible(win)
+        _make_transcript_ready(win)
+        win._on_continue()  # Source -> Transcript
+        win._on_continue()  # Transcript -> Transcribe
+        _make_transcribe_ready(win)
+
+        transcribe_step = win._steps[STEP_LABELS.index("Transcribe")]
+        profile_step = win._steps[STEP_LABELS.index("Profile")]
+        assert isinstance(transcribe_step, TranscribeStep)
+        assert isinstance(profile_step, ProfileStep)
+
+        win._on_continue()  # Transcribe -> Profile
+
+        assert profile_step._transcript is transcribe_step.transcript
+
+    def test_reuse_path_hands_the_reused_transcript_to_profile(
+        self, win: WizardWindow
+    ) -> None:
+        _make_source_eligible(win)
+        win._on_continue()  # Source -> Transcript
+        transcript_step = win._steps[STEP_LABELS.index("Transcript")]
+        profile_step = win._steps[STEP_LABELS.index("Profile")]
+        assert isinstance(transcript_step, TranscriptStep)
+        assert isinstance(profile_step, ProfileStep)
+        reused = Transcript(
+            schema_version=1,
+            status=TranscriptStatus.COMPLETE,
+            source=TranscriptSource(
+                fingerprint="sha256:x", duration_ms=10_000, selected_audio_stream=0
+            ),
+            engine=TranscriptEngine(
+                name="whisper.cpp", version="1.9.2", model="base.en", model_checksum="x"
+            ),
+        )
+        transcript_step._compatible_transcript = reused
+
+        transcript_step.reuse_requested.emit()
+
+        assert profile_step._transcript is reused
+
+
+class TestDoneClosesWizard:
+    """ADR-0022 merged the former Complete step into Render's own
+    Completed state — Render is now the wizard's last step, and
+    ``_make_render_ready`` already drives it to ``_STATE_COMPLETED`` (so
+    ``can_advance()`` is already true once every earlier step is ready),
+    matching what used to require one extra Render -> Complete hop."""
+
+    def test_clicking_done_on_the_last_step_closes_the_window(
+        self, win: WizardWindow
+    ) -> None:
+        _make_source_eligible(win)
+        _make_transcript_ready(win)
+        _make_transcribe_ready(win)
+        _make_profile_ready(win)
+        _make_scan_ready(win)
+        _make_render_ready(win)
+        for _ in range(len(STEP_LABELS) - 1):
+            win._on_continue()
+        assert win._active == STEP_LABELS.index("Render")
+        assert win._continue_btn.text() == "Done"
+
+        with patch.object(win, "close") as mock_close:
+            win._on_continue()  # click "Done"
+
+        mock_close.assert_called_once()
+
+    def test_done_does_not_advance_past_the_last_step(self, win: WizardWindow) -> None:
+        _make_source_eligible(win)
+        _make_transcript_ready(win)
+        _make_transcribe_ready(win)
+        _make_profile_ready(win)
+        _make_scan_ready(win)
+        _make_render_ready(win)
+        for _ in range(len(STEP_LABELS) - 1):
+            win._on_continue()
+
+        win._on_continue()
+
+        assert win._active == STEP_LABELS.index("Render")
+
+
+class TestCloseEventConfirmation:
+    """ADR-0021: ADR-0010's original wireframe review already decided
+    closing mid-Transcribe/mid-Render should confirm first — no code
+    ever actually did it until now.
+
+    Workers are stand-in ``MagicMock``s, not real ``QThread``s — same
+    "test the shell, not the step" split every other shell-level test in
+    this file already uses; TranscribeWorker/RenderWorker have their own
+    dedicated tests for their own real behavior.
+    """
+
+    def _running_worker(self) -> MagicMock:
+        worker = MagicMock()
+        worker.isRunning.return_value = True
+        return worker
+
+    def test_nothing_running_closes_without_any_prompt(self, win: WizardWindow) -> None:
+        with patch(
+            "m4bmaker.gui.filter.wizard.wizard_window.QMessageBox.question"
+        ) as mock_question:
+            result = win.close()
+
+        mock_question.assert_not_called()
+        assert result is True
+
+    def test_declining_mid_transcribe_keeps_the_window_open(
+        self, win: WizardWindow
+    ) -> None:
+        transcribe_step = win._steps[STEP_LABELS.index("Transcribe")]
+        assert isinstance(transcribe_step, TranscribeStep)
+        worker = self._running_worker()
+        transcribe_step._worker = worker
+
+        with patch(
+            "m4bmaker.gui.filter.wizard.wizard_window.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.No,
+        ):
+            result = win.close()
+
+        assert result is False
+        worker.request_pause.assert_not_called()
+
+    def test_confirming_mid_transcribe_pauses_and_waits_then_closes(
+        self, win: WizardWindow
+    ) -> None:
+        transcribe_step = win._steps[STEP_LABELS.index("Transcribe")]
+        assert isinstance(transcribe_step, TranscribeStep)
+        worker = self._running_worker()
+        transcribe_step._worker = worker
+
+        with patch(
+            "m4bmaker.gui.filter.wizard.wizard_window.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            result = win.close()
+
+        assert result is True
+        worker.request_pause.assert_called_once()
+        worker.wait.assert_called_once_with(5000)
+
+    def test_declining_mid_render_keeps_the_window_open(
+        self, win: WizardWindow
+    ) -> None:
+        render_step = win._steps[STEP_LABELS.index("Render")]
+        assert isinstance(render_step, RenderStep)
+        render_step._worker = self._running_worker()
+
+        with patch(
+            "m4bmaker.gui.filter.wizard.wizard_window.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.No,
+        ):
+            result = win.close()
+
+        assert result is False
+
+    def test_confirming_mid_render_closes_without_calling_anything_on_it(
+        self, win: WizardWindow
+    ) -> None:
+        # RenderWorker has no request_pause()/request_cancel() at all
+        # (ADR-0019) — confirming just lets the close proceed, with
+        # nothing to ask the worker to do.
+        render_step = win._steps[STEP_LABELS.index("Render")]
+        assert isinstance(render_step, RenderStep)
+        worker = self._running_worker()
+        render_step._worker = worker
+
+        with patch(
+            "m4bmaker.gui.filter.wizard.wizard_window.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            result = win.close()
+
+        assert result is True
+        worker.request_pause.assert_not_called()
+        worker.wait.assert_not_called()
+
+    def test_both_running_confirms_both_in_order(self, win: WizardWindow) -> None:
+        transcribe_step = win._steps[STEP_LABELS.index("Transcribe")]
+        render_step = win._steps[STEP_LABELS.index("Render")]
+        assert isinstance(transcribe_step, TranscribeStep)
+        assert isinstance(render_step, RenderStep)
+        transcribe_worker = self._running_worker()
+        transcribe_step._worker = transcribe_worker
+        render_step._worker = self._running_worker()
+
+        with patch(
+            "m4bmaker.gui.filter.wizard.wizard_window.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ) as mock_question:
+            result = win.close()
+
+        assert result is True
+        assert mock_question.call_count == 2
+        transcribe_worker.request_pause.assert_called_once()

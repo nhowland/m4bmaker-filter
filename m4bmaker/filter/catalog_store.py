@@ -22,6 +22,7 @@ from typing import Any
 
 from . import storage
 from .catalog import CatalogService
+from .catalog_seed import seed_default_catalog
 from .models import AttenuationSettings, CatalogEntry, Category, FilterProfile
 
 _log = logging.getLogger(__name__)
@@ -51,16 +52,26 @@ def load_catalog(path: Path | None = None) -> CatalogService:
     """Load a :class:`CatalogService` from *path* (default: the standard
     per-user catalog location).
 
-    Returns a fresh, empty service — never raises — if the file doesn't
-    exist yet (first run) or can't be parsed (corruption). A corrupted
-    catalog file is logged as a warning rather than surfaced as a crash:
-    losing catalog data is bad, but refusing to start the app over it
-    would be worse, and this is the same trust level ``gui/prefs.py``
-    already applies to its own JSON file.
+    Returns a fresh service seeded with the default "Profanity" category
+    (:func:`~.catalog_seed.seed_default_catalog`, ADR-0022) — never
+    raises — if the file doesn't exist yet (first run); a *never-seeded*
+    fresh service if it can't be parsed (corruption). A corrupted catalog
+    file is logged as a warning rather than surfaced as a crash: losing
+    catalog data is bad, but refusing to start the app over it would be
+    worse, and this is the same trust level ``gui/prefs.py`` already
+    applies to its own JSON file. The seeded first-run service is saved
+    immediately, not left to whatever happens to call
+    :func:`save_catalog` next — otherwise closing the app without ever
+    touching the catalog would silently re-seed (and duplicate) on every
+    later launch, since nothing would exist on disk to make this branch
+    stop firing.
     """
     target = path or catalog_path()
     if not target.exists():
-        return CatalogService()
+        service = CatalogService()
+        seed_default_catalog(service)
+        save_catalog(service, path=target)
+        return service
 
     try:
         data = storage.read_json(target)

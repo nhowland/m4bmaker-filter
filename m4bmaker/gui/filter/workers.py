@@ -25,12 +25,17 @@ from m4bmaker.filter.model_manager import (
     ModelSpec,
     download_model,
 )
+from m4bmaker.filter.filter_report import write_filter_report
+from m4bmaker.filter.models import FilterProfileSnapshot, MediaManifest, RenderPlan
+from m4bmaker.filter.renderer import RenderError, RenderResult, render
+from m4bmaker.filter.scan import Scan, run_scan
 from m4bmaker.filter.transcript import Transcript, TranscriptSource
 from m4bmaker.filter.transcript_engine import find_whisper_cli
 from m4bmaker.filter.transcription_orchestrator import (
     TranscriptionPaused,
     run_transcription_job,
 )
+from m4bmaker.filter.validator import ValidationReport, validate
 from m4bmaker.utils import find_binary
 
 
@@ -289,3 +294,138 @@ class TranscribeWorker(QThread):
             self.needs_attention.emit(str(exc))
             return
         self.result_ready.emit(transcript)
+
+
+class ScanWorker(QThread):
+    """Run :func:`scan.run_scan` (the Matcher) off the UI thread (PRD §9.4).
+
+    No ``JobStore``, no chunking, no pause/resume — unlike Transcription,
+    a scan has no natural chunk boundary to checkpoint at (``matcher.
+    scan_transcript()``'s own docstring already flags it as a single,
+    unbenchmarked pass over the whole transcript), so this mirrors
+    ``MediaInspectWorker``'s simpler shape instead of ``TranscribeWorker``'s:
+    one call, a result or an error, nothing durable to resume if the wizard
+    closes mid-scan. If a real long-book benchmark someday shows this is
+    slow enough to need interruptibility, that's a real re-scoping of this
+    worker, not a small tweak (see the Scan wireframe pass's own notes).
+    """
+
+    result_ready = Signal(object)  # Scan
+    error = Signal(str)
+
+    def __init__(
+        self,
+        transcript: Transcript,
+        profile_snapshot: FilterProfileSnapshot,
+        normalization_version: int,
+    ) -> None:
+        super().__init__()
+        self._transcript = transcript
+        self._profile_snapshot = profile_snapshot
+        self._normalization_version = normalization_version
+
+    def run(self) -> None:
+        try:
+            scan: Scan = run_scan(
+                self._transcript, self._profile_snapshot, self._normalization_version
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+            return
+        self.result_ready.emit(scan)
+
+
+class RenderWorker(QThread):
+    """Run :func:`renderer.render` then :func:`validator.validate` off the
+    UI thread (PRD §7.2 stage 7, §8; ADR-0006/0007/0019).
+
+    No pause/resume, no cancellation hook — ``render()`` is one
+    synchronous, all-or-nothing call with no chunk boundary to checkpoint
+    at, matching ADR-0007's own already-decided position ("given the real
+    615s/10.25-minute total render time... full-restart-on-failure is a
+    reasonable MVP position"). This worker doesn't invent a
+    ``request_cancel()`` this class can't actually honor (there is no
+    handle back to the underlying ffmpeg subprocess to stop) — the real
+    escape hatch is the wizard window's own confirm-before-close, which
+    already applies "mid-Render" per its own docstring.
+
+    ``validating`` fires once, right after ``render()`` succeeds and
+    before ``validate()`` runs — ``validate()`` has no progress callback
+    of its own (a single blocking call, same reasoning as ``ScanWorker``'s
+    indeterminate state), so the UI has nothing to show but "this next
+    phase is running," not a fraction of it.
+    """
+
+    progress = Signal(str, float)  # message, 0.0-1.0 (render() phases only)
+    validating = Signal()
+    result_ready = Signal(
+        object, object, object
+    )  # RenderResult, ValidationReport, report_path
+    error = Signal(str)
+
+    def __init__(
+        self,
+        source_path: Path,
+        manifest: MediaManifest,
+        render_plan: RenderPlan,
+        output_path: Path,
+        bitrate: str,
+    ) -> None:
+        super().__init__()
+        self._source_path = source_path
+        self._manifest = manifest
+        self._render_plan = render_plan
+        self._output_path = output_path
+        self._bitrate = bitrate
+
+    def run(self) -> None:
+        ffmpeg = find_binary("ffmpeg")
+        if ffmpeg is None:
+            self.error.emit(
+                "ffmpeg not found. Install ffmpeg and make sure it's on " "your PATH."
+            )
+            return
+        ffprobe = find_binary("ffprobe")
+        if ffprobe is None:
+            self.error.emit(
+                "ffprobe not found. Install ffmpeg (which bundles ffprobe) "
+                "and make sure it's on your PATH."
+            )
+            return
+
+        try:
+            result: RenderResult = render(
+                self._source_path,
+                self._manifest,
+                self._render_plan,
+                self._output_path,
+                ffmpeg,
+                ffprobe,
+                self._bitrate,
+                progress_callback=self.progress.emit,
+            )
+        except RenderError as exc:
+            self.error.emit(str(exc))
+            return
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+            return
+
+        self.validating.emit()
+        try:
+            output_manifest = inspect(self._output_path, ffprobe)
+            report: ValidationReport = validate(
+                self._manifest,
+                output_manifest,
+                self._render_plan,
+                self._output_path,
+                ffmpeg,
+            )
+        except Exception as exc:  # noqa: BLE001
+            self.error.emit(str(exc))
+            return
+
+        report_path = write_filter_report(
+            self._output_path, result, report, self._bitrate
+        )
+        self.result_ready.emit(result, report, report_path)

@@ -90,8 +90,8 @@ class TestCatalogEntry:
 class TestAttenuationSettings:
     def test_defaults_match_prd_table(self) -> None:
         s = AttenuationSettings()
-        assert s.lead_padding_ms == 60
-        assert s.tail_padding_ms == 80
+        assert s.lead_padding_ms == 300
+        assert s.tail_padding_ms == 400
         assert s.merge_adjacency_ms == 20
         assert s.fade_in_ms == 15
         assert s.fade_out_ms == 15
@@ -106,9 +106,9 @@ class TestAttenuationSettings:
         "kwargs",
         [
             {"lead_padding_ms": -1},
-            {"lead_padding_ms": 251},
+            {"lead_padding_ms": 401},
             {"tail_padding_ms": -1},
-            {"tail_padding_ms": 301},
+            {"tail_padding_ms": 501},
             {"merge_adjacency_ms": -1},
             {"merge_adjacency_ms": 101},
             {"fade_in_ms": 4},
@@ -134,8 +134,8 @@ class TestAttenuationSettings:
             gain_floor_db=-60.0,
         )
         AttenuationSettings(
-            lead_padding_ms=250,
-            tail_padding_ms=300,
+            lead_padding_ms=400,
+            tail_padding_ms=500,
             merge_adjacency_ms=100,
             fade_in_ms=50,
             fade_out_ms=50,

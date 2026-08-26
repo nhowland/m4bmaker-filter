@@ -12,6 +12,7 @@ test_transcript_step.py already use for their own workers.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -352,3 +353,24 @@ class TestTerminalStates:
             mock_cls.return_value = MagicMock()
             _find_button(step, "Resume").click()
             assert mock_cls.call_args.args[-1] == "resume"
+
+
+class TestViewTranscript:
+    """ADR-0022: the completed panel offers a generated plain-text
+    companion, not the raw .m4bt.json (D3 of the dry-run review)."""
+
+    def test_clicking_view_transcript_opens_the_generated_text_file(
+        self, step: TranscribeStep, tmp_path: Path
+    ) -> None:
+        step.set_transcript_choice(_manifest(), _BASE_EN)
+        with patch("m4bmaker.gui.filter.wizard.transcribe_step.TranscribeWorker"):
+            _find_button(step, "Start Transcription").click()
+        transcript_path = tmp_path / "book.m4bt.json"
+        step._on_result_ready(replace(_transcript(), path=transcript_path))
+
+        with patch(
+            "m4bmaker.gui.filter.wizard.transcribe_step.QDesktopServices.openUrl"
+        ) as mock_open:
+            _find_button(step, "View Transcript").click()
+
+        mock_open.assert_called_once()

@@ -116,6 +116,54 @@ def estimate_storage_bytes(manifest: MediaManifest) -> int:
     return round(total_pcm_bytes + aac_bytes)
 
 
+def default_output_path(source_path: Path) -> Path:
+    """The Render step's default output location: same folder as the
+    source, ``"<stem> (filtered)<suffix>"`` — e.g. ``Book.m4b`` ->
+    ``Book (filtered).m4b``. A starting point the wizard's own Browse
+    action can always override, not a fixed policy."""
+    return source_path.with_name(f"{source_path.stem} (filtered){source_path.suffix}")
+
+
+#: Real AAC bitrates the Render step offers — the exact list
+#: ``gui/window.py``'s own encoding-options combo already uses.
+SUPPORTED_BITRATES: tuple[str, ...] = (
+    "32k",
+    "48k",
+    "64k",
+    "96k",
+    "128k",
+    "192k",
+    "256k",
+    "320k",
+)
+
+#: Matches ``gui/window.py``'s own ``_DEFAULT_BITRATE`` — used only when
+#: the source's own bitrate can't be read at all.
+DEFAULT_BITRATE = "96k"
+
+
+def pick_default_bitrate(bit_rate_bps: int | None, codec_name: str | None) -> str:
+    """Auto-select the best AAC bitrate for a source, porting
+    ``gui/window.py``'s own real "snap to nearest of ``_BITRATES`` given
+    the source's own bitrate" logic rather than reinventing it
+    differently — same discount-then-snap algorithm: a lossy MP3/MP2
+    source gets a 25% discount before snapping (AAC reaches equivalent
+    perceptual quality at roughly 75% of the source bitrate there), every
+    other codec (AAC, FLAC, WAV, ...) snaps without a discount. Ties snap
+    to the higher step, the safer-quality choice. Falls back to
+    :data:`DEFAULT_BITRATE` when the source's bitrate is unknown — no
+    guess is better than a wrong one here.
+    """
+    if bit_rate_bps is None:
+        return DEFAULT_BITRATE
+    target_kbps = bit_rate_bps // 1000
+    if codec_name in ("mp3", "mp2"):
+        target_kbps = int(target_kbps * 0.75)
+    available = [int(b.rstrip("k")) for b in SUPPORTED_BITRATES]
+    closest = min(available, key=lambda x: (abs(x - target_kbps), -x))
+    return f"{closest}k"
+
+
 def _run(cmd: list[str], step: str) -> None:
     result = subprocess.run(
         cmd, capture_output=True, encoding="utf-8", **subprocess_flags()

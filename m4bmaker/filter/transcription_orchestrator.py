@@ -25,6 +25,7 @@ from __future__ import annotations
 import subprocess
 import tempfile
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from m4bmaker.utils import subprocess_flags
@@ -43,6 +44,7 @@ from .transcript import (
     write_transcript,
 )
 from .transcript_engine import (
+    dtw_model_name_for,
     get_whisper_version,
     run_whisper,
     whisper_result_to_segment,
@@ -212,7 +214,7 @@ def run_transcription_job(
             segments=tuple(seg for seg, _ in ordered),
         )
         write_transcript(transcript_path, transcript)
-        return transcript
+        return replace(transcript, path=transcript_path)
 
     with tempfile.TemporaryDirectory() as tmp:
         for plan in plans:
@@ -236,7 +238,11 @@ def run_transcription_job(
             )
 
             raw = run_whisper(
-                chunk_wav, model_path, language=language, whisper_cli=whisper_cli
+                chunk_wav,
+                model_path,
+                language=language,
+                whisper_cli=whisper_cli,
+                dtw_model_name=dtw_model_name_for(model_path),
             )
             raw_segment = whisper_result_to_segment(
                 raw,

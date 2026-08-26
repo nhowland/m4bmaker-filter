@@ -171,6 +171,28 @@ QPushButton#convertBtn:disabled {
     color: #faf8f4;
 }
 
+QPushButton#primaryBtn {
+    background-color: #c45a2d;
+    color: #faf8f4;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 20px;
+    font-weight: 600;
+}
+
+QPushButton#primaryBtn:hover {
+    background-color: #b3511f;
+}
+
+QPushButton#primaryBtn:pressed {
+    background-color: #9e4719;
+}
+
+QPushButton#primaryBtn:disabled {
+    background-color: #d0c9be;
+    color: #faf8f4;
+}
+
 /* ── Radio buttons ───────────────────────────────────────────────────── */
 QRadioButton {
     background: transparent;
@@ -213,6 +235,28 @@ QCheckBox::indicator {
 QCheckBox::indicator:checked {
     background-color: #c45a2d;
     border-color: #c45a2d;
+}
+
+/* ── Checkable tree/table items (Word Catalog, Profile editor, Review) ── */
+QTreeWidget::indicator,
+QTableWidget::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #d0c9be;
+    border-radius: 2px;
+    background-color: #faf8f4;
+}
+
+QTreeWidget::indicator:checked,
+QTableWidget::indicator:checked {
+    background-color: #c45a2d;
+    border-color: #c45a2d;
+}
+
+QTreeWidget::indicator:indeterminate,
+QTableWidget::indicator:indeterminate {
+    background-color: #ddd7cc;
+    border-color: #b5ae9e;
 }
 
 /* ── Scroll areas ────────────────────────────────────────────────────── */
@@ -711,6 +755,28 @@ QPushButton#convertBtn:disabled {
     color: #888888;
 }
 
+QPushButton#primaryBtn {
+    background-color: #c45a2d;
+    color: #f5f2ed;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 20px;
+    font-weight: 600;
+}
+
+QPushButton#primaryBtn:hover {
+    background-color: #b3511f;
+}
+
+QPushButton#primaryBtn:pressed {
+    background-color: #9e4719;
+}
+
+QPushButton#primaryBtn:disabled {
+    background-color: #3a3a3a;
+    color: #888888;
+}
+
 /* ── Radio buttons ───────────────────────────────────────────────────── */
 QRadioButton {
     background: transparent;
@@ -753,6 +819,28 @@ QCheckBox::indicator {
 QCheckBox::indicator:checked {
     background-color: #c45a2d;
     border-color: #c45a2d;
+}
+
+/* ── Checkable tree/table items (Word Catalog, Profile editor, Review) ── */
+QTreeWidget::indicator,
+QTableWidget::indicator {
+    width: 14px;
+    height: 14px;
+    border: 1px solid #555555;
+    border-radius: 2px;
+    background-color: #2e2e2e;
+}
+
+QTreeWidget::indicator:checked,
+QTableWidget::indicator:checked {
+    background-color: #c45a2d;
+    border-color: #c45a2d;
+}
+
+QTreeWidget::indicator:indeterminate,
+QTableWidget::indicator:indeterminate {
+    background-color: #444444;
+    border-color: #555555;
 }
 
 /* ── Scroll areas ────────────────────────────────────────────────────── */

@@ -120,9 +120,31 @@ class TestSaveAndLoadRoundTrip:
 
 
 class TestLoadMissingFile:
-    def test_returns_empty_service_without_raising(self, tmp_path: Path) -> None:
+    def test_returns_seeded_service_without_raising(self, tmp_path: Path) -> None:
+        """ADR-0022: a missing catalog file means first run, not an
+        intentionally emptied catalog — load_catalog seeds the default
+        "Profanity" category rather than returning nothing."""
         service = load_catalog(tmp_path / "does-not-exist.json")
-        assert service.list_categories() == []
+        categories = service.list_categories()
+        assert len(categories) == 1
+        assert categories[0].name == "Profanity"
+        assert len(service.list_entries()) > 0
+
+    def test_seeded_first_run_catalog_is_saved_immediately(
+        self, tmp_path: Path
+    ) -> None:
+        """Otherwise a session that never touches the catalog would
+        re-seed (and duplicate) on every later launch, since nothing
+        would exist on disk to stop the "file doesn't exist" branch from
+        firing again."""
+        path = tmp_path / "catalog.json"
+        assert not path.exists()
+
+        load_catalog(path)
+
+        assert path.exists()
+        second_load = load_catalog(path)
+        assert len(second_load.list_categories()) == 1
 
 
 class TestLoadCorruptedFile:

@@ -10,7 +10,7 @@ synthetic/native transcript fixtures, not live STT." Real transcript
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -98,6 +98,14 @@ class Transcript:
     source: TranscriptSource
     engine: TranscriptEngine
     segments: tuple[TranscriptSegment, ...] = ()
+    #: Where this transcript's own ``.m4bt.json`` lives on disk, if known
+    #: (ADR-0022). Local, in-memory-only metadata about *this session's*
+    #: copy of the artifact — deliberately excluded from
+    #: :func:`transcript_to_dict`/:func:`transcript_from_dict`, since a
+    #: path is not portable schema content (PRD §10.3 defines the JSON
+    #: shape; embedding an absolute path in it would go stale the moment
+    #: the file is copied or moved).
+    path: Path | None = None
 
     def words(self) -> list[TranscriptWord]:
         """All words across all segments, in timeline order.
@@ -241,8 +249,9 @@ def write_transcript(path: Path, transcript: Transcript) -> None:
 
 
 def read_transcript(path: Path) -> Transcript:
-    """Read and parse a transcript artifact from *path*."""
-    return transcript_from_dict(read_json(path))
+    """Read and parse a transcript artifact from *path*, tagged with the
+    path it was read from (see :attr:`Transcript.path`)."""
+    return replace(transcript_from_dict(read_json(path)), path=path)
 
 
 def find_compatible_transcript(

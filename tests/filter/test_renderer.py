@@ -30,15 +30,18 @@ from m4bmaker.filter.models import (
     RenderPlan,
 )
 from m4bmaker.filter.renderer import (
+    SUPPORTED_BITRATES,
     RenderError,
     RenderResult,
     _db_to_linear,
     _gain_at,
     apply_gain_envelope,
+    default_output_path,
     encode_and_mux,
     estimate_storage_bytes,
     extract_primary_audio_pcm,
     generate_envelope_pcm,
+    pick_default_bitrate,
     render,
 )
 
@@ -603,3 +606,47 @@ class TestEstimateStorageBytes:
             duration_ms=10_000, sample_rate=44_100, channels=1, bit_rate=64_000
         )
         assert estimate_storage_bytes(manifest) == 882_000 * 3 + 80_000
+
+
+class TestDefaultOutputPath:
+    def test_appends_filtered_suffix_before_extension(self) -> None:
+        result = default_output_path(Path("/books/Dungeon Crawler Carl.m4b"))
+        assert result == Path("/books/Dungeon Crawler Carl (filtered).m4b")
+
+    def test_same_folder_as_source(self) -> None:
+        result = default_output_path(Path("/a/b/c/Book.m4b"))
+        assert result.parent == Path("/a/b/c")
+
+
+class TestPickDefaultBitrate:
+    def test_unknown_bit_rate_falls_back_to_default(self) -> None:
+        assert pick_default_bitrate(None, "aac") == "96k"
+
+    def test_snaps_to_nearest_supported_bitrate(self) -> None:
+        # 126kbps AAC (the real reference book's own track) snaps to 128k,
+        # not the exact source rate — 128k is the closest of
+        # SUPPORTED_BITRATES.
+        assert pick_default_bitrate(126_000, "aac") == "128k"
+
+    def test_exact_match_returns_that_bitrate(self) -> None:
+        assert pick_default_bitrate(96_000, "aac") == "96k"
+
+    def test_tie_snaps_to_the_higher_step(self) -> None:
+        # Exactly between 64k and 96k (80k) — the higher, safer-quality
+        # choice wins the tie.
+        assert pick_default_bitrate(80_000, "aac") == "96k"
+
+    def test_mp3_source_gets_a_25_percent_discount_before_snapping(self) -> None:
+        # 128kbps MP3 * 0.75 = 96kbps target -> snaps to 96k.
+        assert pick_default_bitrate(128_000, "mp3") == "96k"
+
+    def test_mp2_source_also_gets_the_discount(self) -> None:
+        # 96kbps MP2 * 0.75 = 72kbps target -> closer to 64k than 96k.
+        assert pick_default_bitrate(96_000, "mp2") == "64k"
+
+    def test_non_lossy_codec_gets_no_discount(self) -> None:
+        assert pick_default_bitrate(128_000, "flac") == "128k"
+
+    def test_result_is_always_one_of_supported_bitrates(self) -> None:
+        for bit_rate in (1, 1_000, 50_000, 500_000, 10_000_000):
+            assert pick_default_bitrate(bit_rate, "aac") in SUPPORTED_BITRATES

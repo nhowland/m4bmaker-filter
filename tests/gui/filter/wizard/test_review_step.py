@@ -16,7 +16,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
 
 from m4bmaker.filter.catalog import CatalogService
-from m4bmaker.filter.models import ReviewStatus
+from m4bmaker.filter.models import AttenuationSettings, ReviewStatus
 from m4bmaker.filter.scan import run_scan
 from m4bmaker.filter.transcript import (
     SegmentStatus,
@@ -103,7 +103,15 @@ class _Fixture:
         self.heck, _ = service.create_entry(cat_profanity.id, "heck")
         self.slur, _ = service.create_entry(cat_slurs.id, "badword")
         profile = service.create_profile(
-            "Test", entry_ids=[self.darn.id, self.heck.id, self.slur.id]
+            "Test",
+            entry_ids=[self.darn.id, self.heck.id, self.slur.id],
+            # Deliberately small, explicit padding -- this fixture's whole
+            # point is exercising *distinct, non-merging* intervals per
+            # hit; coupling that to whatever the app's own production
+            # default happens to be would silently break this fixture's
+            # design intent every time that default changes for unrelated
+            # reasons (as it did in ADR-0023).
+            attenuation=AttenuationSettings(lead_padding_ms=60, tail_padding_ms=80),
         )
         self.snapshot = service.create_snapshot(profile.id)
         self.service = service
@@ -319,13 +327,34 @@ class TestFilters:
         assert step._table.rowCount() == 1
         assert _item(step._table, 0, _COL_TERM).text() == "darn"
 
-    def test_confidence_available_filter(
+    def test_confidence_below_25_filter_excludes_everything(
         self, step: ReviewStep, fixture: _Fixture
     ) -> None:
         fixture.load(step)
-        available_index = step._confidence_combo.findData("available")
-        step._confidence_combo.setCurrentIndex(available_index)
-        assert step._table.rowCount() == 2  # darn (0.9) and badword (0.5)
+        # darn=0.9, badword=0.5, heck=None -- none are < 0.25.
+        below_25_index = step._confidence_combo.findData("below_25")
+        step._confidence_combo.setCurrentIndex(below_25_index)
+        assert step._table.rowCount() == 0
+
+    def test_confidence_below_75_filter_narrows_to_badword(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        below_75_index = step._confidence_combo.findData("below_75")
+        step._confidence_combo.setCurrentIndex(below_75_index)
+        assert step._table.rowCount() == 1
+        assert _item(step._table, 0, _COL_TERM).text() == "b*****d"
+
+    def test_confidence_below_90_filter_excludes_exactly_90(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        # darn's confidence is exactly 0.9 -- "below 90%" must exclude it,
+        # leaving only badword (0.5).
+        below_90_index = step._confidence_combo.findData("below_90")
+        step._confidence_combo.setCurrentIndex(below_90_index)
+        assert step._table.rowCount() == 1
+        assert _item(step._table, 0, _COL_TERM).text() == "b*****d"
 
     def test_confidence_unavailable_filter(
         self, step: ReviewStep, fixture: _Fixture
@@ -374,3 +403,45 @@ class TestRenderPlanTab:
 
     def test_empty_scan_shows_empty_plan_message(self, step: ReviewStep) -> None:
         assert step._plan_layout.count() >= 1
+
+
+class TestCurrentRenderPlan:
+    def test_none_before_any_scan_is_set(self, step: ReviewStep) -> None:
+        assert step.current_render_plan() is None
+
+    def test_matches_the_on_screen_plan_tab_summary(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        plan = step.current_render_plan()
+        assert plan is not None
+        assert len(plan.intervals) == 3
+
+    def test_live_reflects_a_later_exclude_decision(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        item = _item(step._table, 0, _COL_INCLUDED)
+        item.setCheckState(Qt.CheckState.Unchecked)
+
+        plan = step.current_render_plan()
+
+        assert plan is not None
+        assert len(plan.intervals) == 2
+
+    def test_uses_the_snapshot_attenuation_when_none_overridden(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        plan = step.current_render_plan()
+        assert plan is not None
+        assert plan.attenuation == fixture.snapshot.attenuation
+
+    def test_not_cached_returns_a_fresh_plan_object_each_call(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        first = step.current_render_plan()
+        second = step.current_render_plan()
+        assert first == second
+        assert first is not second

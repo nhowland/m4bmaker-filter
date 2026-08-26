@@ -6,6 +6,7 @@ suite can run headlessly in CI with no display.
 
 from __future__ import annotations
 
+import gc
 import os
 import sys
 from unittest.mock import patch
@@ -16,6 +17,26 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtWidgets import QApplication  # noqa: E402
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _disable_cyclic_gc():
+    """See ADR-0023: most `win`-style fixtures across tests/gui/ hand back a
+    bare top-level widget with no `deleteLater()`/`close()` teardown, so
+    hundreds of them across a combined run stay alive as pure-Python objects
+    until CPython's cyclic GC happens to collect them. When that collection
+    lands inside Qt/Shiboken's own native teardown call stack (observed at
+    `QCoreApplication.sendPostedEvents(None, DeferredDelete)` in
+    tests/gui/test_window.py's `win` fixture), destroying a batch of orphaned
+    QWidget trees mid-traversal segfaults. Reference counting alone still
+    frees everything that isn't a cycle, so disabling only the *cyclic*
+    collector for the test session is sufficient and was verified to make
+    `pytest tests/gui/` fully deterministic (784/784) with no test changes."""
+    was_enabled = gc.isenabled()
+    gc.disable()
+    yield
+    if was_enabled:
+        gc.enable()
 
 
 @pytest.fixture(scope="session")

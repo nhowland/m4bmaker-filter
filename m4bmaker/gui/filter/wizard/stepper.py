@@ -31,7 +31,6 @@ STEP_LABELS: tuple[str, ...] = (
     "Scan",
     "Review",
     "Render",
-    "Complete",
 )
 
 _DONE_GLYPH = "✓"  # ✓
