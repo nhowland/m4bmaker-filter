@@ -44,6 +44,7 @@ from m4bmaker.filter.transcript import (
 from m4bmaker.filter.transcription_orchestrator import TranscriptionPaused
 from m4bmaker.filter.validator import ValidationReport
 from m4bmaker.gui.filter.workers import (
+    CoverArtWorker,
     DownloadCoordinator,
     MediaInspectWorker,
     ModelDownloadWorker,
@@ -254,6 +255,96 @@ class TestMediaInspectWorker:
 
         qapp.processEvents()
         assert errors == ["boom"]
+
+
+class TestCoverArtWorker:
+    def test_success_emits_the_extracted_path(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        cover = tmp_path / "cover.jpg"
+        results: list[Path | None] = []
+
+        with (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                return_value="/usr/bin/ffmpeg",
+            ),
+            patch(
+                "m4bmaker.gui.filter.workers.extract_cover_from_audio",
+                return_value=cover,
+            ),
+        ):
+            worker = CoverArtWorker(tmp_path / "book.m4b")
+            worker.result_ready.connect(results.append)
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert results == [cover]
+
+    def test_missing_ffmpeg_emits_none_not_an_error(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        # Purely a preview convenience (ADR-0046) -- unlike
+        # MediaInspectWorker, a missing ffmpeg here isn't a recoverable-
+        # error condition worth surfacing; the wizard's other steps
+        # already report that loudly when it actually matters.
+        results: list[Path | None] = []
+        with patch("m4bmaker.gui.filter.workers.find_binary", return_value=None):
+            worker = CoverArtWorker(tmp_path / "book.m4b")
+            worker.result_ready.connect(results.append)
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert results == [None]
+
+    def test_no_cover_found_emits_none(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        results: list[Path | None] = []
+        with (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                return_value="/usr/bin/ffmpeg",
+            ),
+            patch(
+                "m4bmaker.gui.filter.workers.extract_cover_from_audio",
+                return_value=None,
+            ),
+        ):
+            worker = CoverArtWorker(tmp_path / "book.m4b")
+            worker.result_ready.connect(results.append)
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert results == [None]
+
+    def test_unexpected_exception_emits_none(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        # No error signal at all on this worker, by design (see its own
+        # docstring) -- an unexpected extraction failure just resolves
+        # to "no art to show", same as any other failure mode here.
+        results: list[Path | None] = []
+        with (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                return_value="/usr/bin/ffmpeg",
+            ),
+            patch(
+                "m4bmaker.gui.filter.workers.extract_cover_from_audio",
+                side_effect=RuntimeError("boom"),
+            ),
+        ):
+            worker = CoverArtWorker(tmp_path / "book.m4b")
+            worker.result_ready.connect(results.append)
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert results == [None]
 
 
 class TestDownloadCoordinator:
@@ -636,9 +727,13 @@ def _empty_plan(duration_ms: int = 10_000) -> RenderPlan:
 
 
 class TestRenderWorker:
-    def test_success_emits_result_validation_and_a_real_report_path(
+    def test_success_emits_result_and_validation(
         self, qapp: QApplication, tmp_path: Path
     ) -> None:
+        # ADR-0029: the worker no longer writes the filter report itself
+        # (moved to RenderStep, which has the Transcript/Scan/timings
+        # context a useful report needs and this worker never held) — it
+        # only ever reports the bare RenderResult/ValidationReport.
         manifest = _manifest_with_track()
         plan = _empty_plan()
         output_path = tmp_path / "out.m4b"
@@ -666,10 +761,9 @@ class TestRenderWorker:
 
         qapp.processEvents()
         assert len(results) == 1
-        result, validation, report_path = results[0]
+        result, validation = results[0]
         assert result is fake_result
         assert validation is fake_validation
-        assert report_path.exists()  # write_filter_report() runs for real
         mock_render.assert_called_once()
         assert mock_render.call_args.args[0] == Path("/books/a.m4b")
         assert mock_render.call_args.args[6] == "128k"
@@ -851,3 +945,49 @@ class TestRenderWorker:
 
         qapp.processEvents()
         assert events == ["validating", "result_ready"]
+
+    def test_validate_receives_a_progress_callback_that_emits_the_signal(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        # ADR-0044: validate()'s own attenuation check reports per-
+        # interval progress — the worker must pass a real callback
+        # through, not just accept the kwarg silently, and that callback
+        # must land as a real Qt signal a UI-thread listener can connect
+        # to (the same cross-thread emit pattern `progress` already
+        # uses for render()'s own callback).
+        manifest = _manifest_with_track()
+        output_path = tmp_path / "out.m4b"
+        fake_result = RenderResult(output_path=output_path, duration_ms=10_000)
+        fake_validation = ValidationReport(issues=())
+        received: list[tuple[str, float]] = []
+
+        def _fake_validate(*args: object, **kwargs: object) -> ValidationReport:
+            callback = kwargs["progress_callback"]
+            assert callback is not None
+            callback("Validating output… (1 of 2)", 0.5)  # type: ignore[operator]
+            callback("Validating output… (2 of 2)", 1.0)  # type: ignore[operator]
+            return fake_validation
+
+        with (
+            patch(
+                "m4bmaker.gui.filter.workers.find_binary",
+                side_effect=lambda name: f"/usr/bin/{name}",
+            ),
+            patch("m4bmaker.gui.filter.workers.render", return_value=fake_result),
+            patch("m4bmaker.gui.filter.workers.inspect", return_value=manifest),
+            patch("m4bmaker.gui.filter.workers.validate", side_effect=_fake_validate),
+        ):
+            worker = RenderWorker(
+                Path("/books/a.m4b"), manifest, _empty_plan(), output_path, "128k"
+            )
+            worker.validating_progress.connect(
+                lambda msg, frac: received.append((msg, frac))
+            )
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert received == [
+            ("Validating output… (1 of 2)", 0.5),
+            ("Validating output… (2 of 2)", 1.0),
+        ]

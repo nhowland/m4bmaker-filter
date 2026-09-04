@@ -1999,3 +1999,56 @@ pass unmodified, since this is additive UI text with no behavior
 change. `tests/gui/filter/wizard/test_review_step.py` 37 passed, full
 `tests/gui/filter/` 380 passed; `black`/`flake8`/`mypy` clean.
 
+## G5: Persistent file card, cover art, bitrate hint (ADR-0046, 2026-08-31)
+
+Four User-requested UI changes, mocked up together first (a published
+artifact iterating on three weighted options for a persistent file
+card) then implemented as one batch: a persistent `FileCard` below the
+stepper visible across every step from Source through Render, reading
+`SourceStep`'s own state directly; real cover art on the Source step
+via a new `CoverArtWorker` wrapping the render pipeline's
+already-existing `extract_cover_from_audio()` off the UI thread; a
+bitrate-hint label next to Render's dropdown when the current
+selection matches what `pick_default_bitrate()` picked from the
+source's own bitrate; and "Est. storage needed" reworded to "Temp
+storage needed" with a tooltip/inline sentence explaining it includes
+both temporary working files and the kept output.
+
+Two real bugs caught by writing tests, neither shipped: a race
+condition where picking a second file while the first file's cover
+extraction was still running could let the stale worker's late result
+overwrite the newer selection, fixed with a default-argument
+lambda-capture-and-compare pattern already used elsewhere in this
+package; and the bitrate hint would have claimed a match even when the
+source's bitrate was unknown and the app fell back to a generic
+default, fixed by only recording the auto-pick when a real source
+bitrate existed.
+
+Real use the same day surfaced four follow-on refinements: the
+persistent card's badge read "✓ Eligible" on every step even after the
+check itself was long past, settled on "✓ Verified" after discussion
+(rejecting "Ready," which collides with each step's own notion of
+readiness); the Source step's cover thumbnail was visibly shorter than
+the six rows of info text beside it, fixed by sizing the thumbnail to
+the info panel's own measured height instead of a fixed guess; the
+User pointed at the base app's own "Build" panel (a placeholder cover
+box and blank fields before any file loads) and asked the wizard's
+persistent `FileCard` to match, since it previously stayed hidden
+entirely until a manifest existed; and a follow-up screenshot showed
+the Source step's own larger info panel still had the same gap, plus a
+deeper problem once fixed the first way — the placeholder disappeared
+during inspection and its height didn't reliably match the real
+panel's, since they were two separate widget instances. Root-caused
+and fixed properly per the User's own explicit choice of "fix it
+properly, not incrementally": one persistent `_InfoPanel`, built once
+and updated in place, never torn down and rebuilt. A regression test
+written for this caught two real, distinct height bugs in sequence —
+row values weren't guaranteed single-line (fixed with eliding), and
+the panel's own heading was hidden outright in the placeholder state,
+which Qt's layout system skips entirely when computing height (fixed
+by keeping it always visible and toggling only its text/QSS state).
+
+26 new tests across the initial batch, plus further tests for each
+addendum; full `tests/gui/filter/` 416 passed; `black`/`flake8`/`mypy`
+clean throughout.
+

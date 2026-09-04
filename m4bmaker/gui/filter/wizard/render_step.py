@@ -25,22 +25,29 @@ close here.
   editable defaults (``renderer.default_output_path()``/
   ``renderer.pick_default_bitrate()``, ADR-0019 — the latter ports
   ``gui/window.py``'s own real bitrate-auto-selection logic rather than
-  reinventing it), not fixed choices. No "Est. render time" — ADR-0007's
-  own real measurement is for exactly one fixture; showing an
-  extrapolated number for an arbitrary source here would be a guess
-  dressed as data, the same anti-pattern Transcribe's own "Est.
-  remaining" already deliberately avoided.
+  reinventing it), not fixed choices. Still no upfront "Est. render
+  time" here — ADR-0007's own real measurement is for exactly one
+  fixture, and unlike Running's own estimate (below), there's no live
+  data yet at this point to correct an initial guess against.
 - **Running** — real, determinate progress from ``render()``'s own four
-  stages, then an indeterminate "Validating output…" tail once
-  ``validate()`` takes over (it has no progress callback of its own).
-  ADR-0022 added an elapsed-time display here (mirroring Transcribe's
-  own ``QTimer``-driven one) precisely because that per-stage progress
-  is coarse — each of the four stages reports only its own start
-  fraction, so a long ``encode_and_mux()`` stage can visibly sit at the
-  same percentage for most of the render. No Cancel button — there is
-  no handle back to the underlying ffmpeg subprocess to actually stop;
-  the wizard window's own confirm-before-close is the real, honest
-  escape hatch, not a button that can't do what it claims.
+  stages, reweighted by real relative cost rather than four equal 25%
+  steps (ADR-0028 — ADR-0007's own measurement: encode+mux is ~93% of
+  total render time on a real 13.5-hour book), then a *second*,
+  separately-determinate "Validating output…" phase once ``validate()``
+  takes over — real per-interval progress from its own attenuation check
+  (ADR-0044; earlier versions of this step showed an indeterminate tail
+  here, before real data — a real ~11.5-hour book's own filter-report
+  timing — showed validation can itself cost minutes, not the negligible
+  tail originally assumed). Alongside Elapsed, an estimated-remaining-
+  time label spans both phases: encode+mux's own rate (ADR-0028) while
+  render() runs, then validate()'s own interval-count-based rate once
+  it takes over — both seeded from a rough hardcoded default and
+  corrected by this run's own measured data the moment it exists, same
+  "re-anchor the countdown" pattern Transcribe's own "Est. remaining"
+  already uses (ADR-0027). No Cancel button — there is no handle back to
+  the underlying ffmpeg subprocess to actually stop; the wizard window's
+  own confirm-before-close is the real, honest escape hatch, not a
+  button that can't do what it claims.
 - **Needs attention** — either a real ``RenderError`` or a failed
   ``ValidationReport`` (PRD §8.1: never present a failed validation as
   success) lands here. The output file is never auto-deleted — Retry
@@ -49,7 +56,13 @@ close here.
   path, and a real, newly-persisted ``filter-report.json``
   (``filter_report.write_filter_report()``, ADR-0019 — ADR-0007 itself
   flagged this as deferred "UI/orchestration-layer work," not blocked by
-  anything in that ADR), plus an Open Folder button (ported from the
+  anything in that ADR). Called from *this step* now, not
+  ``RenderWorker`` (ADR-0029) — the report widened to cover the whole
+  pipeline (transcript paths, filter stats, every stage's timing), and
+  this step is where the Transcript/Scan/CatalogService/earlier-stage
+  timings the report needs already arrive from the wizard shell; the
+  worker only ever held a bare manifest/plan. Plus an Open Folder button
+  (ported from the
   former Complete step, ADR-0022) that opens the output's parent
   directory — the report always lives in that same directory
   (``filter_report.report_path_for()`` derives it from the output
@@ -83,20 +96,42 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from m4bmaker.filter.catalog import CatalogService
+from m4bmaker.filter.filter_report import write_filter_report
 from m4bmaker.filter.models import MediaManifest, RenderPlan
 from m4bmaker.filter.renderer import (
     SUPPORTED_BITRATES,
     RenderResult,
+    _STAGE_ENCODE_START,
     default_output_path,
     estimate_storage_bytes,
     pick_default_bitrate,
 )
+from m4bmaker.filter.scan import Scan
+from m4bmaker.filter.transcript import Transcript
 from m4bmaker.filter.validator import ValidationReport
 
 from ..workers import RenderWorker
 from .source_step import _format_duration
 from .step_base import WizardStep
 from .transcribe_step import _format_elapsed
+
+#: Rough, deliberately-approximate "audio-ms encoded per wall-clock-ms"
+#: guess used only until this run's own encode+mux stage has real
+#: measured data (ADR-0028) — derived from ADR-0007's one real
+#: measurement (13.5h encoded in 587.7s, ~82.7x realtime), rounded down
+#: slightly for a touch of headroom across different hardware/bitrates,
+#: not a claim of accuracy for an arbitrary machine.
+_DEFAULT_ENCODE_REALTIME_MULTIPLIER = 80.0
+
+#: Rough, deliberately-approximate "wall-clock seconds per render
+#: interval" guess used only until this run's own validate() stage has
+#: real measured data (ADR-0044) — derived from a real ~11.5-hour book's
+#: own recorded filter-report timing (108.7s across 293 intervals,
+#: ~0.37s/interval; validate_attenuation() spawns one ffmpeg subprocess
+#: per interval), rounded up slightly for headroom rather than claiming
+#: that exact figure holds on every machine.
+_DEFAULT_VALIDATE_SECONDS_PER_INTERVAL = 0.4
 
 _STATE_NOT_READY = "not_ready"
 _STATE_READY = "ready"
@@ -134,6 +169,12 @@ class RenderStep(WizardStep):
         self._render_plan: RenderPlan | None = None
         self._output_path: Path | None = None
         self._bitrate: str = ""
+        # The bitrate pick_default_bitrate() itself chose, kept separate
+        # from _bitrate (which _on_start() overwrites with whatever the
+        # combo currently shows) so the "matches your source" hint can
+        # tell "still the auto-pick" from "the User changed it" even
+        # after Start is clicked.
+        self._auto_bitrate: str = ""
         self._worker: RenderWorker | None = None
         self._result: RenderResult | None = None
         self._validation: ValidationReport | None = None
@@ -141,6 +182,26 @@ class RenderStep(WizardStep):
         self._state = _STATE_NOT_READY
         self._error_message: str | None = None
         self._start_time: float | None = None
+
+        # Context this step doesn't otherwise need to run a render, but
+        # the filter report does (ADR-0029) — sourced from earlier steps
+        # via the wizard shell, not re-derived here.
+        self._transcript: Transcript | None = None
+        self._scan: Scan | None = None
+        self._catalog: CatalogService | None = None
+        self._transcribe_elapsed_seconds: float | None = None
+        self._scan_elapsed_seconds: float | None = None
+        self._render_elapsed_seconds: float | None = None
+        self._validation_elapsed_seconds: float | None = None
+        self._validating_at: float | None = None
+
+        # Estimated-remaining-time bookkeeping (ADR-0028) -- only for the
+        # encode+mux stage, the one real measurement (ADR-0007) showed
+        # dominates total render time; extract/envelope/attenuate are
+        # fast enough not to be worth estimating.
+        self._encode_stage_started_at: float | None = None
+        self._est_remaining_seconds: float | None = None
+        self._est_anchor_time: float | None = None
 
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.setInterval(1000)
@@ -166,7 +227,17 @@ class RenderStep(WizardStep):
     def report_path(self) -> Path | None:
         return self._report_path
 
-    def set_inputs(self, manifest: MediaManifest, render_plan: RenderPlan) -> None:
+    def set_inputs(
+        self,
+        manifest: MediaManifest,
+        render_plan: RenderPlan,
+        *,
+        transcript: Transcript | None = None,
+        scan: Scan | None = None,
+        catalog: CatalogService | None = None,
+        transcribe_elapsed_seconds: float | None = None,
+        scan_elapsed_seconds: float | None = None,
+    ) -> None:
         """Entry point, called by the wizard shell with Source's real
         ``MediaManifest`` and Review's *live* ``RenderPlan`` every time the
         User continues past Review — including re-entering after Back
@@ -180,6 +251,12 @@ class RenderStep(WizardStep):
         resets to "ready to render" with a freshly recomputed default
         output path/bitrate — an old confirmed plan is stale by
         construction once what it would render has changed.
+
+        The keyword-only params carry no rendering decision at all —
+        they exist purely so the filter report (ADR-0029), written once
+        this step's own render actually completes, can describe the
+        whole pipeline (transcript paths, filter stats, earlier steps'
+        timings) instead of just this step's own output/validation.
         """
         already_in_flight = self._state in (_STATE_RUNNING, _STATE_COMPLETED)
         same_inputs = (
@@ -192,6 +269,11 @@ class RenderStep(WizardStep):
 
         self._manifest = manifest
         self._render_plan = render_plan
+        self._transcript = transcript
+        self._scan = scan
+        self._catalog = catalog
+        self._transcribe_elapsed_seconds = transcribe_elapsed_seconds
+        self._scan_elapsed_seconds = scan_elapsed_seconds
         self._result = None
         self._validation = None
         self._report_path = None
@@ -201,9 +283,16 @@ class RenderStep(WizardStep):
             (t for t in manifest.tracks if t.index == manifest.selected_track_index),
             None,
         )
+        source_bit_rate = track.bit_rate if track else None
         self._bitrate = pick_default_bitrate(
-            track.bit_rate if track else None, track.codec_name if track else None
+            source_bit_rate, track.codec_name if track else None
         )
+        # Only a real match to a known source bitrate counts as "auto-
+        # picked" for the hint's purposes -- pick_default_bitrate()
+        # falling back to its own hardcoded DEFAULT_BITRATE because the
+        # source's bitrate is unknown isn't a match to anything real,
+        # and the hint would be false if shown for it.
+        self._auto_bitrate = self._bitrate if source_bit_rate is not None else ""
         self._state = _STATE_READY
         self._render_body()
         self.can_advance_changed.emit(self.can_advance())
@@ -280,15 +369,22 @@ class RenderStep(WizardStep):
         self._bitrate_combo = QComboBox()
         self._bitrate_combo.addItems(SUPPORTED_BITRATES)
         self._bitrate_combo.setCurrentText(self._bitrate)
+        self._bitrate_combo.currentTextChanged.connect(self._on_bitrate_changed)
         bitrate_row.addWidget(self._bitrate_combo)
+        self._bitrate_hint_label = _info_label("")
+        bitrate_row.addWidget(self._bitrate_hint_label)
         bitrate_row.addStretch(1)
         layout.addLayout(bitrate_row)
+        self._update_bitrate_hint(self._bitrate_combo.currentText())
 
         storage_bytes = estimate_storage_bytes(self._manifest)
         interval_count = len(self._render_plan.intervals)
         hit_count = sum(len(iv.hit_ids) for iv in self._render_plan.intervals)
         layout.addWidget(
-            _info_label(f"Est. storage needed: {_format_bytes(storage_bytes)}")
+            _info_label(
+                f"Temp storage needed: {_format_bytes(storage_bytes)} "
+                "(temporary working files + final output)"
+            )
         )
         layout.addWidget(
             _info_label(
@@ -317,6 +413,15 @@ class RenderStep(WizardStep):
             self._output_path = Path(path)
             self._output_input.setText(str(self._output_path))
 
+    def _on_bitrate_changed(self, text: str) -> None:
+        self._update_bitrate_hint(text)
+
+    def _update_bitrate_hint(self, current_text: str) -> None:
+        matches_auto = bool(self._auto_bitrate) and current_text == self._auto_bitrate
+        self._bitrate_hint_label.setText(
+            "Matches your source file's bitrate" if matches_auto else ""
+        )
+
     def _on_start(self) -> None:
         assert self._manifest is not None
         assert self._render_plan is not None
@@ -335,11 +440,18 @@ class RenderStep(WizardStep):
         )
         self._worker.progress.connect(self._on_progress)
         self._worker.validating.connect(self._on_validating)
+        self._worker.validating_progress.connect(self._on_validating_progress)
         self._worker.result_ready.connect(self._on_result_ready)
         self._worker.error.connect(self._on_error)
         self._worker.start()
 
         self._start_time = time.monotonic()
+        self._encode_stage_started_at = None
+        self._est_remaining_seconds = None
+        self._est_anchor_time = None
+        self._render_elapsed_seconds = None
+        self._validation_elapsed_seconds = None
+        self._validating_at = None
         self._elapsed_timer.start()
 
     # ── "running" ────────────────────────────────────────────────────────
@@ -359,9 +471,19 @@ class RenderStep(WizardStep):
         self._progress_bar.setTextVisible(True)
         layout.addWidget(self._progress_bar)
 
+        time_row = QHBoxLayout()
+        time_row.setSpacing(12)
         self._elapsed_label = QLabel(self._elapsed_display_text())
         self._elapsed_label.setObjectName("statusLabel")
-        layout.addWidget(self._elapsed_label)
+        time_row.addWidget(self._elapsed_label)
+        separator = QLabel("·")
+        separator.setObjectName("statusLabel")
+        time_row.addWidget(separator)
+        self._eta_label = QLabel(self._est_remaining_display_text())
+        self._eta_label.setObjectName("statusLabel")
+        time_row.addWidget(self._eta_label)
+        time_row.addStretch(1)
+        layout.addLayout(time_row)
 
         layout.addWidget(
             _info_label(
@@ -377,9 +499,57 @@ class RenderStep(WizardStep):
             return ""
         return f"Elapsed: {_format_elapsed(time.monotonic() - self._start_time)}"
 
+    def _recompute_encode_eta(self, fraction: float) -> None:
+        """Re-anchor the countdown (ADR-0028, same pattern as Transcribe's
+        ADR-0027): called once when encode+mux's own progress is first
+        seen (seeded from the hardcoded default) and again on every
+        subsequent progress update (seeded from this run's own real
+        measured rate). Only ever called once *fraction* has reached
+        encode+mux's own slice of the bar — extract/envelope/attenuate
+        are fast enough real relative-cost measurement (ADR-0007) says
+        they're not worth estimating."""
+        assert self._manifest is not None
+        assert self._encode_stage_started_at is not None
+
+        encode_span = 1.0 - _STAGE_ENCODE_START
+        encode_sub_fraction = max(0.0, (fraction - _STAGE_ENCODE_START) / encode_span)
+        audio_encoded_ms = encode_sub_fraction * self._manifest.duration_ms
+        remaining_audio_ms = max(0.0, self._manifest.duration_ms - audio_encoded_ms)
+
+        elapsed_encode_ms = (time.monotonic() - self._encode_stage_started_at) * 1000
+        if audio_encoded_ms > 0 and elapsed_encode_ms > 0:
+            rate = audio_encoded_ms / elapsed_encode_ms
+        else:
+            rate = _DEFAULT_ENCODE_REALTIME_MULTIPLIER
+
+        self._est_remaining_seconds = (
+            (remaining_audio_ms / rate) / 1000 if rate > 0 else None
+        )
+        self._est_anchor_time = time.monotonic()
+
+    def _est_remaining_display_text(self) -> str:
+        if self._est_remaining_seconds is None or self._est_anchor_time is None:
+            # Shown while running but before any estimate exists yet
+            # (the fast pre-encode stages, or a zero-interval validate
+            # phase with nothing to plan against) — a User-requested
+            # change from leaving the label blank, which read as the
+            # feature being silently absent rather than still working on
+            # an answer. Both of those windows are short in practice
+            # (extract/envelope/attenuate are fast; a zero-interval
+            # validate() returns almost immediately), so this doesn't
+            # sit unresolved for long even where no real estimate will
+            # ever land for that specific stage.
+            return "Est. remaining: Calculating…"
+        countdown = self._est_remaining_seconds - (
+            time.monotonic() - self._est_anchor_time
+        )
+        return f"Est. remaining: ~{_format_elapsed(max(0.0, countdown))}"
+
     def _tick_elapsed(self) -> None:
         if hasattr(self, "_elapsed_label"):
             self._elapsed_label.setText(self._elapsed_display_text())
+        if hasattr(self, "_eta_label"):
+            self._eta_label.setText(self._est_remaining_display_text())
 
     def _on_progress(self, message: str, fraction: float) -> None:
         if self._state != _STATE_RUNNING:
@@ -388,21 +558,100 @@ class RenderStep(WizardStep):
         self._progress_bar.setRange(0, 100)
         self._progress_bar.setValue(int(fraction * 100))
 
+        if fraction >= _STAGE_ENCODE_START and self._manifest is not None:
+            if self._encode_stage_started_at is None:
+                self._encode_stage_started_at = time.monotonic()
+            self._recompute_encode_eta(fraction)
+            if hasattr(self, "_eta_label"):
+                self._eta_label.setText(self._est_remaining_display_text())
+
     def _on_validating(self) -> None:
         if self._state != _STATE_RUNNING:
             return
         self._progress_label.setText("Validating output…")
-        self._progress_bar.setRange(0, 0)
+        interval_count = (
+            len(self._render_plan.intervals) if self._render_plan is not None else 0
+        )
+        if interval_count:
+            self._progress_bar.setRange(0, 100)
+            self._progress_bar.setValue(0)
+            # Seed an upfront guess from interval count alone (ADR-0044)
+            # -- real per-run data (validate_attenuation()'s own
+            # progress callback) replaces this the moment the first
+            # interval's progress arrives, the same "hardcoded default,
+            # then corrected" pattern encode+mux's own ETA already uses.
+            self._est_remaining_seconds = (
+                interval_count * _DEFAULT_VALIDATE_SECONDS_PER_INTERVAL
+            )
+            self._est_anchor_time = time.monotonic()
+        else:
+            # No intervals at all (e.g. every hit excluded) -- validate()
+            # still runs its three near-instant metadata checks, but
+            # there's nothing to estimate or show progress against.
+            self._progress_bar.setRange(0, 0)
+            self._est_remaining_seconds = None
+            self._est_anchor_time = None
+        if hasattr(self, "_eta_label"):
+            self._eta_label.setText(self._est_remaining_display_text())
+        # render()'s own real elapsed time, measured from this step's
+        # already-existing start timestamp -- validate() takes over from
+        # here, so this is exactly the render/validate boundary.
+        if self._start_time is not None:
+            self._render_elapsed_seconds = time.monotonic() - self._start_time
+        self._validating_at = time.monotonic()
+
+    def _on_validating_progress(self, message: str, fraction: float) -> None:
+        """Real per-interval progress from validate()'s own attenuation
+        check (ADR-0044) — replaces ``_on_validating``'s upfront guess
+        with this run's own measured rate the moment real data exists,
+        the same re-anchor-the-countdown pattern
+        :meth:`_recompute_encode_eta` uses. Estimated directly against
+        *fraction* (intervals done / total intervals) rather than an
+        audio-duration/rate split like the encode stage — validate's
+        real cost (one ffmpeg subprocess per interval) scales with
+        interval count, not audio length."""
+        if self._state != _STATE_RUNNING:
+            return
+        self._progress_label.setText(message)
+        self._progress_bar.setValue(int(fraction * 100))
+        if self._validating_at is not None and fraction > 0:
+            elapsed = time.monotonic() - self._validating_at
+            self._est_remaining_seconds = elapsed * (1.0 - fraction) / fraction
+            self._est_anchor_time = time.monotonic()
+        if hasattr(self, "_eta_label"):
+            self._eta_label.setText(self._est_remaining_display_text())
 
     def _on_result_ready(
         self,
         result: RenderResult,
         validation: ValidationReport,
-        report_path: Path,
     ) -> None:
         self._worker = None
         self._elapsed_timer.stop()
         self._start_time = None
+        self._est_remaining_seconds = None
+        self._est_anchor_time = None
+        if self._validating_at is not None:
+            self._validation_elapsed_seconds = time.monotonic() - self._validating_at
+        self._validating_at = None
+
+        assert self._manifest is not None
+        report_path = write_filter_report(
+            result.output_path,
+            result,
+            validation,
+            self._bitrate,
+            source_path=Path(self._manifest.source_path),
+            transcript=self._transcript,
+            scan=self._scan,
+            render_plan=self._render_plan,
+            catalog=self._catalog,
+            transcribe_elapsed_seconds=self._transcribe_elapsed_seconds,
+            scan_elapsed_seconds=self._scan_elapsed_seconds,
+            render_elapsed_seconds=self._render_elapsed_seconds,
+            validation_elapsed_seconds=self._validation_elapsed_seconds,
+        )
+
         if not validation.passed:
             self._result = result
             self._validation = validation
@@ -425,6 +674,9 @@ class RenderStep(WizardStep):
         self._worker = None
         self._elapsed_timer.stop()
         self._start_time = None
+        self._est_remaining_seconds = None
+        self._est_anchor_time = None
+        self._validating_at = None
         self._error_message = message
         self._state = _STATE_NEEDS_ATTENTION
         self._render_body()

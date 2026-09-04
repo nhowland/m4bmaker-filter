@@ -8,8 +8,11 @@ Ink Muted    #7a7a7a   labels / hints
 Ground       #f5f2ed   window background
 Ground Warm  #ebe6dd   cards / group boxes
 White        #faf8f4   input surfaces
-Terracotta   #c45a2d   accent / primary action
+Terracotta   #c45a2d   accent / primary action / checked state
 Rule         #d0c9be   borders / dividers
+Selection    #d9cfc0   table/tree row selection — deliberately distinct
+                       from Terracotta so a selected row never reads as
+                       a checked checkbox/radio in the same row
 Success      #4b7a52   wizard step "done" state (filter/gui/wizard)
 """
 
@@ -328,8 +331,8 @@ QTableWidget {
     gridline-color: #d0c9be;
     alternate-background-color: #f5f2ed;
     color: #1a1a1a;
-    selection-background-color: #c45a2d;
-    selection-color: #faf8f4;
+    selection-background-color: #d9cfc0;
+    selection-color: #1a1a1a;
     outline: none;
 }
 
@@ -338,8 +341,8 @@ QTableWidget::item {
 }
 
 QTableWidget::item:selected {
-    background-color: #c45a2d;
-    color: #faf8f4;
+    background-color: #d9cfc0;
+    color: #1a1a1a;
 }
 
 QHeaderView::section {
@@ -525,8 +528,8 @@ QTableWidget#queueTable {
     alternate-background-color: #f3ede4;
 }
 QTableWidget#queueTable::item:selected {
-    background-color: #c45a2d;
-    color: #ffffff;
+    background-color: #d9cfc0;
+    color: #1a1a1a;
 }
 QProgressBar#jobProgress {
     border: 1px solid #d0c9be;
@@ -585,6 +588,40 @@ QLabel#stepName[stepState="done"] {
 QLabel#stepName[stepState="locked"] {
     color: #b5ae9e;
 }
+
+/* ── Eligibility badge (Source step, file card) ─────────────────────── */
+QLabel#eligibleBadge {
+    border-radius: 10px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+QLabel#eligibleBadge[state="eligible"] {
+    background-color: #e3efe5;
+    border: 1px solid #b8d4bc;
+    color: #3d6142;
+}
+QLabel#eligibleBadge[state="ineligible"] {
+    background-color: #f7e6dc;
+    border: 1px solid #e0b79c;
+    color: #9e4719;
+}
+QLabel#eligibleBadgeLarge {
+    border-radius: 14px;
+    padding: 6px 16px;
+    font-size: 16px;
+    font-weight: 600;
+}
+QLabel#eligibleBadgeLarge[state="eligible"] {
+    background-color: #e3efe5;
+    border: 1px solid #b8d4bc;
+    color: #3d6142;
+}
+QLabel#eligibleBadgeLarge[state="ineligible"] {
+    background-color: #f7e6dc;
+    border: 1px solid #e0b79c;
+    color: #9e4719;
+}
 """
 
 # ── Dark mode palette ─────────────────────────────────────────────────────────
@@ -597,6 +634,7 @@ QLabel#stepName[stepState="locked"] {
 # Dark Muted   #888888   labels / hints
 # Dark Rule    #333333   borders / dividers
 # Accent       #c45a2d   unchanged
+# Selection    #3a342c   table/tree row selection — see light palette note
 # Success      #7cb88a   wizard step "done" state (filter/gui/wizard)
 
 DARK_STYLESHEET = """
@@ -911,8 +949,8 @@ QTableWidget {
     gridline-color: #2e2e2e;
     alternate-background-color: #242424;
     color: #c8c2b8;
-    selection-background-color: #c45a2d;
-    selection-color: #f5f2ed;
+    selection-background-color: #3a342c;
+    selection-color: #c8c2b8;
     outline: none;
 }
 
@@ -921,8 +959,8 @@ QTableWidget::item {
 }
 
 QTableWidget::item:selected {
-    background-color: #c45a2d;
-    color: #f5f2ed;
+    background-color: #3a342c;
+    color: #c8c2b8;
 }
 
 QHeaderView::section {
@@ -1108,8 +1146,8 @@ QTableWidget#queueTable {
     alternate-background-color: #222222;
 }
 QTableWidget#queueTable::item:selected {
-    background-color: #c45a2d;
-    color: #f5f2ed;
+    background-color: #3a342c;
+    color: #c8c2b8;
 }
 QProgressBar#jobProgress {
     border: 1px solid #333333;
@@ -1168,6 +1206,40 @@ QLabel#stepName[stepState="done"] {
 }
 QLabel#stepName[stepState="locked"] {
     color: #5a5a5a;
+}
+
+/* ── Eligibility badge (Source step, file card) ─────────────────────── */
+QLabel#eligibleBadge {
+    border-radius: 10px;
+    padding: 3px 10px;
+    font-size: 12px;
+    font-weight: 600;
+}
+QLabel#eligibleBadge[state="eligible"] {
+    background-color: #253328;
+    border: 1px solid #3a5240;
+    color: #7cb88a;
+}
+QLabel#eligibleBadge[state="ineligible"] {
+    background-color: #3a2c22;
+    border: 1px solid #5a4130;
+    color: #e08a52;
+}
+QLabel#eligibleBadgeLarge {
+    border-radius: 14px;
+    padding: 6px 16px;
+    font-size: 16px;
+    font-weight: 600;
+}
+QLabel#eligibleBadgeLarge[state="eligible"] {
+    background-color: #253328;
+    border: 1px solid #3a5240;
+    color: #7cb88a;
+}
+QLabel#eligibleBadgeLarge[state="ineligible"] {
+    background-color: #3a2c22;
+    border: 1px solid #5a4130;
+    color: #e08a52;
 }
 """
 

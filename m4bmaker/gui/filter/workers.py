@@ -15,6 +15,7 @@ from typing import Literal
 
 from PySide6.QtCore import QThread, Signal
 
+from m4bmaker.cover import extract_cover_from_audio
 from m4bmaker.filter.job_store import JobStore, connect
 from m4bmaker.filter.jobs import JobState, JobType, is_terminal
 from m4bmaker.filter.media_inspector import inspect
@@ -25,7 +26,6 @@ from m4bmaker.filter.model_manager import (
     ModelSpec,
     download_model,
 )
-from m4bmaker.filter.filter_report import write_filter_report
 from m4bmaker.filter.models import FilterProfileSnapshot, MediaManifest, RenderPlan
 from m4bmaker.filter.renderer import RenderError, RenderResult, render
 from m4bmaker.filter.scan import Scan, run_scan
@@ -156,6 +156,40 @@ class MediaInspectWorker(QThread):
             self.error.emit(str(exc))
             return
         self.result_ready.emit(manifest)
+
+
+class CoverArtWorker(QThread):
+    """Run :func:`m4bmaker.cover.extract_cover_from_audio` (an ffmpeg
+    subprocess call, with a mutagen fallback) off the UI thread, for the
+    Source step / persistent file card's cover-art preview (ADR-0046).
+
+    Purely a preview convenience — unlike :class:`MediaInspectWorker`,
+    a missing ffmpeg here isn't a recoverable-error condition worth an
+    ``error`` signal, since the wizard's other steps already surface
+    that same problem loudly when it actually matters (rendering).
+    ``result_ready`` emits ``None`` (not a signal that never fires) on
+    any failure — no art found, extraction failed, ffmpeg missing — so a
+    caller can always tell "still working" (never emitted) from "no art
+    to show" (emitted with ``None``) without a second, redundant
+    error path.
+    """
+
+    result_ready = Signal(object)  # Path | None
+
+    def __init__(self, path: Path) -> None:
+        super().__init__()
+        self._path = path
+
+    def run(self) -> None:
+        ffmpeg = find_binary("ffmpeg")
+        if ffmpeg is None:
+            self.result_ready.emit(None)
+            return
+        try:
+            cover_path = extract_cover_from_audio(self._path, ffmpeg)
+        except Exception:  # noqa: BLE001
+            cover_path = None
+        self.result_ready.emit(cover_path)
 
 
 TranscribeStartMode = Literal["fresh", "resume", "retry"]
@@ -350,17 +384,24 @@ class RenderWorker(QThread):
     already applies "mid-Render" per its own docstring.
 
     ``validating`` fires once, right after ``render()`` succeeds and
-    before ``validate()`` runs — ``validate()`` has no progress callback
-    of its own (a single blocking call, same reasoning as ``ScanWorker``'s
-    indeterminate state), so the UI has nothing to show but "this next
-    phase is running," not a fraction of it.
+    before ``validate()`` runs. ``validating_progress`` then fires once
+    per render interval as ``validate()``'s own attenuation check works
+    through them (ADR-0044) — real, measured cost (one ffmpeg subprocess
+    per interval), not free enough to leave unreported the way the other
+    three, in-memory validation checks are.
+
+    Does **not** write the filter report itself (ADR-0029 moved that to
+    ``RenderStep._on_result_ready``, on the UI thread) — this worker only
+    ever holds a bare ``MediaManifest``/``RenderPlan``, not the
+    ``Transcript``/``Scan``/``CatalogService``/per-stage timings a useful
+    report needs, all of which the *step* already receives from the
+    wizard shell and this worker would otherwise have to duplicate.
     """
 
     progress = Signal(str, float)  # message, 0.0-1.0 (render() phases only)
     validating = Signal()
-    result_ready = Signal(
-        object, object, object
-    )  # RenderResult, ValidationReport, report_path
+    validating_progress = Signal(str, float)  # message, 0.0-1.0 (validate() only)
+    result_ready = Signal(object, object)  # RenderResult, ValidationReport
     error = Signal(str)
 
     def __init__(
@@ -420,12 +461,10 @@ class RenderWorker(QThread):
                 self._render_plan,
                 self._output_path,
                 ffmpeg,
+                progress_callback=self.validating_progress.emit,
             )
         except Exception as exc:  # noqa: BLE001
             self.error.emit(str(exc))
             return
 
-        report_path = write_filter_report(
-            self._output_path, result, report, self._bitrate
-        )
-        self.result_ready.emit(result, report, report_path)
+        self.result_ready.emit(result, report)
