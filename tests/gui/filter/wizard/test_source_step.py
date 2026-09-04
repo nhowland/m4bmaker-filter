@@ -10,13 +10,14 @@ MediaManifest/Transcript objects, not fakes.
 
 from __future__ import annotations
 
+import dataclasses
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 from PySide6.QtCore import QMimeData, Qt, QUrl
 from PySide6.QtGui import QDropEvent
-from PySide6.QtWidgets import QLabel, QWidget
+from PySide6.QtWidgets import QLabel, QPushButton, QWidget
 
 from m4bmaker.filter.models import AudioTrack, MediaManifest
 from m4bmaker.filter.transcript import (
@@ -84,6 +85,24 @@ def _ineligible_manifest() -> MediaManifest:
     )
 
 
+@pytest.fixture(autouse=True)
+def _fast_transcript_lookup():
+    """find_compatible_transcript() (ADR-0013) falls back to scanning the
+    real, user-wide transcripts directory when given no override --
+    glob-scanning and JSON-parsing dozens of real *.m4bt.json files left
+    over from real-book runs takes seconds, not milliseconds, and makes
+    every test that reaches _on_inspect_finished() depend on
+    machine-specific state it must not depend on. Default it to a cheap
+    no-op here; the two tests below that specifically exercise transcript
+    lookup wrap their own more specific patch around this one.
+    """
+    with patch(
+        "m4bmaker.gui.filter.wizard.source_step.find_compatible_transcript",
+        return_value=None,
+    ):
+        yield
+
+
 @pytest.fixture()
 def step() -> SourceStep:
     return SourceStep()
@@ -97,10 +116,16 @@ def _select_and_finish(step: SourceStep, path: Path, manifest: MediaManifest) ->
     error/result callback asynchronously and could overwrite whatever
     state this test just asserted on, depending on thread timing — so
     the worker class is patched out for the selection itself.
+
+    _on_inspect_finished() also kicks off a real CoverArtWorker
+    (ADR-0046) — patched out here too, same reasoning; the cover-art
+    path has its own dedicated coverage below (TestCoverArt) rather than
+    firing unmocked on every other test in this file.
     """
     with patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"):
         step._picker.set_path(path)
-    step._on_inspect_finished(manifest)
+    with patch("m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"):
+        step._on_inspect_finished(manifest)
 
 
 class TestFormatDuration:
@@ -123,6 +148,47 @@ class TestEmptyState:
 
     def test_manifest_is_none_before_any_file(self, step: SourceStep) -> None:
         assert step.manifest is None
+
+    def test_placeholder_panel_shown_before_any_file(self, step: SourceStep) -> None:
+        # ADR-0046: matches the base app's own empty-state pattern (a
+        # "Cover" placeholder box and blank fields, not nothing at all)
+        # rather than leaving this whole area blank until the first
+        # real inspection result arrives.
+        panel = _first_result_widget(step)
+        text = _all_text(panel)
+        for row_label in (
+            "Audio track",
+            "Duration",
+            "Chapters",
+            "Metadata",
+            "Saved transcript",
+            "Temp storage needed",
+        ):
+            assert row_label in text
+        cover = panel.findChild(QLabel, "coverThumb")
+        assert cover is not None
+        assert cover.text() == "Cover"
+
+    def test_placeholder_stays_up_during_inspection_not_cleared(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        # ADR-0046 addendum: the placeholder used to be torn down the
+        # instant a file was picked, leaving a visible gap (nothing
+        # shown at all) until the real result arrived a few seconds
+        # later. It now stays visible, still in its placeholder state,
+        # for the whole "Inspecting…" window -- the info panel is
+        # never removed from the layout at all, just updated in place.
+        with patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"):
+            step._picker.set_path(tmp_path / "book.m4b")
+        # isHidden(), not isVisible() -- step itself is a bare,
+        # never-.show()-called widget in this test, which makes
+        # isVisible() report False for the whole tree regardless of any
+        # setVisible() call (the same Qt quirk file_card.py's own tests
+        # hit earlier). isHidden() reflects this widget's own explicit
+        # flag, which is what "was it ever hidden" actually means here.
+        assert step._info_panel.isHidden() is False
+        assert step._secondary_widget is None
+        assert "Inspecting" in step._status_label.text()
 
 
 class TestFileSelection:
@@ -150,6 +216,25 @@ class TestEligibleResult:
         assert step.manifest is not None
         assert step.manifest.eligible is True
         assert step.can_advance() is True
+
+    def test_panel_height_unchanged_even_with_a_long_metadata_value(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        # The actual root cause of the reported size mismatch: real
+        # values (unlike the placeholder's own "—") could be long enough
+        # to word-wrap onto a second line, growing the row taller than
+        # what the cover thumbnail's own (separately measured) size
+        # accounted for. Row values are elided to a single line now
+        # instead, specifically so this can't happen -- verified here by
+        # comparing the panel's own height before/after a real value
+        # long enough that it *would* have wrapped under the old design.
+        placeholder_height = step._info_panel.sizeHint().height()
+        long_manifest = dataclasses.replace(
+            _eligible_manifest(),
+            required_metadata={f"field_{i}": "x" * 20 for i in range(12)},
+        )
+        _select_and_finish(step, tmp_path / "book.m4b", long_manifest)
+        assert step._info_panel.sizeHint().height() == placeholder_height
 
     def test_can_advance_changed_signal_fires_true(
         self, step: SourceStep, tmp_path: Path
@@ -232,11 +317,132 @@ class TestEligibleResult:
         assert "author" in text
         assert "title" in text
 
+    def test_heading_reads_eligible_for_filtering(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        # ADR-0046: a plain "✓ Eligible" heading was replaced with a
+        # more explicit, friendlier pill.
+        _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        panel = _first_result_widget(step)
+        assert "Eligible for filtering" in _all_text(panel)
+
+    def test_cover_thumbnail_sized_to_match_the_info_panels_real_height(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        # Real use found the old fixed 108px thumbnail visibly shorter
+        # than the six rows of info text beside it -- sized to that
+        # panel's own measured sizeHint() height instead of a fixed
+        # guess, so it grows or shrinks to match whatever that panel's
+        # real content turns out to need.
+        _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        panel = _first_result_widget(step)
+        cover = panel.findChild(QLabel, "coverThumb")
+        assert cover is not None
+        assert cover.width() == cover.height()
+        assert cover.height() > 108  # taller than the old fixed size
+
+    def test_cover_art_row_no_longer_shown_as_text(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        # The old "Cover art: Present/Not present" text row is redundant
+        # now that a real thumbnail is shown instead (ADR-0046) —
+        # regression guard against it silently coming back.
+        _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        panel = _first_result_widget(step)
+        assert "Cover art" not in _all_text(panel)
+
+    def test_storage_label_renamed_with_explanatory_tooltip(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        panel = _first_result_widget(step)
+        labels = panel.findChildren(QLabel)
+        matches = [lbl for lbl in labels if lbl.text() == "Temp storage needed"]
+        assert len(matches) == 1
+        assert "kept afterward" in matches[0].toolTip()
+
+
+class TestCoverArt:
+    def test_worker_started_with_the_manifests_own_source_path(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        manifest = _eligible_manifest()
+        with patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"):
+            step._picker.set_path(tmp_path / "book.m4b")
+        with patch(
+            "m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"
+        ) as mock_worker_cls:
+            step._on_inspect_finished(manifest)
+            mock_worker_cls.assert_called_once_with(Path(manifest.source_path))
+            mock_worker_cls.return_value.start.assert_called_once()
+
+    def test_cover_ready_signal_fires_with_real_result(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        received: list[None] = []
+        step.cover_ready.connect(lambda: received.append(None))
+        _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        cover = tmp_path / "cover.jpg"
+        cover.write_bytes(b"\xff\xd8\xff")  # not decodable -- the path is what matters
+        step._on_cover_ready(cover, step._cover_worker)
+        assert step.cover_path == cover
+        assert len(received) >= 1
+
+    def test_panel_updated_in_place_once_art_arrives_not_rebuilt(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        # ADR-0046 addendum: the panel used to be torn down and rebuilt
+        # from scratch every time late-arriving cover art showed up --
+        # now it's the same persistent _InfoPanel instance the whole
+        # time, just updated in place.
+        _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        panel_before = _first_result_widget(step)
+        step._on_cover_ready(tmp_path / "cover.jpg", step._cover_worker)
+        panel_after = _first_result_widget(step)
+        assert panel_after is panel_before
+        assert panel_after is step._info_panel
+
+    def test_stale_workers_result_is_ignored(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        # The User picked a different file, and its own inspection+cover
+        # pair completed too, all before an *older* CoverArtWorker's own
+        # late result arrives -- that late result must not overwrite the
+        # newer selection's own state.
+        _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        stale_worker = step._cover_worker
+        assert stale_worker is not None
+
+        _select_and_finish(step, tmp_path / "other.m4b", _eligible_manifest())
+        current_worker = step._cover_worker
+        assert current_worker is not None
+        assert current_worker is not stale_worker
+        step._on_cover_ready(tmp_path / "current_cover.jpg", current_worker)
+        assert step.cover_path == tmp_path / "current_cover.jpg"
+
+        step._on_cover_ready(tmp_path / "stale_cover.jpg", stale_worker)
+        assert step.cover_path == tmp_path / "current_cover.jpg"  # unchanged
+
+    def test_no_cover_result_is_a_no_op_not_an_error(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        step._on_cover_ready(None, step._cover_worker)
+        assert step.cover_path is None
+
 
 class TestIneligibleResult:
     def test_can_advance_stays_false(self, step: SourceStep, tmp_path: Path) -> None:
         _select_and_finish(step, tmp_path / "book.m4b", _ineligible_manifest())
         assert step.can_advance() is False
+
+    def test_persistent_info_panel_hidden_in_favor_of_the_secondary_widget(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        _select_and_finish(step, tmp_path / "book.m4b", _ineligible_manifest())
+        assert step._info_panel.isHidden() is True
+        assert step._secondary_widget is not None
+        assert step._secondary_widget.isHidden() is False
 
     def test_all_reasons_shown_not_just_first(
         self, step: SourceStep, tmp_path: Path
@@ -290,12 +496,37 @@ class TestPickerDragAndDrop:
         assert received == [path]
 
 
+class TestOpenSettingsShortcut:
+    """The "Change temp storage location…" link on the info panel's
+    "Temp storage needed" row -- lets a User who's just seen the storage
+    estimate jump straight to Settings to redirect it."""
+
+    def test_present_in_placeholder_state(self, step: SourceStep) -> None:
+        # Not tied to a loaded manifest -- the temp-folder setting is
+        # global, so the link is available before any file is chosen too.
+        buttons = step._info_panel.findChildren(QPushButton)
+        assert any(b.text() == "Change temp storage location…" for b in buttons)
+
+    def test_clicking_link_fires_source_step_signal(self, step: SourceStep) -> None:
+        received: list[None] = []
+        step.open_settings_requested.connect(lambda: received.append(None))
+
+        buttons = step._info_panel.findChildren(QPushButton)
+        link = next(b for b in buttons if b.text() == "Change temp storage location…")
+        link.click()
+
+        assert received == [None]
+
+
 def _first_result_widget(step: SourceStep) -> QWidget:
-    item = step._result_layout.itemAt(0)
-    assert item is not None
-    widget = item.widget()
-    assert widget is not None
-    return widget
+    """The currently *visible* result widget -- ADR-0046's persistent
+    _InfoPanel stays in step._result_layout permanently (just hidden,
+    not removed) whenever a secondary ineligible/error widget is shown
+    in its place, so "the first item in the layout" is no longer
+    reliably "the one actually being shown" the way it was before."""
+    if step._secondary_widget is not None:
+        return step._secondary_widget
+    return step._info_panel
 
 
 def _all_text(widget: QWidget) -> str:

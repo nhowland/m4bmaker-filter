@@ -41,6 +41,37 @@ from m4bmaker.gui.filter.wizard.wizard_window import WizardWindow
 pytestmark = pytest.mark.usefixtures("qapp")
 
 
+@pytest.fixture(autouse=True)
+def _fast_transcript_lookup():
+    """find_compatible_transcript() (ADR-0013) falls back to scanning the
+    real, user-wide transcripts directory when given no override --
+    same cost test_source_step.py's own `_fast_transcript_lookup` fixture
+    exists to avoid. Nearly every test in this file drives the wizard
+    shell past Source (which calls it via source_step.py) and/or into
+    Transcript (which calls it again via transcript_step.py's own
+    set_manifest()), so left unpatched this real disk scan runs on
+    almost every test here, not just a handful. Default both call sites
+    to a cheap no-op; every test in this file already treats "not found"
+    (None) as the expected outcome for its fake fingerprints, so this
+    changes no test's behavior. Tests that need a specific *found*
+    transcript (e.g. TestTranscriptToProfileWiring's reuse test) set
+    `TranscriptStep._compatible_transcript` directly rather than relying
+    on find_compatible_transcript's return value, so they're unaffected
+    too.
+    """
+    with (
+        patch(
+            "m4bmaker.gui.filter.wizard.source_step.find_compatible_transcript",
+            return_value=None,
+        ),
+        patch(
+            "m4bmaker.gui.filter.wizard.transcript_step.find_compatible_transcript",
+            return_value=None,
+        ),
+    ):
+        yield
+
+
 @pytest.fixture()
 def win(tmp_path: Path) -> WizardWindow:
     # models_dest_dir points TranscriptStep at tmp_path rather than the
@@ -80,7 +111,17 @@ def _make_source_eligible(win: WizardWindow) -> None:
         cover_present=False,
         eligible=True,
     )
-    source._on_inspect_finished(manifest)
+    # _on_inspect_finished() now also kicks off a real CoverArtWorker
+    # (ADR-0046) -- these navigation tests use a fake, nonexistent
+    # source_path ("/books/a.m4b"), and this class calls this helper
+    # across many tests, so leaving that unmocked means a real QThread
+    # (and, if ffmpeg is on PATH, a real subprocess) spun up dozens of
+    # times per run; SourceStep's own dedicated tests cover the cover-
+    # art path for real. Patched at the import site inside source_step,
+    # not workers.py, matching this suite's own patch-where-imported
+    # convention.
+    with patch("m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"):
+        source._on_inspect_finished(manifest)
 
 
 def _make_transcript_ready(win: WizardWindow) -> None:
@@ -195,7 +236,7 @@ def _make_scan_ready(win: WizardWindow) -> None:
     scan_step._on_result_ready(scan)
 
 
-def _make_render_ready(win: WizardWindow) -> None:
+def _make_render_ready(win: WizardWindow, tmp_path: Path) -> None:
     """Deliver a fake completed render directly to RenderStep's own
     result handler, bypassing the real RenderWorker/ffmpeg entirely —
     same "test the shell, not the step" split as the helpers above;
@@ -203,7 +244,11 @@ def _make_render_ready(win: WizardWindow) -> None:
     Source's own real manifest (set by ``_make_source_eligible``) rather
     than a second, possibly-inconsistent one, and a real (if empty)
     ``RenderPlan`` — an empty plan is a legitimate real case (nothing
-    included), not a shortcut.
+    included), not a shortcut. *tmp_path* must be the same fixture
+    instance ``win`` itself was built with (pytest caches it per test, so
+    just requesting it in the calling test method is enough) — Render's
+    own result handler now writes a real filter-report.json next to the
+    output path (ADR-0029), so a fictional ``/tmp/out.m4b`` would fail.
     """
     render_step = win._steps[STEP_LABELS.index("Render")]
     source_step = win._steps[STEP_LABELS.index("Source")]
@@ -218,12 +263,10 @@ def _make_render_ready(win: WizardWindow) -> None:
     )
     render_step.set_inputs(manifest, plan)
     result = RenderResult(
-        output_path=Path("/tmp/out.m4b"), duration_ms=manifest.duration_ms
+        output_path=tmp_path / "out.m4b", duration_ms=manifest.duration_ms
     )
     validation = ValidationReport(issues=())
-    render_step._on_result_ready(
-        result, validation, Path("/tmp/out.filter-report.json")
-    )
+    render_step._on_result_ready(result, validation)
 
 
 class TestConstruction:
@@ -271,36 +314,61 @@ class TestConstruction:
         win.apply_stylesheet(False)
 
 
+class TestOpenSettingsForwarding:
+    """SourceStep's "Change location…" link has no reach into MainWindow's
+    Settings window itself -- WizardWindow just forwards the request up
+    to whoever constructed it (window.py's MainWindow)."""
+
+    def test_source_step_signal_forwarded_to_wizard_window(
+        self, win: WizardWindow
+    ) -> None:
+        source_index = STEP_LABELS.index("Source")
+        source_step = win._steps[source_index]
+        assert isinstance(source_step, SourceStep)
+
+        received: list[None] = []
+        win.open_settings_requested.connect(lambda: received.append(None))
+        source_step.open_settings_requested.emit()
+
+        assert received == [None]
+
+
 class TestNavigation:
-    def test_continue_advances_one_step(self, win: WizardWindow) -> None:
+    def test_continue_advances_one_step(
+        self, win: WizardWindow, tmp_path: Path
+    ) -> None:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
         _make_profile_ready(win)
         _make_scan_ready(win)
-        _make_render_ready(win)
+        _make_render_ready(win, tmp_path)
         win._on_continue()
         assert win._active == 1
         assert win._title_label.text() == "Choose Transcript Path"
 
-    def test_continue_tracks_furthest_reached(self, win: WizardWindow) -> None:
+    def test_continue_tracks_furthest_reached(
+        self, win: WizardWindow, tmp_path: Path
+    ) -> None:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
         _make_profile_ready(win)
         _make_scan_ready(win)
-        _make_render_ready(win)
+        _make_render_ready(win, tmp_path)
         win._on_continue()
         win._on_continue()
         assert win._furthest == 2
 
-    def test_continue_stops_at_last_step(self, win: WizardWindow) -> None:
+    def test_continue_stops_at_last_step(
+        self, win: WizardWindow, tmp_path: Path
+    ) -> None:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
         _make_profile_ready(win)
         _make_scan_ready(win)
-        _make_render_ready(win)
+        _make_render_ready(win, tmp_path)
         for _ in range(len(STEP_LABELS) + 2):
             win._on_continue()
         assert win._active == len(STEP_LABELS) - 1
@@ -310,13 +378,13 @@ class TestNavigation:
         win._on_back()
         assert win._active == 0
 
-    def test_back_returns_one_step(self, win: WizardWindow) -> None:
+    def test_back_returns_one_step(self, win: WizardWindow, tmp_path: Path) -> None:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
         _make_profile_ready(win)
         _make_scan_ready(win)
-        _make_render_ready(win)
+        _make_render_ready(win, tmp_path)
         win._on_continue()
         win._on_continue()
         win._on_back()
@@ -326,13 +394,15 @@ class TestNavigation:
         win._go_to_step(3)
         assert win._active == 0
 
-    def test_stepper_click_within_furthest_navigates(self, win: WizardWindow) -> None:
+    def test_stepper_click_within_furthest_navigates(
+        self, win: WizardWindow, tmp_path: Path
+    ) -> None:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
         _make_profile_ready(win)
         _make_scan_ready(win)
-        _make_render_ready(win)
+        _make_render_ready(win, tmp_path)
         win._on_continue()
         win._on_continue()
         win._go_to_step(0)
@@ -340,13 +410,15 @@ class TestNavigation:
         win._go_to_step(2)
         assert win._active == 2
 
-    def test_stepper_reflects_current_progress(self, win: WizardWindow) -> None:
+    def test_stepper_reflects_current_progress(
+        self, win: WizardWindow, tmp_path: Path
+    ) -> None:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
         _make_profile_ready(win)
         _make_scan_ready(win)
-        _make_render_ready(win)
+        _make_render_ready(win, tmp_path)
         win._on_continue()
         assert win._stepper._cells[0]._badge.property("stepState") == "done"
         assert win._stepper._cells[1]._badge.property("stepState") == "current"
@@ -354,14 +426,14 @@ class TestNavigation:
 
 class TestNavButtonsFollowStepCanAdvance:
     def test_continue_disabled_when_step_cannot_advance(
-        self, win: WizardWindow
+        self, win: WizardWindow, tmp_path: Path
     ) -> None:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
         _make_profile_ready(win)
         _make_scan_ready(win)
-        _make_render_ready(win)
+        _make_render_ready(win, tmp_path)
         review_index = STEP_LABELS.index("Review")
         for _ in range(review_index):
             win._on_continue()
@@ -394,14 +466,14 @@ class TestSourceToTranscriptWiring:
         assert transcript_step.manifest is source.manifest
 
     def test_re_pushed_on_a_second_pass_with_a_different_source(
-        self, win: WizardWindow
+        self, win: WizardWindow, tmp_path: Path
     ) -> None:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
         _make_profile_ready(win)
         _make_scan_ready(win)
-        _make_render_ready(win)
+        _make_render_ready(win, tmp_path)
         win._on_continue()  # Source -> Transcript
         win._on_back()  # Transcript -> Source
 
@@ -423,7 +495,8 @@ class TestSourceToTranscriptWiring:
             cover_present=False,
             eligible=True,
         )
-        source._on_inspect_finished(new_manifest)
+        with patch("m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"):
+            source._on_inspect_finished(new_manifest)
         win._on_continue()
 
         assert transcript_step.manifest is new_manifest
@@ -448,7 +521,7 @@ class TestTranscriptReuseSkipsTranscribe:
         assert win._stepper._cells[transcribe_index]._badge.text() == "»"
 
     def test_visiting_transcribe_for_real_afterward_clears_skip(
-        self, win: WizardWindow
+        self, win: WizardWindow, tmp_path: Path
     ) -> None:
         _make_source_eligible(win)
         win._on_continue()  # Source -> Transcript
@@ -464,7 +537,7 @@ class TestTranscriptReuseSkipsTranscribe:
         _make_transcribe_ready(win)
         _make_profile_ready(win)
         _make_scan_ready(win)
-        _make_render_ready(win)
+        _make_render_ready(win, tmp_path)
         win._on_continue()  # Transcript -> Transcribe, for real this time
 
         assert win._active == transcribe_index
@@ -528,14 +601,14 @@ class TestDoneClosesWizard:
     matching what used to require one extra Render -> Complete hop."""
 
     def test_clicking_done_on_the_last_step_closes_the_window(
-        self, win: WizardWindow
+        self, win: WizardWindow, tmp_path: Path
     ) -> None:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
         _make_profile_ready(win)
         _make_scan_ready(win)
-        _make_render_ready(win)
+        _make_render_ready(win, tmp_path)
         for _ in range(len(STEP_LABELS) - 1):
             win._on_continue()
         assert win._active == STEP_LABELS.index("Render")
@@ -546,13 +619,15 @@ class TestDoneClosesWizard:
 
         mock_close.assert_called_once()
 
-    def test_done_does_not_advance_past_the_last_step(self, win: WizardWindow) -> None:
+    def test_done_does_not_advance_past_the_last_step(
+        self, win: WizardWindow, tmp_path: Path
+    ) -> None:
         _make_source_eligible(win)
         _make_transcript_ready(win)
         _make_transcribe_ready(win)
         _make_profile_ready(win)
         _make_scan_ready(win)
-        _make_render_ready(win)
+        _make_render_ready(win, tmp_path)
         for _ in range(len(STEP_LABELS) - 1):
             win._on_continue()
 

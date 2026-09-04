@@ -22,6 +22,7 @@ its own dedup pass.
 
 from __future__ import annotations
 
+import struct
 import subprocess
 import tempfile
 from collections.abc import Callable
@@ -33,6 +34,7 @@ from m4bmaker.utils import subprocess_flags
 from .chunking import ChunkPlan, merge_segment_words, plan_chunks
 from .job_store import JobStore
 from .jobs import JobState
+from .storage import temp_root
 from .transcript import (
     Transcript,
     TranscriptEngine,
@@ -62,6 +64,61 @@ def _chunk_segment_id(index: int) -> str:
     return f"chunk-{index:06d}"
 
 
+#: pcm_s16le, mono, 16kHz — the fixed format ``_extract_chunk_wav`` always
+#: requests, so bytes-per-millisecond is a compile-time constant.
+_CHUNK_WAV_BYTES_PER_MS = 16000 * 1 * 2 / 1000
+
+#: How far short of the requested span an extracted chunk's *actual* audio
+#: is allowed to fall before it's treated as a failed extraction rather than
+#: ordinary input-seek imprecision (see the "slightly less frame-exact"
+#: note below — real imprecision is at most tens of ms, so this is already
+#: generous).
+_CHUNK_DURATION_SHORTFALL_TOLERANCE_MS = 3000
+
+#: Extraction attempts before giving up and raising — a truncated chunk has
+#: been observed to be a transient condition (a clean re-extraction of the
+#: identical byte range succeeded), so one retry is worth it before failing
+#: the whole job.
+_CHUNK_EXTRACTION_MAX_ATTEMPTS = 2
+
+
+def _actual_wav_duration_ms(wav_path: Path) -> int | None:
+    """Return *wav_path*'s real audio duration in milliseconds, computed
+    from actual on-disk bytes rather than the RIFF/``data`` chunk size
+    fields.
+
+    ffmpeg writes those size fields as placeholders and only patches them
+    with the true final value once encoding completes; if the ffmpeg
+    process is interrupted before that patch-back, the file is left with a
+    trailing ``data`` chunk whose declared size is bogus (observed as the
+    literal "unknown size" sentinel ``0xFFFFFFFF``) even though the file
+    itself was closed and flushed. Chunks written before any audio streams
+    in (``fmt ``, ``LIST``/``INFO``) are fully written up front and their
+    declared sizes stay trustworthy, so only the ``data`` chunk's declared
+    size is ignored — everything from its payload start to EOF is counted
+    instead. Returns ``None`` if the file doesn't parse as a WAV at all.
+    """
+    file_size = wav_path.stat().st_size
+    with wav_path.open("rb") as f:
+        header = f.read(12)
+        if len(header) < 12 or header[0:4] != b"RIFF" or header[8:12] != b"WAVE":
+            return None
+        while True:
+            chunk_header = f.read(8)
+            if len(chunk_header) < 8:
+                return None
+            chunk_id = chunk_header[0:4]
+            declared_size = struct.unpack("<I", chunk_header[4:8])[0]
+            data_start = f.tell()
+            if chunk_id == b"data":
+                actual_bytes = file_size - data_start
+                return round(actual_bytes / _CHUNK_WAV_BYTES_PER_MS)
+            # Non-data chunks are written in full before streaming begins,
+            # so their declared size is trustworthy. RIFF chunks are
+            # word-aligned: a chunk with an odd size has one pad byte after it.
+            f.seek(declared_size + (declared_size & 1), 1)
+
+
 def _extract_chunk_wav(
     source_path: Path, start_ms: int, end_ms: int, ffmpeg: str, dest_path: Path
 ) -> None:
@@ -75,7 +132,17 @@ def _extract_chunk_wav(
     based) at the cost of slightly less frame-exact boundaries — acceptable
     here since chunk boundaries already have deliberate overlap padding to
     absorb exactly this kind of imprecision.
+
+    ffmpeg reporting success (exit code 0) does not guarantee a complete
+    file: a real production run produced a chunk truncated to ~59% of its
+    requested span with a corrupt/placeholder RIFF header, which
+    whisper.cpp's WAV decoder then crashed on (native SIGABRT, no
+    catchable Python exception) instead of failing cleanly. So every
+    extraction's actual audio duration is verified against what was
+    requested before it's handed off, with one retry for what has been
+    observed to be a transient failure.
     """
+    expected_ms = end_ms - start_ms
     cmd = [
         ffmpeg,
         "-y",
@@ -93,13 +160,29 @@ def _extract_chunk_wav(
         "pcm_s16le",
         str(dest_path),
     ]
-    result = subprocess.run(
-        cmd, capture_output=True, encoding="utf-8", **subprocess_flags()
-    )
-    if result.returncode != 0:
-        stderr_tail = result.stderr.strip()[-1000:]
+    for attempt in range(1, _CHUNK_EXTRACTION_MAX_ATTEMPTS + 1):
+        result = subprocess.run(
+            cmd, capture_output=True, encoding="utf-8", **subprocess_flags()
+        )
+        if result.returncode != 0:
+            stderr_tail = result.stderr.strip()[-1000:]
+            raise RuntimeError(
+                f"ffmpeg failed to extract chunk [{start_ms},{end_ms}): {stderr_tail}"
+            )
+
+        actual_ms = _actual_wav_duration_ms(dest_path)
+        shortfall_ms = expected_ms - actual_ms if actual_ms is not None else expected_ms
+        if shortfall_ms <= _CHUNK_DURATION_SHORTFALL_TOLERANCE_MS:
+            return
+
+        if attempt < _CHUNK_EXTRACTION_MAX_ATTEMPTS:
+            continue
+
+        actual_desc = "unparseable WAV" if actual_ms is None else f"{actual_ms}ms"
         raise RuntimeError(
-            f"ffmpeg failed to extract chunk [{start_ms},{end_ms}): {stderr_tail}"
+            f"ffmpeg produced a truncated/corrupt chunk [{start_ms},{end_ms}) "
+            f"after {attempt} attempt(s): expected {expected_ms}ms of audio, "
+            f"got {actual_desc}."
         )
 
 
@@ -216,7 +299,9 @@ def run_transcription_job(
         write_transcript(transcript_path, transcript)
         return replace(transcript, path=transcript_path)
 
-    with tempfile.TemporaryDirectory() as tmp:
+    scratch_root = temp_root()
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=scratch_root) as tmp:
         for plan in plans:
             if plan.index in committed_indices:
                 continue

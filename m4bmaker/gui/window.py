@@ -84,6 +84,7 @@ from m4bmaker.gui.queue_window import QueueWindow
 from m4bmaker.gui.updater import UpdateChecker, _RELEASES_URL
 from m4bmaker.gui.filter.catalog_window import CatalogWindow
 from m4bmaker.gui.filter.model_manager_window import ModelManagerWindow
+from m4bmaker.gui.filter.settings_window import SettingsWindow
 from m4bmaker.gui.filter.wizard.wizard_window import WizardWindow
 from m4bmaker.filter.catalog_store import load_catalog
 from m4bmaker.preflight import format_preflight_summary
@@ -170,6 +171,7 @@ class MainWindow(QMainWindow):
         self._queue_window: Optional[QueueWindow] = None
         self._catalog_window: Optional[CatalogWindow] = None
         self._model_manager_window: Optional[ModelManagerWindow] = None
+        self._settings_window: Optional[SettingsWindow] = None
         self._wizard_window: Optional[WizardWindow] = None
         # H6: keep direct-convert controls gated on live queue state.
         # Bound methods only — a lambda here would outlive the window and a
@@ -232,18 +234,30 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(queue_action)
 
-        # Tools menu
-        tools_menu = mb.addMenu("Tools")
-        wizard_action = QAction("Filter Audiobook…", self)
+        # Language Filter menu — every item here belongs to the
+        # audiobook-filtering feature, so the menu is named for that
+        # rather than a generic "Tools" label.
+        tools_menu = mb.addMenu("Language Filter")
+        wizard_action = QAction("Filter Audiobook Language…", self)
         wizard_action.triggered.connect(self._show_wizard_window)
         tools_menu.addAction(wizard_action)
         tools_menu.addSeparator()
-        catalog_action = QAction("Manage Word Catalog…", self)
+        catalog_action = QAction("Word List…", self)
         catalog_action.triggered.connect(self._show_catalog_window)
         tools_menu.addAction(catalog_action)
-        model_manager_action = QAction("Manage Models…", self)
+        model_manager_action = QAction("Manage Transcription Models…", self)
         model_manager_action.triggered.connect(self._show_model_manager_window)
         tools_menu.addAction(model_manager_action)
+        tools_menu.addSeparator()
+        settings_action = QAction("Settings…", self)
+        # Qt's macOS integration auto-detects "Settings"/"Preferences"-like
+        # action text and silently relocates it into the app's own
+        # top-level menu (Cmd+,), regardless of which menu it was added
+        # to — NoRole opts out, keeping this alongside Word List/Manage
+        # Transcription Models in Tools as intended.
+        settings_action.setMenuRole(QAction.MenuRole.NoRole)
+        settings_action.triggered.connect(self._show_settings_window)
+        tools_menu.addAction(settings_action)
 
         # View menu
         view_menu = mb.addMenu("View")
@@ -322,6 +336,8 @@ class MainWindow(QMainWindow):
             self._catalog_window.apply_stylesheet(self._dark_mode)
         if self._model_manager_window is not None:
             self._model_manager_window.apply_stylesheet(self._dark_mode)
+        if self._settings_window is not None:
+            self._settings_window.apply_stylesheet(self._dark_mode)
         if self._wizard_window is not None:
             self._wizard_window.apply_stylesheet(self._dark_mode)
 
@@ -1185,10 +1201,21 @@ class MainWindow(QMainWindow):
         self._model_manager_window.raise_()
         self._model_manager_window.activateWindow()
 
+    def _show_settings_window(self) -> None:
+        if self._settings_window is None:
+            self._settings_window = SettingsWindow(parent=self)
+            self._settings_window.apply_stylesheet(self._dark_mode)
+        self._settings_window.show()
+        self._settings_window.raise_()
+        self._settings_window.activateWindow()
+
     def _show_wizard_window(self) -> None:
         if self._wizard_window is None:
             self._wizard_window = WizardWindow(parent=self)
             self._wizard_window.apply_stylesheet(self._dark_mode)
+            self._wizard_window.open_settings_requested.connect(
+                self._show_settings_window
+            )
         self._wizard_window.show()
         self._wizard_window.raise_()
         self._wizard_window.activateWindow()

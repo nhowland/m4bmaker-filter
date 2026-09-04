@@ -39,11 +39,51 @@ def cache_root() -> Path:
 
 
 def models_dir() -> Path:
-    return data_root() / "models"
+    """Where downloaded STT models live — a User-configured override
+    (``settings.py``'s ``"models_dir"``) if set, else the default under
+    :func:`data_root`. Imports ``settings`` locally to avoid a circular
+    import (``settings.py`` itself imports :func:`data_root` from here)."""
+    from .settings import get as get_setting
+
+    override = get_setting("models_dir")
+    return Path(override) if override else data_root() / "models"
 
 
 def transcripts_dir() -> Path:
-    return data_root() / "transcripts"
+    """Where saved transcripts live — same override pattern as
+    :func:`models_dir`, via ``settings.py``'s ``"transcripts_dir"``."""
+    from .settings import get as get_setting
+
+    override = get_setting("transcripts_dir")
+    return Path(override) if override else data_root() / "transcripts"
+
+
+def temp_root() -> Path:
+    """Where large render/transcription scratch files are written — a
+    User-configured override (``settings.py``'s ``"temp_dir"``) if set,
+    else :func:`cache_root`. Same override pattern as :func:`models_dir` /
+    :func:`transcripts_dir`, but falling back to :func:`cache_root` rather
+    than a :func:`data_root` subdir, since scratch PCM/WAV files are
+    exactly the "recreatable, safe to delete" content cache_root() already
+    documents itself as being for."""
+    from .settings import get as get_setting
+
+    override = get_setting("temp_dir")
+    return Path(override) if override else cache_root()
+
+
+def output_dir_override() -> Path | None:
+    """The User-configured default folder for filtered output
+    (``settings.py``'s ``"output_dir"``), or ``None`` if unset — unlike
+    :func:`models_dir`/:func:`transcripts_dir`, there is no fixed default
+    to fall back to here: an unset override means "next to the source
+    file", which only :func:`~m4bmaker.filter.renderer.default_output_path`
+    (the one caller) knows how to compute, since it needs the source
+    path to do it."""
+    from .settings import get as get_setting
+
+    override = get_setting("output_dir")
+    return Path(override) if override else None
 
 
 def reports_dir() -> Path:
@@ -65,6 +105,7 @@ def ensure_dirs() -> None:
         cache_root(),
         models_dir(),
         transcripts_dir(),
+        temp_root(),
         reports_dir(),
     ):
         d.mkdir(parents=True, exist_ok=True)

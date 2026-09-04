@@ -33,6 +33,66 @@ class TestStorageRoots:
             assert storage.database_path() == storage.data_root() / "filter.db"
 
 
+class TestStorageOverrides:
+    """Settings-driven overrides (m4bmaker/filter/settings.py) — a User
+    can redirect models/transcripts storage via the Settings window."""
+
+    def test_models_dir_uses_override_when_set(self) -> None:
+        with patch(
+            "m4bmaker.filter.settings.get",
+            side_effect=lambda k: "/custom/models" if k == "models_dir" else None,
+        ):
+            assert storage.models_dir() == Path("/custom/models")
+
+    def test_models_dir_falls_back_to_default_when_unset(self) -> None:
+        with (
+            patch("m4bmaker.filter.storage.user_data_dir", return_value="/fake/data"),
+            patch("m4bmaker.filter.settings.get", return_value=None),
+        ):
+            assert storage.models_dir() == storage.data_root() / "models"
+
+    def test_transcripts_dir_uses_override_when_set(self) -> None:
+        with patch(
+            "m4bmaker.filter.settings.get",
+            side_effect=lambda k: (
+                "/custom/transcripts" if k == "transcripts_dir" else None
+            ),
+        ):
+            assert storage.transcripts_dir() == Path("/custom/transcripts")
+
+    def test_transcripts_dir_falls_back_to_default_when_unset(self) -> None:
+        with (
+            patch("m4bmaker.filter.storage.user_data_dir", return_value="/fake/data"),
+            patch("m4bmaker.filter.settings.get", return_value=None),
+        ):
+            assert storage.transcripts_dir() == storage.data_root() / "transcripts"
+
+    def test_output_dir_override_returns_path_when_set(self) -> None:
+        with patch(
+            "m4bmaker.filter.settings.get",
+            side_effect=lambda k: "/books/filtered" if k == "output_dir" else None,
+        ):
+            assert storage.output_dir_override() == Path("/books/filtered")
+
+    def test_output_dir_override_returns_none_when_unset(self) -> None:
+        with patch("m4bmaker.filter.settings.get", return_value=None):
+            assert storage.output_dir_override() is None
+
+    def test_temp_root_uses_override_when_set(self) -> None:
+        with patch(
+            "m4bmaker.filter.settings.get",
+            side_effect=lambda k: "/custom/scratch" if k == "temp_dir" else None,
+        ):
+            assert storage.temp_root() == Path("/custom/scratch")
+
+    def test_temp_root_falls_back_to_cache_root_when_unset(self) -> None:
+        with (
+            patch("m4bmaker.filter.storage.user_cache_dir", return_value="/fake/cache"),
+            patch("m4bmaker.filter.settings.get", return_value=None),
+        ):
+            assert storage.temp_root() == storage.cache_root()
+
+
 class TestEnsureDirs:
     def test_creates_all_directories(self, tmp_path: Path) -> None:
         with (

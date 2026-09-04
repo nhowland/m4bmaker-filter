@@ -50,16 +50,18 @@ rather than working around it.
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import tempfile
 from array import array
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from m4bmaker.utils import subprocess_flags
 
-from .models import MediaManifest, RenderPlan
+from .models import MediaManifest, RenderInterval, RenderPlan
+from .storage import output_dir_override, temp_root
 
 #: Frames per envelope-generation chunk. Bounds peak memory to roughly
 #: this many samples * channels * 2 bytes regardless of source duration —
@@ -117,11 +119,16 @@ def estimate_storage_bytes(manifest: MediaManifest) -> int:
 
 
 def default_output_path(source_path: Path) -> Path:
-    """The Render step's default output location: same folder as the
-    source, ``"<stem> (filtered)<suffix>"`` — e.g. ``Book.m4b`` ->
-    ``Book (filtered).m4b``. A starting point the wizard's own Browse
-    action can always override, not a fixed policy."""
-    return source_path.with_name(f"{source_path.stem} (filtered){source_path.suffix}")
+    """The Render step's default output location: ``"<stem>
+    (filtered)<suffix>"`` — e.g. ``Book.m4b`` -> ``Book (filtered).m4b`` —
+    in the User's configured default output folder (Settings) if one is
+    set, else the same folder as the source. A starting point the
+    wizard's own Browse action can always override, not a fixed policy."""
+    filename = f"{source_path.stem} (filtered){source_path.suffix}"
+    override = output_dir_override()
+    if override is not None:
+        return override / filename
+    return source_path.with_name(filename)
 
 
 #: Real AAC bitrates the Render step offers — the exact list
@@ -173,6 +180,71 @@ def _run(cmd: list[str], step: str) -> None:
         raise RenderError(f"{step} failed (exit {result.returncode}): {stderr_tail}")
 
 
+_OUT_TIME_RE = re.compile(r"^out_time=(\d+):(\d+):(\d+(?:\.\d+)?)")
+
+
+def _run_with_progress(
+    cmd: list[str],
+    step: str,
+    total_duration_ms: int,
+    progress_callback: Callable[[float], None] | None,
+) -> None:
+    """Like :func:`_run`, but streams ffmpeg's own ``-progress`` output
+    live and reports fractional completion (0.0-1.0, against
+    *total_duration_ms*) as it arrives — for encode+mux specifically, the
+    one render stage real measurement (ADR-0007) showed dominates total
+    render time (~93% on a real 13.5-hour book: 587.7s of 631.4s). Every
+    other stage in this pipeline stays a single blocking call — none of
+    them are slow enough for sub-stage progress to matter (ADR-0028).
+
+    stderr is redirected to a temp file rather than captured live
+    alongside stdout's progress stream — draining two OS pipes at once
+    needs a background thread or ``select()``-based multiplexing, and
+    getting that wrong risks the standard pitfall of an unread pipe
+    filling its OS buffer and blocking the child. A file sidesteps this
+    entirely; it's only read back (for the error message) if the process
+    actually fails, exactly like every other stage here already behaves
+    on success.
+
+    This directory stays on the OS default temp location rather than
+    :func:`~m4bmaker.filter.storage.temp_root` (unlike :func:`render`'s own
+    scratch PCM below) — it holds nothing but a short-lived stderr log, not
+    a real storage concern the User-configurable temp location exists for.
+
+    ``-progress`` itself adds no real work on ffmpeg's side — it's the
+    same per-interval stats ffmpeg already computes and would otherwise
+    print to stderr by default (``-nostats`` here just says "as
+    machine-readable key=value lines instead of a human-readable line"),
+    and reading a few dozen bytes off a pipe every ``-stats_period``
+    (default 0.5s) is negligible next to the actual AAC encoding work
+    driving this process's real runtime.
+    """
+    progress_cmd = cmd[:-1] + ["-nostats", "-progress", "pipe:1", cmd[-1]]
+    with tempfile.TemporaryDirectory() as tmp:
+        stderr_path = Path(tmp) / "stderr.log"
+        with open(stderr_path, "w", encoding="utf-8") as stderr_file:
+            proc = subprocess.Popen(
+                progress_cmd,
+                stdout=subprocess.PIPE,
+                stderr=stderr_file,
+                encoding="utf-8",
+                **subprocess_flags(),
+            )
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                match = _OUT_TIME_RE.match(line.strip())
+                if match and progress_callback is not None and total_duration_ms > 0:
+                    h, m, s = match.groups()
+                    out_ms = (int(h) * 3600 + int(m) * 60 + float(s)) * 1000
+                    progress_callback(min(1.0, out_ms / total_duration_ms))
+            returncode = proc.wait()
+        if returncode != 0:
+            stderr_text = stderr_path.read_text(encoding="utf-8", errors="replace")
+            raise RenderError(
+                f"{step} failed (exit {returncode}): {stderr_text.strip()[-2000:]}"
+            )
+
+
 def extract_primary_audio_pcm(
     source_path: Path,
     track_index: int,
@@ -221,6 +293,72 @@ def _gain_at(
         frac = remaining / fade_out_n
         return 1.0 - (1.0 - floor) * frac
     return floor
+
+
+#: Minimum true floor-hold buffer, beyond an interval's own configured
+#: fade edges, the renderer ensures exists on each side before AAC
+#: encoding sees it (ADR-0030). Real testing against real narration
+#: (not synthetic tones) found AAC encoding of an abrupt loud/near-silent
+#: transition can leave an audible remnant of the *original* audio for
+#: roughly the first 30-50ms into the "silent" side — independent of
+#: bitrate, encoder quality settings, and encoder implementation (both
+#: ffmpeg's native encoder and macOS's AudioToolbox encoder show it).
+#: 100ms is ~2x that measured threshold — real headroom, chosen
+#: deliberately smaller than the ~4x margin first tested: this value is
+#: capped only by *other planned hits* (see
+#: :func:`_widen_for_encoder_safety`), not by individual transcript
+#: words, so a hit directly adjacent to a non-hit word (ADR-0026's
+#: "damn"/"cat" case) has nothing else stopping this reach from
+#: extending into it — smaller here trades some of this fix's own
+#: margin for less of that residual risk, rather than maximizing one
+#: at the other's expense.
+_ENCODER_SAFETY_HOLD_MS = 100
+
+
+def _widen_for_encoder_safety(
+    intervals: tuple[RenderInterval, ...],
+    source_duration_ms: int,
+    safety_hold_ms: int = _ENCODER_SAFETY_HOLD_MS,
+) -> tuple[RenderInterval, ...]:
+    """Internal-only widening applied just before envelope generation —
+    never reflected in the User-facing ``RenderPlan`` (Review's own
+    display, the filter report's stats, or what ``validate()`` checks
+    against, all of which keep using the original, narrower intervals).
+    Real AAC encoding of a short, abruptly-attenuated interval can leave
+    the original audio audible (see :data:`_ENCODER_SAFETY_HOLD_MS`) —
+    this gives the encoder genuine extra distance to settle, without
+    changing what the User is told was silenced.
+
+    Extends each interval symmetrically until at least *safety_hold_ms*
+    of pure floor gain exists beyond its own original edges, capped so
+    it never reaches into a neighboring ``RenderInterval``'s own
+    territory. Those boundaries are a safe, already-known signal (this
+    module's own list of hits the User actually approved) — unlike
+    individual transcript-word gaps, which real-audio testing during
+    ADR-0026 found too unreliable a signal to clamp padding against.
+    Widened regions from adjacent intervals are allowed to touch or
+    overlap each other when the real gap between them is smaller than
+    two safety holds — both sides only ever apply floor gain there
+    either way, so the audio result is identical regardless.
+    """
+    widened = []
+    n = len(intervals)
+    for i, interval in enumerate(intervals):
+        floor_left = intervals[i - 1].end_ms if i > 0 else 0
+        if i + 1 < n:
+            floor_right: int | None = intervals[i + 1].start_ms
+        elif source_duration_ms > 0:
+            floor_right = source_duration_ms
+        else:
+            floor_right = None  # unknown total duration -- no right-side cap
+
+        new_start = max(interval.start_ms - safety_hold_ms, floor_left, 0)
+        new_end = interval.end_ms + safety_hold_ms
+        if floor_right is not None:
+            new_end = min(new_end, floor_right)
+
+        widened.append(replace(interval, start_ms=new_start, end_ms=new_end))
+    return tuple(widened)
 
 
 def generate_envelope_pcm(
@@ -359,12 +497,19 @@ def encode_and_mux(
     sample_rate: int,
     ffmpeg: str,
     cover_path: Path | None = None,
+    total_duration_ms: int = 0,
+    progress_callback: Callable[[float], None] | None = None,
 ) -> None:
     """Encode *filtered_pcm_path* (raw PCM) to AAC and mux with metadata/
     chapters copied from *original_source_path* (full-fidelity pass-through
     of every atom the source has, not just the fields this app's own
     schema knows about) and cover art from *cover_path*, if given,
     atomically staged to *dest_m4b_path*.
+
+    *total_duration_ms*/*progress_callback*, when both given, report live
+    encode progress via ffmpeg's own ``-progress`` output rather than a
+    single blocking call (ADR-0028) — this is the one render stage real
+    measurement showed dominates total render time.
 
     **Why *cover_path* is a separate standalone image, not mapped directly
     from *original_source_path*'s own video stream.** Doing the obvious
@@ -434,11 +579,24 @@ def encode_and_mux(
         str(partial),
     ]
     try:
-        _run(cmd, "AAC encode and mux")
+        _run_with_progress(
+            cmd, "AAC encode and mux", total_duration_ms, progress_callback
+        )
     except RenderError:
         partial.unlink(missing_ok=True)
         raise
     os.replace(partial, dest_m4b_path)
+
+
+#: Each stage's *start* fraction, sized by real relative cost (ADR-0007's
+#: measurement on a full 13.5-hour audiobook: extract 31.3s, envelope
+#: 2.4s, attenuate 10.0s, encode+mux 587.7s of 631.4s total) rather than
+#: four equal 25% steps — encode+mux is ~93% of real render time, so it
+#: gets ~93% of the bar's range, not a quarter of it (ADR-0028).
+_STAGE_EXTRACT_START = 0.0
+_STAGE_ENVELOPE_START = 0.05
+_STAGE_ATTENUATE_START = 0.06
+_STAGE_ENCODE_START = 0.08
 
 
 def render(
@@ -473,13 +631,15 @@ def render(
     sample_rate = track.sample_rate
     channels = track.channels
 
-    with tempfile.TemporaryDirectory() as tmp:
+    scratch_root = temp_root()
+    scratch_root.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=scratch_root) as tmp:
         tmp_path = Path(tmp)
         source_pcm = tmp_path / "source.pcm"
         envelope_pcm = tmp_path / "envelope.pcm"
         filtered_pcm = tmp_path / "filtered.pcm"
 
-        _cb("Extracting source audio…", 0.0)
+        _cb("Extracting source audio…", _STAGE_EXTRACT_START)
         extract_primary_audio_pcm(
             source_path,
             (
@@ -493,17 +653,24 @@ def render(
             source_pcm,
         )
 
-        _cb("Generating gain envelope…", 0.25)
+        _cb("Generating gain envelope…", _STAGE_ENVELOPE_START)
         actual_total_samples = source_pcm.stat().st_size // (2 * channels)
+        # ADR-0030: the envelope actually generated silences a bit more
+        # than render_plan itself reports, purely so AAC encoding has
+        # real room to settle — the User-facing plan, validation target,
+        # and filter report all keep using render_plan unmodified.
+        safe_intervals = _widen_for_encoder_safety(
+            render_plan.intervals, render_plan.source_duration_ms
+        )
         generate_envelope_pcm(
-            render_plan,
+            replace(render_plan, intervals=safe_intervals),
             sample_rate,
             channels,
             envelope_pcm,
             total_samples=actual_total_samples,
         )
 
-        _cb("Applying attenuation…", 0.5)
+        _cb("Applying attenuation…", _STAGE_ATTENUATE_START)
         apply_gain_envelope(
             source_pcm, envelope_pcm, filtered_pcm, sample_rate, channels, ffmpeg
         )
@@ -514,7 +681,12 @@ def render(
 
             cover_path = extract_cover_from_audio(source_path, ffmpeg)
 
-        _cb("Encoding and muxing output…", 0.75)
+        _cb("Encoding and muxing output…", _STAGE_ENCODE_START)
+
+        def _encode_progress(sub_fraction: float) -> None:
+            overall = _STAGE_ENCODE_START + sub_fraction * (1.0 - _STAGE_ENCODE_START)
+            _cb("Encoding and muxing output…", overall)
+
         encode_and_mux(
             filtered_pcm,
             source_path,
@@ -524,6 +696,8 @@ def render(
             sample_rate,
             ffmpeg,
             cover_path=cover_path,
+            total_duration_ms=manifest.duration_ms,
+            progress_callback=_encode_progress,
         )
 
     _cb("Done.", 1.0)

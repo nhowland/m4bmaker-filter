@@ -2052,3 +2052,50 @@ by keeping it always visible and toggling only its text/QSS state).
 addendum; full `tests/gui/filter/` 416 passed; `black`/`flake8`/`mypy`
 clean throughout.
 
+## G5: Configurable scratch/temp folder, with a shortcut from Source (ADR-0047, 2026-08-31)
+
+Discussed before building, per the User's own request: a new Settings
+option to redirect where render/transcription scratch files go — a
+real audiobook can need 50+ GB at once, the same mechanism behind an
+earlier session's real 24GB orphaned-temp-directory cleanup — plus a
+possible shortcut from the Source step once a User sees that figure.
+Traced the real call sites before proposing anything: `render()`'s own
+`TemporaryDirectory()` (the actual big consumer — full-length
+`source.pcm`/`envelope.pcm`/`filtered.pcm`) and
+`transcription_orchestrator.py`'s per-chunk WAV extraction both used
+the bare OS default with no override; a different, small
+`TemporaryDirectory()` inside `renderer.py`'s own progress-streaming
+helper was correctly left alone. Also found `storage.py` already had
+an unused `cache_root()` whose own docstring already described it as
+being for exactly this — nothing called it yet.
+
+New `settings.py` key `temp_dir` and `storage.temp_root()`, mirroring
+`models_dir()`/`transcripts_dir()`'s existing override pattern exactly
+— local `settings.get()` import, no new parameters threaded through
+`render()`'s or the orchestrator's signatures. Settings window gained
+a fourth folder row ("Temp Files"), reusing `_build_folder_row()`
+unchanged in shape, plus a new optional `tooltip` param on that
+helper. Source step's info panel gained a "Change temp storage
+location…" link right on the "Temp storage needed" row itself, present
+in both the placeholder and eligible states equally rather than
+toggled, forwarded up through `SourceStep` → `WizardWindow` →
+`MainWindow._show_settings_window`. Deliberately left alone:
+`cover.py`'s own, unrelated `get_temp_root()` — raised during the
+discussion and judged not worth folding a base-app utility into this
+feature's settings for a few MB of preview data.
+
+Driven in the real running app immediately after, not just unit tests
+— caught two things a widget-level test couldn't: the link's own
+wording ("Change location…") was vague without the row it sat next to
+for context, renamed to "Change temp storage location…"; and the
+Settings window's new fourth row pushed total content past its old
+hardcoded `resize(720, 380)`, visibly clipping the last row's
+Browse/Reset buttons. Fixed by sizing the window off its real built
+content (`centralWidget().sizeHint()`) instead of a guessed constant,
+and giving each folder row a deliberate spacing differential (tight
+within one setting's own label-and-path, generous between different
+settings).
+
+5 new/updated test files, full project suite 1936 passed / 2 skipped,
+`black`/`flake8`/`mypy` clean.
+

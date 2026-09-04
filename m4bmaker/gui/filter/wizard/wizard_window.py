@@ -85,6 +85,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from PySide6.QtCore import Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -101,6 +102,7 @@ from m4bmaker.filter.catalog import CatalogService
 from m4bmaker.filter.catalog_store import load_catalog
 from m4bmaker.filter.transcript import Transcript
 
+from .file_card import FileCard
 from .profile_step import ProfileStep
 from .render_step import RenderStep
 from .review_step import ReviewStep
@@ -123,6 +125,13 @@ _RENDER_INDEX = STEP_LABELS.index("Render")
 class WizardWindow(QMainWindow):
     """Top-level window hosting the whole filter wizard."""
 
+    #: Re-emits SourceStep's own signal of the same name -- this window
+    #: has no reach into MainWindow's Settings window itself, so it just
+    #: forwards the request up to whoever constructed it (mirrors how
+    #: MainWindow._show_wizard_window already owns every other
+    #: secondary-window lifecycle in this app).
+    open_settings_requested = Signal()
+
     def __init__(
         self,
         parent: QWidget | None = None,
@@ -132,7 +141,7 @@ class WizardWindow(QMainWindow):
         catalog_service: CatalogService | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Filter Audiobook")
+        self.setWindowTitle("Filter Audiobook Language")
         self.setMinimumSize(760, 560)
         self.resize(900, 640)
 
@@ -174,6 +183,9 @@ class WizardWindow(QMainWindow):
         self._stepper.step_clicked.connect(self._go_to_step)
         root.addWidget(self._stepper)
 
+        self._file_card = FileCard()
+        root.addWidget(self._file_card)
+
         header = QWidget()
         header_layout = QVBoxLayout(header)
         header_layout.setContentsMargins(26, 20, 26, 6)
@@ -192,6 +204,10 @@ class WizardWindow(QMainWindow):
         stack_wrapper_layout.setContentsMargins(26, 0, 26, 0)
         self._stack = QStackedWidget()
         self._steps: list[WizardStep] = self._build_steps()
+        source_step = self._steps[_SOURCE_INDEX]
+        assert isinstance(source_step, SourceStep)
+        source_step.cover_ready.connect(self._refresh_file_card)
+        source_step.open_settings_requested.connect(self.open_settings_requested)
         for step in self._steps:
             self._stack.addWidget(step)
         stack_wrapper_layout.addWidget(self._stack)
@@ -363,13 +379,31 @@ class WizardWindow(QMainWindow):
         source = self._steps[_SOURCE_INDEX]
         review_step = self._steps[_REVIEW_INDEX]
         render_step = self._steps[_RENDER_INDEX]
+        scan_step = self._steps[_SCAN_INDEX]
         assert isinstance(source, SourceStep)
         assert isinstance(review_step, ReviewStep)
         assert isinstance(render_step, RenderStep)
+        assert isinstance(scan_step, ScanStep)
         manifest = source.manifest
         render_plan = review_step.current_render_plan()
         if manifest is not None and render_plan is not None:
-            render_step.set_inputs(manifest, render_plan)
+            # Everything past manifest/render_plan here carries no
+            # rendering decision at all -- it's context the filter report
+            # (ADR-0029) needs to describe the whole pipeline, not just
+            # this one render. transcript is whichever predecessor
+            # actually produced it (Transcribe, or Transcript's own
+            # reuse path) via the same helper Profile/Scan already use.
+            transcribe_step = self._steps[_TRANSCRIBE_INDEX]
+            assert isinstance(transcribe_step, TranscribeStep)
+            render_step.set_inputs(
+                manifest,
+                render_plan,
+                transcript=self._current_transcript(),
+                scan=scan_step.scan,
+                catalog=self._catalog_service,
+                transcribe_elapsed_seconds=transcribe_step.elapsed_seconds,
+                scan_elapsed_seconds=scan_step.elapsed_seconds,
+            )
 
     def _on_transcript_reuse(self) -> None:
         """TranscriptStep chose to reuse a compatible saved transcript —
@@ -393,6 +427,12 @@ class WizardWindow(QMainWindow):
         is_last = self._active == len(self._steps) - 1
         self._continue_btn.setText("Done" if is_last else "Continue")
         self._update_nav_buttons()
+        self._refresh_file_card()
+
+    def _refresh_file_card(self) -> None:
+        source_step = self._steps[_SOURCE_INDEX]
+        assert isinstance(source_step, SourceStep)
+        self._file_card.set_manifest(source_step.manifest, source_step.cover_path)
 
     def _update_nav_buttons(self) -> None:
         self._continue_btn.setEnabled(self._steps[self._active].can_advance())

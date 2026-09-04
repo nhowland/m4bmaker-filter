@@ -33,8 +33,10 @@ from m4bmaker.filter.renderer import (
     SUPPORTED_BITRATES,
     RenderError,
     RenderResult,
+    _ENCODER_SAFETY_HOLD_MS,
     _db_to_linear,
     _gain_at,
+    _widen_for_encoder_safety,
     apply_gain_envelope,
     default_output_path,
     encode_and_mux,
@@ -53,6 +55,23 @@ def _run_result(returncode: int = 0, stderr: str = "") -> MagicMock:
     r.returncode = returncode
     r.stderr = stderr
     return r
+
+
+def _mock_popen(returncode: int = 0, write_output: bool = True, stdout_lines=()):
+    """``subprocess.Popen`` replacement for ``encode_and_mux``'s tests —
+    it alone streams progress via ``Popen``/``-progress`` (ADR-0028), not
+    the blocking ``subprocess.run()`` every other stage still uses, so its
+    tests mock a different call than ``_run_result``'s callers do."""
+
+    def _factory(cmd, **kwargs):
+        if write_output:
+            Path(cmd[-1]).write_bytes(b"fake m4b")
+        proc = MagicMock()
+        proc.stdout = iter(stdout_lines)
+        proc.wait.return_value = returncode
+        return proc
+
+    return _factory
 
 
 class TestDbToLinear:
@@ -88,6 +107,152 @@ class TestGainAt:
             999, span_samples=1000, fade_in_n=100, fade_out_n=100, floor=0.1
         )
         assert g_start < g_end  # gain increases moving toward the very end
+
+
+class TestWidenForEncoderSafety:
+    """ADR-0030: real AAC encoding of a short, abruptly-attenuated interval
+    can leave the original audio audible near its edges — confirmed
+    against real narration, independent of bitrate/encoder-quality/
+    encoder implementation. This widens the *actual* gain-envelope hold
+    region internally, without changing what render_plan itself reports
+    (Review's display, the filter report, or what validate() checks)."""
+
+    def _interval(
+        self, start_ms: int, end_ms: int, hit_ids: tuple[str, ...] = ("x",)
+    ) -> RenderInterval:
+        return RenderInterval(
+            start_ms=start_ms,
+            end_ms=end_ms,
+            fade_in_ms=15,
+            fade_out_ms=15,
+            hit_ids=hit_ids,
+        )
+
+    def test_isolated_interval_widens_symmetrically(self) -> None:
+        intervals = (self._interval(10_000, 10_630),)
+        widened = _widen_for_encoder_safety(intervals, source_duration_ms=1_000_000)
+        assert widened[0].start_ms == 10_000 - _ENCODER_SAFETY_HOLD_MS
+        assert widened[0].end_ms == 10_630 + _ENCODER_SAFETY_HOLD_MS
+
+    def test_preserves_fade_and_hit_ids(self) -> None:
+        intervals = (self._interval(10_000, 10_630, hit_ids=("a", "b")),)
+        widened = _widen_for_encoder_safety(intervals, source_duration_ms=1_000_000)
+        assert widened[0].fade_in_ms == 15
+        assert widened[0].fade_out_ms == 15
+        assert widened[0].hit_ids == ("a", "b")
+
+    def test_clamps_to_zero_near_file_start(self) -> None:
+        intervals = (self._interval(30, 630),)
+        widened = _widen_for_encoder_safety(intervals, source_duration_ms=1_000_000)
+        assert widened[0].start_ms == 0
+
+    def test_clamps_to_duration_near_file_end(self) -> None:
+        intervals = (self._interval(999_400, 999_970),)
+        widened = _widen_for_encoder_safety(intervals, source_duration_ms=1_000_000)
+        assert widened[0].end_ms == 1_000_000
+
+    def test_zero_duration_means_unknown_no_end_clamp(self) -> None:
+        # Matches render()'s own "0 == unknown total duration" convention.
+        intervals = (self._interval(10_000, 10_630),)
+        widened = _widen_for_encoder_safety(intervals, source_duration_ms=0)
+        assert widened[0].end_ms == 10_630 + _ENCODER_SAFETY_HOLD_MS
+
+    def test_never_reaches_past_a_close_neighbors_own_boundary(self) -> None:
+        # Gap between the two original intervals is only 60ms -- smaller
+        # than 2x the safety hold. Neither widened interval may cross the
+        # *other's own original* start/end.
+        intervals = (
+            self._interval(10_000, 10_630, hit_ids=("a",)),
+            self._interval(10_690, 11_000, hit_ids=("b",)),
+        )
+        widened = _widen_for_encoder_safety(intervals, source_duration_ms=1_000_000)
+        assert widened[0].end_ms <= 10_690  # never past interval b's own start
+        assert widened[1].start_ms >= 10_630  # never before interval a's own end
+
+    def test_distant_neighbor_does_not_constrain_widening(self) -> None:
+        intervals = (
+            self._interval(10_000, 10_630, hit_ids=("a",)),
+            self._interval(500_000, 500_630, hit_ids=("b",)),
+        )
+        widened = _widen_for_encoder_safety(intervals, source_duration_ms=1_000_000)
+        assert widened[0].end_ms == 10_630 + _ENCODER_SAFETY_HOLD_MS
+        assert widened[1].start_ms == 500_000 - _ENCODER_SAFETY_HOLD_MS
+
+    def test_order_and_count_preserved(self) -> None:
+        intervals = (
+            self._interval(1_000, 1_100, hit_ids=("a",)),
+            self._interval(50_000, 50_100, hit_ids=("b",)),
+            self._interval(900_000, 900_100, hit_ids=("c",)),
+        )
+        widened = _widen_for_encoder_safety(intervals, source_duration_ms=1_000_000)
+        assert len(widened) == 3
+        assert [iv.hit_ids for iv in widened] == [("a",), ("b",), ("c",)]
+
+    def test_render_plan_itself_reports_the_original_narrow_intervals(
+        self, tmp_path: Path
+    ) -> None:
+        # The widening must be an internal-only rendering detail -- the
+        # RenderPlan object callers hold (Review's display, the filter
+        # report, validate()'s own target) never gets mutated by it.
+        manifest = MediaManifest(
+            schema_version=1,
+            source_path="/books/a.m4b",
+            fingerprint="sha256:x",
+            duration_ms=1_000_000,
+            tracks=(
+                AudioTrack(
+                    index=0,
+                    codec_name="aac",
+                    is_default=True,
+                    channels=2,
+                    sample_rate=44100,
+                    bit_rate=128000,
+                ),
+            ),
+            selected_track_index=0,
+            selected_track_is_fallback=False,
+            chapters=(),
+            required_metadata={},
+            cover_present=False,
+            eligible=True,
+        )
+        original_interval = self._interval(10_000, 10_630)
+        plan = RenderPlan(
+            intervals=(original_interval,),
+            attenuation=AttenuationSettings(),
+            source_duration_ms=1_000_000,
+        )
+
+        captured_plan = {}
+
+        def _capture_envelope(render_plan, *a, **k):
+            captured_plan["plan"] = render_plan
+
+        def _extract(*a, **k):
+            a[-1].write_bytes(b"\x00" * 100)
+
+        with (
+            patch(f"{_RENDERER}.extract_primary_audio_pcm", side_effect=_extract),
+            patch(f"{_RENDERER}.generate_envelope_pcm", side_effect=_capture_envelope),
+            patch(f"{_RENDERER}.apply_gain_envelope"),
+            patch(f"{_RENDERER}.encode_and_mux"),
+        ):
+            render(
+                tmp_path / "src.m4b",
+                manifest,
+                plan,
+                tmp_path / "out.m4b",
+                "ffmpeg",
+                "ffprobe",
+                "128k",
+            )
+
+        # generate_envelope_pcm was handed a WIDENED plan internally...
+        assert captured_plan["plan"].intervals[0].start_ms == (
+            10_000 - _ENCODER_SAFETY_HOLD_MS
+        )
+        # ...but the RenderPlan the test itself holds is untouched.
+        assert plan.intervals[0] == original_interval
 
 
 class TestExtractPrimaryAudioPcm:
@@ -254,11 +419,7 @@ class TestEncodeAndMux:
     def test_without_cover_does_not_map_video(self, tmp_path: Path) -> None:
         dest = tmp_path / "out.m4b"
 
-        def _side_effect(cmd, **kwargs):
-            Path(cmd[-1]).write_bytes(b"fake m4b")
-            return _run_result()
-
-        with patch("subprocess.run", side_effect=_side_effect) as m:
+        with patch("subprocess.Popen", side_effect=_mock_popen()) as m:
             encode_and_mux(
                 tmp_path / "filtered.pcm",
                 tmp_path / "source.m4b",
@@ -277,11 +438,7 @@ class TestEncodeAndMux:
         cover = tmp_path / "cover.jpg"
         cover.write_bytes(b"\xff\xd8fake-jpeg")
 
-        def _side_effect(cmd, **kwargs):
-            Path(cmd[-1]).write_bytes(b"fake m4b")
-            return _run_result()
-
-        with patch("subprocess.run", side_effect=_side_effect) as m:
+        with patch("subprocess.Popen", side_effect=_mock_popen()) as m:
             encode_and_mux(
                 tmp_path / "filtered.pcm",
                 tmp_path / "source.m4b",
@@ -302,11 +459,7 @@ class TestEncodeAndMux:
         cover = tmp_path / "cover.webp"
         cover.write_bytes(b"fake-webp")
 
-        def _side_effect(cmd, **kwargs):
-            Path(cmd[-1]).write_bytes(b"fake m4b")
-            return _run_result()
-
-        with patch("subprocess.run", side_effect=_side_effect) as m:
+        with patch("subprocess.Popen", side_effect=_mock_popen()) as m:
             encode_and_mux(
                 tmp_path / "filtered.pcm",
                 tmp_path / "source.m4b",
@@ -323,11 +476,7 @@ class TestEncodeAndMux:
     def test_atomic_no_partial_left_after_success(self, tmp_path: Path) -> None:
         dest = tmp_path / "out.m4b"
 
-        def _side_effect(cmd, **kwargs):
-            Path(cmd[-1]).write_bytes(b"fake m4b")
-            return _run_result()
-
-        with patch("subprocess.run", side_effect=_side_effect):
+        with patch("subprocess.Popen", side_effect=_mock_popen()):
             encode_and_mux(
                 tmp_path / "filtered.pcm",
                 tmp_path / "source.m4b",
@@ -341,12 +490,42 @@ class TestEncodeAndMux:
         assert leftovers == []
         assert dest.read_bytes() == b"fake m4b"
 
+    def test_progress_callback_receives_fraction_from_out_time(
+        self, tmp_path: Path
+    ) -> None:
+        # Real ADR-0028 behavior: out_time lines map to a 0.0-1.0 fraction
+        # against total_duration_ms as they stream, not just at the end.
+        dest = tmp_path / "out.m4b"
+        lines = [
+            "out_time=00:00:30.000000\n",
+            "out_time=00:01:00.000000\n",
+            "progress=end\n",
+        ]
+        seen: list[float] = []
+
+        with patch("subprocess.Popen", side_effect=_mock_popen(stdout_lines=lines)):
+            encode_and_mux(
+                tmp_path / "filtered.pcm",
+                tmp_path / "source.m4b",
+                dest,
+                "128k",
+                2,
+                44100,
+                "ffmpeg",
+                total_duration_ms=120_000,
+                progress_callback=seen.append,
+            )
+        assert seen == [pytest.approx(0.25), pytest.approx(0.5)]
+
     def test_partial_removed_on_failure_and_dest_untouched(
         self, tmp_path: Path
     ) -> None:
         dest = tmp_path / "out.m4b"
         dest.write_bytes(b"pre-existing good output")
-        with patch("subprocess.run", return_value=_run_result(1, "encode boom")):
+        with patch(
+            "subprocess.Popen",
+            side_effect=_mock_popen(returncode=1, write_output=False),
+        ):
             with pytest.raises(RenderError):
                 encode_and_mux(
                     tmp_path / "filtered.pcm",
@@ -526,6 +705,84 @@ class TestRender:
         assert fractions[-1] == 1.0
         assert fractions == sorted(fractions)
 
+    def test_stage_checkpoints_weighted_by_real_relative_cost(
+        self, tmp_path: Path
+    ) -> None:
+        # ADR-0028: sized from ADR-0007's real per-stage measurement
+        # (extract 31.3s, envelope 2.4s, attenuate 10.0s, encode 587.7s of
+        # 631.4s total) -- encode+mux gets ~92% of the bar, not a naive
+        # equal-quarters split.
+        manifest = self._manifest()
+        plan = RenderPlan(
+            intervals=(), attenuation=AttenuationSettings(), source_duration_ms=10_000
+        )
+        fractions: list[float] = []
+
+        def _extract(*a, **k):
+            a[-1].write_bytes(b"\x00" * 100)
+
+        with (
+            patch(f"{_RENDERER}.extract_primary_audio_pcm", side_effect=_extract),
+            patch(f"{_RENDERER}.generate_envelope_pcm"),
+            patch(f"{_RENDERER}.apply_gain_envelope"),
+            patch(f"{_RENDERER}.encode_and_mux"),
+        ):
+            render(
+                tmp_path / "src.m4b",
+                manifest,
+                plan,
+                tmp_path / "out.m4b",
+                "ffmpeg",
+                "ffprobe",
+                "128k",
+                progress_callback=lambda msg, frac: fractions.append(frac),
+            )
+        # extract, envelope, attenuate, encode-start, done.
+        assert fractions == [0.0, 0.05, 0.06, 0.08, 1.0]
+
+    def test_encode_sub_progress_remapped_into_the_08_to_1_range(
+        self, tmp_path: Path
+    ) -> None:
+        manifest = self._manifest()
+        plan = RenderPlan(
+            intervals=(), attenuation=AttenuationSettings(), source_duration_ms=10_000
+        )
+        fractions: list[float] = []
+
+        def _extract(*a, **k):
+            a[-1].write_bytes(b"\x00" * 100)
+
+        def _mux(*a, **k):
+            progress_callback = k["progress_callback"]
+            progress_callback(0.0)
+            progress_callback(0.5)
+            progress_callback(1.0)
+
+        with (
+            patch(f"{_RENDERER}.extract_primary_audio_pcm", side_effect=_extract),
+            patch(f"{_RENDERER}.generate_envelope_pcm"),
+            patch(f"{_RENDERER}.apply_gain_envelope"),
+            patch(f"{_RENDERER}.encode_and_mux", side_effect=_mux),
+        ):
+            render(
+                tmp_path / "src.m4b",
+                manifest,
+                plan,
+                tmp_path / "out.m4b",
+                "ffmpeg",
+                "ffprobe",
+                "128k",
+                progress_callback=lambda msg, frac: fractions.append(frac),
+            )
+        # 0.08 (stage start) + [0.0, 0.5, 1.0] remapped across the
+        # remaining (1.0 - 0.08) range, then the final "Done." at 1.0.
+        assert fractions[-4:] == [
+            pytest.approx(0.08),
+            pytest.approx(0.54),
+            pytest.approx(1.0),
+            pytest.approx(1.0),
+        ]
+
 
 class TestEstimateStorageBytes:
     def _manifest(
@@ -609,13 +866,28 @@ class TestEstimateStorageBytes:
 
 
 class TestDefaultOutputPath:
+    """No-override behavior is pinned against a mocked
+    ``output_dir_override`` rather than the real Settings-backed one — a
+    real override set via the Settings window on the machine running
+    these tests must not make them flaky."""
+
     def test_appends_filtered_suffix_before_extension(self) -> None:
-        result = default_output_path(Path("/books/Dungeon Crawler Carl.m4b"))
+        with patch("m4bmaker.filter.renderer.output_dir_override", return_value=None):
+            result = default_output_path(Path("/books/Dungeon Crawler Carl.m4b"))
         assert result == Path("/books/Dungeon Crawler Carl (filtered).m4b")
 
-    def test_same_folder_as_source(self) -> None:
-        result = default_output_path(Path("/a/b/c/Book.m4b"))
+    def test_same_folder_as_source_when_no_override(self) -> None:
+        with patch("m4bmaker.filter.renderer.output_dir_override", return_value=None):
+            result = default_output_path(Path("/a/b/c/Book.m4b"))
         assert result.parent == Path("/a/b/c")
+
+    def test_uses_configured_output_dir_when_set(self) -> None:
+        with patch(
+            "m4bmaker.filter.renderer.output_dir_override",
+            return_value=Path("/books/filtered"),
+        ):
+            result = default_output_path(Path("/a/b/c/Book.m4b"))
+        assert result == Path("/books/filtered/Book (filtered).m4b")
 
 
 class TestPickDefaultBitrate:
