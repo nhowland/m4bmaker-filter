@@ -1921,3 +1921,30 @@ unsolved problems rather than implied fixed. 6 new tests; all 22 tests
 in the file pass; the project's real CI command 1008 passed, 2
 skipped; `black`/`flake8`/`mypy` clean.
 
+## G5: Find More Words / Profile step explainer text, Word List move-between-categories (ADR-0043, 2026-08-31)
+
+The User asked for the ability to move a selected word to a different
+category from the Word List window — previously the only way was
+delete-and-recreate, losing its `enabled`/`mask`/`notes` state and its
+`id` (breaking any profile referencing it). `CatalogService.
+update_entry()` already accepted an arbitrary field change, so this
+needed no service-layer change at all: a new "Move to Category…"
+button builds a list of other, non-archived categories as targets,
+checks for a duplicate in the target category the same way "+ Word"
+already does, and calls `update_entry(entry_id, category_id=target.id)`.
+
+7 new tests, including one real bug found and fixed while writing
+them: the first version of the archived-category-exclusion test only
+had one active category besides the archived one, so the code took
+the "nothing to move to" branch instead of the intended path — fixed
+by adding a second real category to the fixture. A same-day addendum
+fixed a second, unrelated defect in the same table: opening Word List
+showed the Phrase column sorted Z-A by default, not the A-Z a User
+expects, since `setSortingEnabled(True)` alone leaves Qt's own default
+sort indicator (descending) rather than anything this code had
+actually chosen. Fixed with one explicit `sortByColumn(...,
+AscendingOrder)` call at construction time.
+
+`tests/gui/filter/test_catalog_window.py` 40 passed (8 new total);
+full `tests/gui/filter/` 374 passed; `black`/`flake8`/`mypy` clean.
+
