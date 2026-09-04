@@ -1649,3 +1649,57 @@ job via `JobStore` with real committed progress, confirming the
 display is correct immediately after Retry. Full suite 1761 passed, 2
 skipped; `black`/`flake8`/`mypy` clean.
 
+## G5: Friendlier Tools naming + Model Manager entry point from Transcript (ADR-0034, 2026-08-29)
+
+The User asked for more user-friendly names for the three Tools-menu
+entries, flagging that jargon like "catalog" and "models" doesn't read
+naturally to someone unfamiliar with this fork's own internal
+vocabulary: "Filter Audiobook…" became "Filter for Language…", "Manage
+Word Catalog…" became "Word List…", and "Manage Models…" became
+"Manage Transcription Models…". The Profile step's own "Manage Word
+Catalog…" button got the matching "Word List…" rename for consistency
+between the two entry points to the same window.
+
+Separately, the Transcript step already let a User inline-download a
+model while picking one, but had no way to open the full Model Manager
+without leaving the wizard — the Profile step already had exactly this
+kind of escape hatch to its own Catalog window. A new "Manage
+Transcription Models…" button on Transcript's model-choosing panel
+opens `ModelManagerWindow` directly, the same lazy-create-and-reuse
+pattern the other entry points already use. `ModelManagerWindow` gained
+a `closed` signal (mirroring `CatalogWindow.closed`) so Transcript can
+re-render its model list and re-derive `can_advance()` after the
+window closes, since a download or removal made there needs to be
+reflected immediately.
+
+5 new tests: closing the window emits `closed` (a declined close
+during an active download does not); the button opens the window with
+the step's own `dest_dir` and reuses the same instance on a second
+call; closing after a model gets installed elsewhere flips
+`can_advance()` from `False` to `True` without any other action. Full
+suite 1766 passed, 2 skipped; `black`/`flake8`/`mypy` clean.
+
+## G5: Matching window titles, and Scan step's thin progress bar (2026-08-29)
+
+Follow-up to the Tools menu rename above: window titles hadn't followed,
+so clicking "Filter for Language…" opened a window still titled "Filter
+Audiobook" — a mismatch. Worked through the naming with the User
+directly rather than guessing: settled on **"Filter Audiobook Language"**
+(main wizard window — keeps "Audiobook" per the User's preference, drops
+a redundant "for"), **"Word List"** (Catalog window — deliberately
+*not* "Filter Word List", since having "Filter" in both that title and
+the main window's title read as confusing; reverted to the User's own
+already-chosen Tools-menu wording instead, which was never redundant to
+begin with), and **"Transcription Models"** (Model Manager window —
+drops "Manage" since a window title names what's open, not an action).
+
+Separately: the Scan step's progress bar (shown briefly during a scan —
+fast enough that it's barely on screen) was still using the bare
+`QProgressBar` default style (6px thin) instead of the `#jobProgress`
+QSS rule (14px, the style every other step's progress bar already uses)
+— just a missing `setObjectName("jobProgress")` call. 1 new test, full
+suite 1767 passed/2 skipped; `black`/`flake8`/`mypy` clean.
+
+Tools menu's own "Filter for Language…" was then brought in line with
+the finished window-title wording too: **"Filter Audiobook Language…"**.
+

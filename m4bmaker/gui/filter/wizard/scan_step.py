@@ -32,6 +32,8 @@ mirrors ``MediaInspectWorker``'s simpler shape instead of
 
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
@@ -87,6 +89,8 @@ class ScanStep(WizardStep):
         self._worker: ScanWorker | None = None
         self._state = _STATE_NOT_READY
         self._error_message: str | None = None
+        self._start_time: float | None = None
+        self._elapsed_seconds: float | None = None
 
         self._build_ui()
         self._render_body()
@@ -96,6 +100,14 @@ class ScanStep(WizardStep):
     @property
     def scan(self) -> Scan | None:
         return self._scan
+
+    @property
+    def elapsed_seconds(self) -> float | None:
+        """Real wall-clock time the last completed scan took (ADR-0029) —
+        ``None`` until one has completed. A scan is a single unresumable
+        pass (this step's own docstring), so unlike Transcribe's this is
+        never a running total across segments — just start-to-finish."""
+        return self._elapsed_seconds
 
     @property
     def transcript(self) -> Transcript | None:
@@ -268,6 +280,7 @@ class ScanStep(WizardStep):
         self._state = _STATE_RUNNING
         self._render_body()
 
+        self._start_time = time.monotonic()
         self._worker = ScanWorker(self._transcript, snapshot, NORMALIZATION_VERSION)
         self._worker.result_ready.connect(self._on_result_ready)
         self._worker.error.connect(self._on_error)
@@ -289,6 +302,7 @@ class ScanStep(WizardStep):
             )
         )
         bar = QProgressBar()
+        bar.setObjectName("jobProgress")
         bar.setRange(0, 0)
         layout.addWidget(bar)
         return panel
@@ -296,12 +310,16 @@ class ScanStep(WizardStep):
     def _on_result_ready(self, scan: Scan) -> None:
         self._worker = None
         self._scan = scan
+        if self._start_time is not None:
+            self._elapsed_seconds = time.monotonic() - self._start_time
+            self._start_time = None
         self._state = _STATE_COMPLETED
         self._render_body()
         self.can_advance_changed.emit(self.can_advance())
 
     def _on_error(self, message: str) -> None:
         self._worker = None
+        self._start_time = None
         self._error_message = message
         self._state = _STATE_NEEDS_ATTENTION
         self._render_body()

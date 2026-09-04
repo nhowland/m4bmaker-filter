@@ -16,7 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from PySide6.QtWidgets import QLabel, QPushButton
+from PySide6.QtWidgets import QLabel, QProgressBar, QPushButton
 
 from m4bmaker.filter.catalog import CatalogService
 from m4bmaker.filter.scan import build_report, run_scan
@@ -147,6 +147,18 @@ class TestStart:
             mock_worker_cls.return_value.start.assert_called_once()
         text = _body_text(step)
         assert "Scanning" in text
+
+    def test_progress_bar_uses_the_shared_job_progress_style(
+        self, step: ScanStep, service: CatalogService, profile_id: str
+    ) -> None:
+        """Matches Render/Transcribe's own progress bars (objectName
+        "jobProgress" in styles.py) rather than the thin default QSS."""
+        step.set_inputs(_transcript(), service, profile_id)
+        with patch("m4bmaker.gui.filter.wizard.scan_step.ScanWorker"):
+            _find_button(step, "Start Scan").click()
+        bar = step.findChild(QProgressBar)
+        assert bar is not None
+        assert bar.objectName() == "jobProgress"
 
     def test_start_snapshots_the_current_profile(
         self, step: ScanStep, service: CatalogService, profile_id: str
