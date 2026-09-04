@@ -1336,3 +1336,45 @@ fix introduced.
 
 `black`/`flake8`/`mypy` clean. `tests/filter/` (398 passed, 2 skipped)
 and this project's real CI command (933 passed, 2 skipped) both clean.
+
+## G5: Attenuation timing accuracy — closed out (2026-08-26)
+
+Three more real findings closed out the investigation ADR-0024/0025
+started, none of which required further code changes:
+
+**A word-boundary-aware padding clamp was designed, implemented, and
+then abandoned** after real-pipeline re-verification (not just its own
+unit tests) showed it firing on nearly every hit in a real chapter, not
+just the rare true zero-gap case it targeted — one interval shrank
+enough to fail the renderer's own attenuation validator outright. Root
+cause: DTW's word timestamps are contiguous by construction (ADR-0025's
+own finding), so "gap to the next transcript word" reads as near-zero
+almost everywhere in a DTW transcript, including across real pauses —
+not a signal the clamp could safely act on. A candidate fix (using
+whisper's non-DTW heuristic offsets to measure the gap instead) was
+checked *before* touching any code again: on the real "damn"/"cat" case,
+DTW said 0ms gap, the heuristic said 440ms, and direct RMS measurement
+of the actual audio said ~110-140ms — both transcript-derived signals
+were wrong, in opposite directions, and the heuristic's answer would
+have silently reintroduced the original bleed-into-the-next-word bug.
+Fully reverted; no production code changes from this line of work.
+
+**base.en vs. small.en, now that DTW is the timing mechanism:** with
+DTW enabled, both models recognized the exact same 23 real hits across
+all 4 chapters — zero hits either model found that the other missed.
+Timing was not identical, though: small.en's DTW timestamps landed
+systematically later than base.en's on 96% of hits (mean +70ms start /
++101ms end, max +300ms end), never earlier. Since late-tail overrun is
+the one failure mode already proven fragile here (the "damn"/"cat"
+case above), this is a real mark against switching, not just a wash —
+`base.en` stays the default, which it already was; no code changed.
+
+**Final listening confirmation:** all 4 chapters re-rendered fresh
+against the current TestProfile (150ms lead / 200ms tail, base.en +
+DTW) to guarantee the sample reflected the real current state, not a
+stale prior round. A 10-clip before/after set spanning all 4 chapters
+went to the User, who confirmed it: "they are turned out well. Still a
+little variance, but I think it's as good a we're going to get." This
+closes the attenuation-timing-accuracy investigation that ADR-0024
+opened — remaining variance is accepted, not hidden.
+
