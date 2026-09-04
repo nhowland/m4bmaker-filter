@@ -1438,3 +1438,43 @@ reproduced the bug through the unmodified pipeline, then ran the real
 with the fix in place — validation passed. 9 new tests, 1747 passed/2
 skipped overall; `black`/`flake8`/`mypy` clean.
 
+## G5: Render step — stage reweighting, live encode progress, ETA (2026-08-26)
+
+The Render step's progress bar sat visibly at 75% for most of a real
+render — `render()`'s four stages (extract, envelope, attenuate,
+encode+mux) each only reported their own start checkpoint (0/25/50/75%)
+regardless of real relative cost, and ADR-0007's own measurement on a
+full 13.5-hour audiobook had already shown why: encode+mux alone is
+587.7s of 631.4s total render time, roughly 93%, not a quarter. The
+User asked for the same kind of estimate Transcribe already had
+(ADR-0027), naming encode+mux specifically, and asked about the
+overhead of tapping ffmpeg's own real-time progress before committing
+to it — answered as negligible, since ffmpeg already computes these
+stats every ~0.5s by default and the only real change is which stream
+they're written to.
+
+Three changes, all confirmed by that same real-book relative-cost data:
+the four stage checkpoints were reweighted to extract 0%, envelope 5%,
+attenuate 6%, encode+mux 8%→100%, derived directly from ADR-0007's own
+measurement; encode+mux was instrumented with ffmpeg's own `-progress
+pipe:1` output via a new `_run_with_progress()` (replacing one blocking
+`subprocess.run()` call with a streaming `Popen`, parsing the
+human-readable `out_time=HH:MM:SS.ffffff` field rather than the
+misleadingly-named `out_time_ms`/`out_time_us` fields, both of which
+are actually in microseconds despite the name); and an "Est. remaining"
+label was added next to Elapsed for encode+mux specifically, seeded
+from an 80x-realtime default (derived from ADR-0007's own ~82.7x
+measurement) then replaced by this run's own measured rate once real
+progress starts arriving, cleared entirely once `validate()` takes over
+since it had no progress signal of its own yet.
+
+Verified against a real book chapter (chapter_04, 28.8 minutes of real
+narration) rendered through the actual production `render()` function
+end to end: extract/envelope/attenuate completed in 1.5s combined,
+exactly as the reweighting predicts, and encode+mux then reported 41
+real progress events climbing smoothly from 8% to 100% rather than
+jumping straight from 75%. Measured real rate for this render (~84x
+realtime) landed close to both the hardcoded default (80x) and
+ADR-0007's own original measurement (82.7x). 7 new tests; full suite
+1731 passed, 2 skipped; `black`/`flake8`/`mypy` clean.
+
