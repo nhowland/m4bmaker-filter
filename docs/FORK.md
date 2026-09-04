@@ -1577,3 +1577,41 @@ clean re-extraction computes at exactly 181,395ms (correctly accepted)
 from the original investigation. 10 new tests; full suite 1757 passed,
 2 skipped; `black`/`flake8`/`mypy` clean.
 
+## G5: whisper-cli native-crash retry (ADR-0032, 2026-08-29)
+
+ADR-0031's truncation guard shipped on the theory that a truncated WAV
+was crashing whisper.cpp's decoder — the User retried and hit the
+identical crash again, unchanged, directly falsifying that theory. A
+race-free capture (an unconditional copy of each chunk's WAV
+immediately after extraction, placed *after* ADR-0031's own
+completeness check had already passed) revealed the real story: the
+earlier filesystem-watcher approach had been racing ahead of ffmpeg's
+write and capturing a still-in-progress file — a diagnostic-tool
+artifact, not a production bug. The real chunk 50 is ~23.6 minutes of
+audio, not the ~3-minute window earlier reproduction attempts had used
+(chapter-aligned chunking makes one chunk per chapter, and this fork's
+own 45-minute subdivision ceiling doesn't touch a chapter this short)
+— every earlier "clean reproduction" had silently been testing the
+wrong audio. Feeding the real, complete, correctly-sized capture to
+whisper-cli reproduced a *different* failure on the first attempt:
+`WHISPER_ASSERT: filter_width < a->ne[2]`, deep inside whisper.cpp's
+own DTW alignment code, well past decoding.
+
+Empirical follow-up (binary-searching truncated prefixes, then
+rerunning the untrimmed file repeatedly) showed this isn't
+deterministic: 5 immediate reruns of the exact same file, same flags,
+all succeeded after the first crash. That gap between isolated testing
+(zero reproductions in roughly a dozen trials) and the real job (three
+separate, real, in-app failures) suggests something about running the
+same GPU-backed inference alongside the app's own Metal usage — not
+pursued further, since its exact mechanism inside whisper.cpp/ggml's
+Metal backend is upstream territory past this fork's scope.
+
+Fixed by retrying the `whisper-cli` invocation itself (not
+re-extraction — ADR-0031 remains in place for its own separate failure
+mode) up to `_WHISPER_MAX_ATTEMPTS = 3` times before raising
+`WhisperTranscriptionError`, a direct evidence-based mitigation given
+the same input that crashed on attempt 1 transcribed correctly on 5/5
+immediate reruns in real testing. 2 new tests; full suite 1759 passed,
+2 skipped; `black`/`flake8`/`mypy` clean.
+
