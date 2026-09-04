@@ -1801,3 +1801,30 @@ All 13 pre-existing tests pass unmodified, confirming the redesign is
 a real layout-only change. Full suite 1848 passed, 2 skipped;
 `black`/`flake8`/`mypy` clean.
 
+## G5: Expanded default profanity seed list (ADR-0038, 2026-08-29)
+
+The default "Profanity" category seeded on first run held only 10
+words. The User asked for a more thorough list, specifically wanting
+to use an existing, established word list rather than one
+hand-invented from scratch. The real candidate, LDNOOBW's open-source
+"bad words" list, turned out on inspection to be built for blocking
+adult websites, not filtering narration — most of its ~400 entries are
+explicit sexual/fetish jargon, and a real number are ethnic/racial/
+disability slurs and extremist terms, directly contradicting this
+project's own already-stated design principle that the shipped default
+is profanity-only, with slur selection left entirely to each User.
+
+Curated LDNOOBW down to its ordinary, everyday-spoken-profanity entries
+(plus a few obvious common words it happened to omit), presented to
+the User for review before touching anything, and expanded
+`PROFANITY_WORDS` from 10 to 29 words once confirmed — everything
+sexual/fetish, pornography-site, drug-name, extremist, or
+slur-related explicitly excluded, the same boundary the original
+10-word list already drew. Scoped to only the default seed for a
+brand-new/empty catalog; the User's own existing, already-seeded
+catalog is untouched.
+
+2 new tests guard the list itself: no duplicate words, no
+blank/whitespace-only entries. Full suite 1850 passed, 2 skipped;
+`black`/`flake8`/`mypy` clean.
+

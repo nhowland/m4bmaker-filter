@@ -28,3 +28,14 @@ class TestSeedDefaultCatalog:
         seed_default_catalog(service)
         names = {c.name for c in service.list_categories()}
         assert names == {"Profanity"}
+
+
+class TestProfanityWordsList:
+    def test_no_duplicate_words(self) -> None:
+        """create_entry() allows duplicates rather than rejecting them
+        (PRD §9.2 — a caller decides what to do with the warning) — the
+        seed list itself must not rely on that to avoid double entries."""
+        assert len(PROFANITY_WORDS) == len(set(PROFANITY_WORDS))
+
+    def test_no_blank_or_whitespace_only_words(self) -> None:
+        assert all(word.strip() for word in PROFANITY_WORDS)

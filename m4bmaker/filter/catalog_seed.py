@@ -1,5 +1,5 @@
 """First-run catalog seed data (ADR-0022, item 11 of the 2026-08-26
-dry-run review).
+dry-run review; expanded 2026-08-29, ADR-0038).
 
 The catalog shipped completely empty before this — every User had to
 build a "Profanity" category from scratch before Scan could find
@@ -11,7 +11,14 @@ Deliberately Profanity-only. A "Slurs" (or any other) category is not
 seeded here — picking which specific slurs belong on a shipped default
 list is a subjective, context-dependent editorial call this app should
 not make unilaterally for every User; that stays entirely User-curated,
-same as today.
+same as today. The list below was cross-checked against LDNOOBW's
+well-known open-source "bad words" list (MIT licensed) as a starting
+point, but that list is built for blocking adult websites, not
+filtering narration — most of its ~400 entries are explicit sexual/
+fetish jargon, and a real number are ethnic/racial/disability slurs and
+extremist terms. Everything here is hand-picked down to ordinary,
+everyday spoken profanity only, consistent with that same "no slurs"
+principle.
 """
 
 from __future__ import annotations
@@ -22,16 +29,35 @@ from .catalog import CatalogService
 #: exhaustive, just a reasonable starting point a User can add to or
 #: prune from the Word Catalog window like any other entry.
 PROFANITY_WORDS: tuple[str, ...] = (
-    "damn",
-    "hell",
-    "shit",
-    "fuck",
-    "bitch",
-    "bastard",
     "ass",
+    "asshole",
+    "bastard",
+    "bitch",
+    "bollocks",
+    "bullshit",
+    "clusterfuck",
+    "cock",
     "crap",
-    "piss",
+    "cunt",
+    "damn",
+    "dick",
+    "fuck",
+    "fucking",
     "goddamn",
+    "hell",
+    "horseshit",
+    "motherfucker",
+    "piss",
+    "prick",
+    "shit",
+    "shitty",
+    "slut",
+    "son of a bitch",
+    "tosser",
+    "twat",
+    "wank",
+    "wanker",
+    "whore",
 )
 
 
