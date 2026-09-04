@@ -1615,3 +1615,37 @@ the same input that crashed on attempt 1 transcribed correctly on 5/5
 immediate reruns in real testing. 2 new tests; full suite 1759 passed,
 2 skipped; `black`/`flake8`/`mypy` clean.
 
+## G5: Resume progress display bug + whisper-cli CPU fallback (ADR-0033, 2026-08-29)
+
+The User retried the real job after ADR-0032's retry fix shipped and
+hit the identical crash on all 3 attempts this time — plain retry
+alone wasn't reliable enough inside the app's real execution
+conditions. Running the real crashing chunk (captured during
+ADR-0032's investigation) with `--no-gpu` three times in a row all
+succeeded, each taking about 46s versus roughly 19s on GPU — consistent
+with the earlier finding that this is GPU/Metal-backend specific
+rather than about the audio content or DTW itself.
+
+After the GPU retry budget is exhausted, one final CPU-only attempt is
+now made before raising, keeping every other flag unchanged including
+`-dtw`/`-nfa` — `--no-gpu` only selects the compute backend and has no
+effect on DTW's alignment math, so the fallback costs real wall-clock
+time (~2.4x on whichever single chunk needs it) but zero
+timing-precision quality. A separate, unrelated bug was found while
+answering the User's question about why the progress bar showed
+"Chapter 1" on reload: `set_transcript_choice()` only seeded the
+progress display from an existing job's real progress for a `PAUSED`
+job, never for `NEEDS_ATTENTION` — the far more common state a real
+crash leaves a job in. The underlying job itself always resumed
+correctly (driven by the job store's own committed-chunk state); only
+the display was wrong until the first new progress callback arrived.
+Now seeded for both states.
+
+New tests confirm the GPU-exhausted-then-CPU-fallback path recovers
+transparently with the exact call count and flag presence (including
+`-dtw`/`-nfa` surviving onto the CPU attempt) asserted, and a new
+`TestSetTranscriptChoiceExistingJob` builds a real `NEEDS_ATTENTION`
+job via `JobStore` with real committed progress, confirming the
+display is correct immediately after Retry. Full suite 1761 passed, 2
+skipped; `black`/`flake8`/`mypy` clean.
+

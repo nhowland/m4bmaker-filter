@@ -214,6 +214,99 @@ class TestRunWhisper:
                     whisper_cli="/bin/whisper-cli",
                 )
 
+    def test_retries_and_recovers_from_a_transient_nonzero_exit(
+        self, tmp_path: Path
+    ) -> None:
+        """A real whisper-cli invocation was observed crashing natively on
+        one attempt and succeeding on 5/5 immediate retries of the exact
+        same file/flags — non-deterministic, not content-dependent."""
+        calls: list[list[str]] = []
+
+        def _side_effect(cmd, **kwargs):
+            calls.append(cmd)
+            result = MagicMock()
+            if len(calls) < 3:
+                result.returncode = -6
+                result.stderr = "WHISPER_ASSERT: filter_width < a->ne[2]"
+                return result
+            out_stem = cmd[cmd.index("-of") + 1]
+            Path(out_stem + ".json").write_text(
+                json.dumps({"ok": True}), encoding="utf-8"
+            )
+            result.returncode = 0
+            result.stderr = ""
+            return result
+
+        with patch("subprocess.run", side_effect=_side_effect):
+            result = run_whisper(
+                tmp_path / "a.wav",
+                tmp_path / "model.bin",
+                whisper_cli="/bin/whisper-cli",
+            )
+        assert result == {"ok": True}
+        assert len(calls) == 3
+
+    def test_falls_back_to_cpu_after_gpu_attempts_exhausted(
+        self, tmp_path: Path
+    ) -> None:
+        """Real testing: the exact input that crashed once on GPU
+        transcribed cleanly every time on a CPU-only (--no-gpu) rerun."""
+        calls: list[list[str]] = []
+
+        def _side_effect(cmd, **kwargs):
+            calls.append(cmd)
+            result = MagicMock()
+            if "--no-gpu" not in cmd:
+                result.returncode = -6
+                result.stderr = "WHISPER_ASSERT: filter_width < a->ne[2]"
+                return result
+            out_stem = cmd[cmd.index("-of") + 1]
+            Path(out_stem + ".json").write_text(
+                json.dumps({"ok": True}), encoding="utf-8"
+            )
+            result.returncode = 0
+            result.stderr = ""
+            return result
+
+        with patch("subprocess.run", side_effect=_side_effect):
+            result = run_whisper(
+                tmp_path / "a.wav",
+                tmp_path / "model.bin",
+                whisper_cli="/bin/whisper-cli",
+                dtw_model_name="base.en",
+            )
+        assert result == {"ok": True}
+        assert len(calls) == 4  # 3 GPU attempts + 1 CPU-only fallback
+        assert calls[:3] == [c for c in calls[:3] if "--no-gpu" not in c]
+        # DTW timing precision is preserved on the CPU fallback too.
+        assert "-dtw" in calls[-1]
+        assert "-nfa" in calls[-1]
+
+    def test_raises_after_exhausting_retries_and_cpu_fallback(
+        self, tmp_path: Path
+    ) -> None:
+        calls: list[list[str]] = []
+
+        def _side_effect(cmd, **kwargs):
+            calls.append(cmd)
+            result = MagicMock()
+            result.returncode = -6
+            result.stderr = "WHISPER_ASSERT: filter_width < a->ne[2]"
+            return result
+
+        with patch("subprocess.run", side_effect=_side_effect):
+            with pytest.raises(
+                WhisperTranscriptionError,
+                match="3 GPU attempt.*CPU-only fallback",
+            ):
+                run_whisper(
+                    tmp_path / "a.wav",
+                    tmp_path / "model.bin",
+                    whisper_cli="/bin/whisper-cli",
+                )
+        assert len(calls) == 4  # 3 GPU attempts + 1 CPU-only fallback, no more
+        assert "--no-gpu" in calls[-1]
+
     def test_dtw_model_name_omitted_by_default(self, tmp_path: Path) -> None:
         captured_cmd = {}
 

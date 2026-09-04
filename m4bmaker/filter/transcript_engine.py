@@ -57,7 +57,19 @@ class WhisperNotFoundError(Exception):
 
 
 class WhisperTranscriptionError(Exception):
-    """Raised when whisper-cli runs but exits non-zero."""
+    """Raised when whisper-cli runs but exits non-zero (after retries)."""
+
+
+#: whisper-cli invocation attempts (on the default GPU backend) before
+#: falling back to a CPU-only attempt. A real ~23.6-minute chunk was
+#: directly observed to crash whisper-cli natively (SIGABRT,
+#: ``WHISPER_ASSERT: filter_width < a->ne[2]`` deep in its DTW alignment
+#: code) then transcribe cleanly on 5/5 immediate standalone retries of the
+#: exact same file and flags — non-deterministic, not a function of this
+#: input's content or duration. Root cause looks like Metal/GPU-backend
+#: state (undetermined further; out of scope to chase into whisper.cpp/ggml
+#: itself), so retrying the same invocation is the first mitigation.
+_WHISPER_MAX_ATTEMPTS = 3
 
 
 def find_whisper_cli() -> str | None:
@@ -128,6 +140,13 @@ def run_whisper(
     reversal, on both approved models (ADR-0001's "GPU acceleration"
     section has the full figures).
 
+    Retries up to :data:`_WHISPER_MAX_ATTEMPTS` times on the GPU backend,
+    then falls back to one CPU-only (``--no-gpu``) attempt before raising
+    (ADR-0032/ADR-0033) — a real, non-deterministic GPU-backend crash was
+    observed to clear reliably on CPU, with DTW's timing precision fully
+    preserved (``--no-gpu`` doesn't affect ``-dtw``/``-nfa``), at a real
+    but one-time ~2.4x slowdown for whichever single chunk needed it.
+
     *dtw_model_name*, when given (ADR-0025), requests whisper.cpp's DTW
     (Dynamic Time Warping) token-level timestamp mode — its own bare model
     identifier (e.g. ``"base.en"``), not a file path. Passing this also
@@ -166,17 +185,46 @@ def run_whisper(
         ]
         if dtw_model_name is not None:
             cmd += ["-dtw", dtw_model_name, "-nfa"]
-        result = subprocess.run(
-            cmd, capture_output=True, encoding="utf-8", **subprocess_flags()
-        )
-        if result.returncode != 0:
-            stderr_tail = result.stderr.strip()[-2000:]
-            raise WhisperTranscriptionError(
-                f"whisper-cli exited with code {result.returncode}: {stderr_tail}"
+
+        last_result: subprocess.CompletedProcess[str] | None = None
+        for attempt in range(1, _WHISPER_MAX_ATTEMPTS + 1):
+            last_result = subprocess.run(
+                cmd, capture_output=True, encoding="utf-8", **subprocess_flags()
             )
-        out_path = Path(out_stem + ".json")
-        parsed: dict[str, Any] = json.loads(out_path.read_text(encoding="utf-8"))
-        return parsed
+            if last_result.returncode == 0:
+                out_path = Path(out_stem + ".json")
+                parsed: dict[str, Any] = json.loads(
+                    out_path.read_text(encoding="utf-8")
+                )
+                return parsed
+
+        assert last_result is not None  # loop runs at least once
+
+        # GPU attempts exhausted. Real testing against the exact input that
+        # crashed this way reproduced it once on GPU then never again across
+        # a CPU-only (--no-gpu) rerun — still with DTW+NFA, so per-token
+        # timing precision is unaffected — at roughly 2.4x the wall time.
+        # One CPU-only attempt is worth that cost rather than failing the
+        # whole job on what real evidence says is a GPU-backend-specific
+        # failure, not a problem with the audio itself.
+        cpu_result = subprocess.run(
+            [*cmd, "--no-gpu"],
+            capture_output=True,
+            encoding="utf-8",
+            **subprocess_flags(),
+        )
+        if cpu_result.returncode == 0:
+            out_path = Path(out_stem + ".json")
+            parsed = json.loads(out_path.read_text(encoding="utf-8"))
+            return parsed
+
+        stderr_tail = cpu_result.stderr.strip()[-2000:]
+        raise WhisperTranscriptionError(
+            f"whisper-cli exited with code {last_result.returncode} after "
+            f"{_WHISPER_MAX_ATTEMPTS} GPU attempt(s), then code "
+            f"{cpu_result.returncode} on a CPU-only fallback attempt: "
+            f"{stderr_tail}"
+        )
 
 
 def dtw_model_name_for(model_path: Path) -> str:
