@@ -278,6 +278,65 @@ class TestModelSelection:
         assert step.can_advance() is True
 
 
+class TestPreferredModelSetting:
+    """The Settings window's "Preferred Model" default (ADR-0035) — only
+    honored when that model is actually installed; otherwise falls back
+    to the pre-existing "first installed, else the catalog's first
+    entry" logic exactly as if no preference were set."""
+
+    def test_installed_preference_is_preselected(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        _install(_BASE_EN, tmp_path)
+        _install(_SMALL_EN, tmp_path)
+        with (
+            patch(
+                "m4bmaker.gui.filter.wizard.transcript_step.find_compatible_transcript",
+                return_value=None,
+            ),
+            patch(
+                "m4bmaker.gui.filter.wizard.transcript_step.get_setting",
+                return_value="small.en",
+            ),
+        ):
+            step.set_source(_manifest())
+        assert step.chosen_model == _SMALL_EN
+
+    def test_uninstalled_preference_falls_back_to_first_installed(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        _install(_BASE_EN, tmp_path)  # small.en preferred but not installed
+        with (
+            patch(
+                "m4bmaker.gui.filter.wizard.transcript_step.find_compatible_transcript",
+                return_value=None,
+            ),
+            patch(
+                "m4bmaker.gui.filter.wizard.transcript_step.get_setting",
+                return_value="small.en",
+            ),
+        ):
+            step.set_source(_manifest())
+        assert step.chosen_model == _BASE_EN
+
+    def test_no_preference_uses_existing_default_logic(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        _install(_SMALL_EN, tmp_path)
+        with (
+            patch(
+                "m4bmaker.gui.filter.wizard.transcript_step.find_compatible_transcript",
+                return_value=None,
+            ),
+            patch(
+                "m4bmaker.gui.filter.wizard.transcript_step.get_setting",
+                return_value=None,
+            ),
+        ):
+            step.set_source(_manifest())
+        assert step.chosen_model == _SMALL_EN
+
+
 class TestDownload:
     def test_download_button_shown_only_for_uninstalled_models(
         self, step: TranscriptStep, tmp_path: Path
@@ -397,6 +456,57 @@ class TestDownload:
             _find_button(step, "Download").click()
         assert step._download_worker is None
         mock_info.assert_called_once()
+
+
+class TestManageModels:
+    def test_opens_model_manager_window(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        with patch(
+            "m4bmaker.gui.filter.wizard.transcript_step.find_compatible_transcript",
+            return_value=None,
+        ):
+            step.set_source(_manifest())
+        with patch(
+            "m4bmaker.gui.filter.wizard.transcript_step.ModelManagerWindow"
+        ) as mock_window_cls:
+            _find_button(step, "Manage Transcription Models").click()
+        mock_window_cls.assert_called_once_with(dest_dir=tmp_path, parent=step)
+
+    def test_reused_on_second_call(self, step: TranscriptStep) -> None:
+        with patch(
+            "m4bmaker.gui.filter.wizard.transcript_step.find_compatible_transcript",
+            return_value=None,
+        ):
+            step.set_source(_manifest())
+        with patch(
+            "m4bmaker.gui.filter.wizard.transcript_step.ModelManagerWindow"
+        ) as mock_window_cls:
+            step._on_manage_models()
+            step._on_manage_models()
+        mock_window_cls.assert_called_once()
+
+    def test_closing_model_manager_refreshes_install_state(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        with patch(
+            "m4bmaker.gui.filter.wizard.transcript_step.find_compatible_transcript",
+            return_value=None,
+        ):
+            step.set_source(_manifest())
+        assert step.can_advance() is False  # default model not installed yet
+
+        with patch(
+            "m4bmaker.gui.filter.wizard.transcript_step.ModelManagerWindow"
+        ) as mock_window_cls:
+            instance = mock_window_cls.return_value
+            step._on_manage_models()
+            closed_slot = instance.closed.connect.call_args[0][0]
+
+        _install(_BASE_EN, tmp_path)  # simulate a download made in that window
+        closed_slot()
+
+        assert step.can_advance() is True
 
 
 def _first_body_widget(step: TranscriptStep) -> QWidget:

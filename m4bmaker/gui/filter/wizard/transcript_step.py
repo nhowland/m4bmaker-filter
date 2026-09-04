@@ -40,9 +40,11 @@ from PySide6.QtWidgets import (
 
 from m4bmaker.filter.model_manager import KNOWN_MODELS, ModelSpec, is_installed
 from m4bmaker.filter.models import MediaManifest
+from m4bmaker.filter.settings import get as get_setting
 from m4bmaker.filter.storage import models_dir
 from m4bmaker.filter.transcript import Transcript, find_compatible_transcript
 
+from ..model_manager_window import ModelManagerWindow
 from ..workers import ModelDownloadWorker, download_coordinator
 from .source_step import _format_duration
 from .step_base import WizardStep
@@ -90,9 +92,8 @@ class TranscriptStep(WizardStep):
         super().__init__(parent)
         self.step_title = "Choose Transcript Path"
         self.step_subtitle = (
-            "Reuse a compatible saved transcript, or set up local "
-            "transcription. First-run empty states render inline here, "
-            "not as separate error screens."
+            "Reuse a saved transcript for this file, or choose a model to "
+            "transcribe it locally."
         )
         self._dest_dir = dest_dir or models_dir()
         self._manifest: MediaManifest | None = None
@@ -101,6 +102,7 @@ class TranscriptStep(WizardStep):
         self._selected_model: ModelSpec = KNOWN_MODELS[0]
         self._download_worker: ModelDownloadWorker | None = None
         self._downloading_spec: ModelSpec | None = None
+        self._model_manager_window: ModelManagerWindow | None = None
         self._build_ui()
         self._render_body()
 
@@ -149,6 +151,16 @@ class TranscriptStep(WizardStep):
         self.can_advance_changed.emit(self.can_advance())
 
     def _pick_default_model(self) -> None:
+        """Prefer the User's configured default (Settings), if it's
+        actually installed — an uninstalled preference isn't usable yet,
+        so falls through to the same "first installed, else the first
+        catalog entry" logic as when no preference is set at all."""
+        preferred_name = get_setting("preferred_model")
+        if preferred_name:
+            for spec in KNOWN_MODELS:
+                if spec.name == preferred_name and is_installed(spec, self._dest_dir):
+                    self._selected_model = spec
+                    return
         for spec in KNOWN_MODELS:
             if is_installed(spec, self._dest_dir):
                 self._selected_model = spec
@@ -262,12 +274,38 @@ class TranscriptStep(WizardStep):
         if self._downloading_spec is not None:
             layout.addWidget(self._build_progress_row())
 
+        bottom_row = QHBoxLayout()
+        bottom_row.addStretch(1)
+        manage_btn = QPushButton("Manage Transcription Models…")
+        manage_btn.clicked.connect(self._on_manage_models)
+        bottom_row.addWidget(manage_btn)
+        layout.addLayout(bottom_row)
+
         return panel
 
     def _on_model_selected(self, spec: ModelSpec, checked: bool) -> None:
         if not checked:
             return
         self._selected_model = spec
+        self.can_advance_changed.emit(self.can_advance())
+
+    def _on_manage_models(self) -> None:
+        if self._model_manager_window is None:
+            self._model_manager_window = ModelManagerWindow(
+                dest_dir=self._dest_dir, parent=self
+            )
+            self._model_manager_window.closed.connect(self._on_model_manager_closed)
+        self._model_manager_window.show()
+        self._model_manager_window.raise_()
+        self._model_manager_window.activateWindow()
+
+    def _on_model_manager_closed(self) -> None:
+        """A download/removal made in the Model Manager window can change
+        which model is installed — re-render so the list's install-state
+        and ``can_advance()`` (which itself checks ``is_installed()``)
+        reflect that immediately, without needing the User to leave and
+        re-enter this step."""
+        self._render_body()
         self.can_advance_changed.emit(self.can_advance())
 
     # ── inline download ──────────────────────────────────────────────────

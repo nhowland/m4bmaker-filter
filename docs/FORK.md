@@ -1703,3 +1703,38 @@ suite 1767 passed/2 skipped; `black`/`flake8`/`mypy` clean.
 Tools menu's own "Filter for Language…" was then brought in line with
 the finished window-title wording too: **"Filter Audiobook Language…"**.
 
+## G5: Settings window — storage overrides and transcription defaults (ADR-0035, 2026-08-29)
+
+Following the Tools-menu naming pass, the User asked whether Word List
+and Model Manager should really live inside a single "Settings" window
+rather than as two separate ones. Working through it: those two are
+full data-management workspaces people leave open while actively
+working, not small values set once and left alone — the wrong shape
+for a Preferences-style window. The better move was to keep them
+separate and add a genuine, small Settings window for actual
+low-frequency configuration, with the User naming the first real
+candidates: folder defaults for transcription-related storage, and a
+default output folder for filtered audiobooks. The User was explicit
+that dark mode / check-for-updates — the base app's own existing
+preferences in `gui/prefs.py` — should stay separately owned, not
+folded into this new window.
+
+New `filter/settings.py`, the same small
+load/save/get/set-with-merged-defaults shape as `gui/prefs.py` but
+living entirely under this feature's own storage root. Four settings
+for v1: `models_dir`/`transcripts_dir` override `storage.py`'s
+existing lookup functions, which now check the setting before falling
+back to their fixed default; `output_dir` lets
+`renderer.default_output_path()` check an override before its "same
+folder as source" fallback; `preferred_model` lets
+`TranscriptStep._pick_default_model()` prefer an installed model the
+User has chosen as default. New `gui/filter/settings_window.py`
+(`SettingsWindow`) added to the Tools menu as "Settings…", with Storage
+Locations (folder rows — current effective path, Browse…, Reset to
+Default) and Transcription Defaults (a Preferred Model dropdown)
+sections, every field persisting immediately on change.
+
+41 new tests across `settings.py`/`storage.py`/`renderer.py`/
+`transcript_step.py`/`settings_window.py`; full suite 1809 passed, 2
+skipped; `black`/`flake8`/`mypy` clean on every changed/new file.
+
