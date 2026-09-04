@@ -1397,3 +1397,44 @@ Hits tab's own `QTableWidget` scrolls natively). 2 new tests
 120-interval scan stays reachable in a realistic fixed-size window, not
 just a synthetic one that can grow to fit anything.
 
+## G5: Encoder safety widening — real render validation failure, real root cause (2026-08-27)
+
+A real render (the User's own ~11.5-hour book) failed validation on one
+interval: measured -65.1dB where -74.0dB was expected. Root-caused
+against the real audio, ruling out (in order, each with direct
+evidence, not assumption): this session's own ADR-0028 render-progress
+change (a byte-identical old-path-vs-new-path A/B test on the real
+audio), scan/matching/interval-planning, gain-envelope generation
+(verified the exact correct floor-gain byte at the target sample), and
+the attenuation multiply itself (reproducing the full pipeline from
+source extraction through the multiply gave a correct -94dB there).
+The corruption is specifically in AAC encoding: it reproduced with
+ffmpeg's native encoder AND macOS's separate AudioToolbox encoder,
+was unaffected by bitrate or encoder quality settings, and reproduced
+with fully synthetic audio (no real speech needed) — a genuine codec
+behavior where an abrupt loud→near-silent→loud transition leaves the
+original audio audible for roughly the first 30-50ms into the
+"silent" side, independent of how gradually or smoothly the gain ramps
+there. Only a genuinely *wider* interval reliably cleared it in
+testing — this is why only one interval failed out of many: a single,
+isolated, unmerged short word (630ms total) is the worst case.
+
+Fixed with an internal-only renderer widening (ADR-0030): the actual
+gain-envelope hold given to AAC encoding is extended by a safety
+margin beyond each interval's own edges, capped so it never reaches
+into a *neighboring RenderInterval's* own territory (a solid,
+already-known-safe signal — unlike individual transcript-word gaps,
+which ADR-0026's abandoned word-boundary clamp already found
+unreliable). The User-facing RenderPlan, filter report, and what
+`validate()` checks against are all untouched. 100ms was chosen
+deliberately smaller than the ~200-500ms first proven to work, trading
+some of the fix's own margin for less reach into any directly-adjacent
+non-hit word (the same risk class as ADR-0026's "damn"/"cat" case).
+
+Verified against the actual failing case: extracted the real ~4.6s
+window around the failing interval from the User's real book,
+reproduced the bug through the unmodified pipeline, then ran the real
+(unmodified) top-level `render()`/`validate()` functions against it
+with the fix in place — validation passed. 9 new tests, 1747 passed/2
+skipped overall; `black`/`flake8`/`mypy` clean.
+
