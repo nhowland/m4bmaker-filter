@@ -19,6 +19,7 @@ considered acceptable.
 from __future__ import annotations
 
 import subprocess
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -241,6 +242,7 @@ def validate_attenuation(
     render_plan: RenderPlan,
     ffmpeg: str,
     margin_db: float = DEFAULT_ATTENUATION_MARGIN_DB,
+    progress_callback: Callable[[str, float], None] | None = None,
 ) -> list[ValidationIssue]:
     """PRD §8.5: confirm each planned interval's post-fade sustain region
     was actually attenuated in the rendered output.
@@ -260,13 +262,29 @@ def validate_attenuation(
     is no window left to measure that isn't itself a fade transition,
     where a partial-attenuation reading would be expected and not a
     defect.
-    """
+
+    *progress_callback*, if given, is called ``(message, fraction)`` once
+    per interval — including a skipped one, so the fraction always
+    reaches a full 1.0 and a caller can plan against ``len(render_plan.
+    intervals)`` up front, matching ``renderer.render()``'s own callback
+    shape exactly (ADR-0044: this is real, non-trivial cost — one ffmpeg
+    subprocess per interval — not free enough to skip reporting)."""
     issues: list[ValidationIssue] = []
     floor_db = render_plan.attenuation.gain_floor_db
-    for interval in render_plan.intervals:
+    total = len(render_plan.intervals)
+
+    def _cb(index: int) -> None:
+        if progress_callback is not None:
+            progress_callback(
+                f"Validating output… ({index + 1} of {total})",
+                (index + 1) / total if total > 0 else 1.0,
+            )
+
+    for i, interval in enumerate(render_plan.intervals):
         sustain_start = interval.start_ms + interval.fade_in_ms
         sustain_end = interval.end_ms - interval.fade_out_ms
         if sustain_end <= sustain_start:
+            _cb(i)
             continue
         rms_db = _measure_rms_db(output_path, sustain_start, sustain_end, ffmpeg)
         if rms_db is None:
@@ -281,6 +299,7 @@ def validate_attenuation(
                     ),
                 )
             )
+            _cb(i)
             continue
         if rms_db > floor_db + margin_db:
             issues.append(
@@ -295,6 +314,7 @@ def validate_attenuation(
                     ),
                 )
             )
+        _cb(i)
     return issues
 
 
@@ -307,14 +327,25 @@ def validate(
     duration_tolerance_ms: int = DEFAULT_DURATION_TOLERANCE_MS,
     chapter_start_tolerance_ms: int = DEFAULT_CHAPTER_START_TOLERANCE_MS,
     attenuation_margin_db: float = DEFAULT_ATTENUATION_MARGIN_DB,
+    progress_callback: Callable[[str, float], None] | None = None,
 ) -> ValidationReport:
     """Run every check and return one aggregated report. A render is only
-    successful when :attr:`ValidationReport.passed` is true."""
+    successful when :attr:`ValidationReport.passed` is true.
+
+    *progress_callback*, if given, is passed straight through to
+    :func:`validate_attenuation` — the only one of the four checks here
+    with any real cost (ADR-0044); the other three are in-memory
+    comparisons against already-known manifest metadata, over before a
+    caller could usefully observe partial progress."""
     issues: list[ValidationIssue] = []
     issues += validate_duration(source, output, duration_tolerance_ms)
     issues += validate_chapters(source, output, chapter_start_tolerance_ms)
     issues += validate_required_metadata(source, output)
     issues += validate_attenuation(
-        output_path, render_plan, ffmpeg, attenuation_margin_db
+        output_path,
+        render_plan,
+        ffmpeg,
+        attenuation_margin_db,
+        progress_callback=progress_callback,
     )
     return ValidationReport(issues=tuple(issues))

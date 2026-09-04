@@ -12,6 +12,7 @@ test_transcript_step.py already use for their own workers.
 
 from __future__ import annotations
 
+import time
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -19,6 +20,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PySide6.QtWidgets import QLabel, QPushButton
 
+from m4bmaker.filter.chunking import ChunkPlan
 from m4bmaker.filter.job_store import JobStore, connect
 from m4bmaker.filter.jobs import JobState, JobType
 from m4bmaker.filter.model_manager import KNOWN_MODELS
@@ -34,6 +36,7 @@ from m4bmaker.gui.filter.wizard.transcribe_step import TranscribeStep
 pytestmark = pytest.mark.usefixtures("qapp")
 
 _BASE_EN = KNOWN_MODELS[0]
+_SMALL_EN = next(m for m in KNOWN_MODELS if m.name == "small.en")
 
 
 def _manifest(
@@ -181,6 +184,38 @@ class TestSetTranscriptChoiceExistingJob:
         assert "Needs attention" in text
         assert "whisper-cli crashed" in text
         assert _find_button(step, "Retry") is not None
+
+    def test_needs_attention_job_seeds_real_progress_not_zero(
+        self, step: TranscribeStep, tmp_path: Path
+    ) -> None:
+        """A job that failed mid-run and comes back as NEEDS_ATTENTION
+        (not PAUSED) still has real committed progress — the progress bar
+        and chapter label should reflect that immediately on Retry, not
+        restart the display at 0%/"Chapter 1" while the underlying job
+        actually resumes from the real committed chunk."""
+        chapters = tuple(
+            ChapterInfo(index=i, title=f"Chapter {i}", start_ms=(i - 1) * 600_000)
+            for i in range(1, 4)
+        )
+        store = JobStore(connect(tmp_path / "filter.db"))
+        store.create_job(
+            "job-1", JobType.TRANSCRIPTION, resource={"fingerprint": "sha256:real"}
+        )
+        store.transition("job-1", JobState.PREPARING)
+        store.transition("job-1", JobState.RUNNING)
+        store.update_progress("job-1", "Transcribed chunk 2/3", 2 / 3)
+        store.set_error("job-1", "err", "whisper-cli crashed")
+        store.transition("job-1", JobState.NEEDS_ATTENTION, "whisper-cli crashed")
+
+        step.set_transcript_choice(
+            _manifest(chapters=chapters, duration_ms=1_800_000), _BASE_EN
+        )
+        with patch("m4bmaker.gui.filter.wizard.transcribe_step.TranscribeWorker"):
+            _find_button(step, "Retry").click()
+
+        assert step._progress_bar.value() == 66
+        text = _all_text(_first_body_widget(step))
+        assert "Chapter 2 of 3" in text
 
     def test_unrelated_job_for_different_source_is_ignored(
         self, step: TranscribeStep, tmp_path: Path
@@ -374,3 +409,116 @@ class TestViewTranscript:
             _find_button(step, "View Transcript").click()
 
         mock_open.assert_called_once()
+
+
+def _two_equal_chunks(each_ms: int) -> list[ChunkPlan]:
+    return [
+        ChunkPlan(
+            index=0, start_ms=0, end_ms=each_ms, owned_start_ms=0, owned_end_ms=each_ms
+        ),
+        ChunkPlan(
+            index=1,
+            start_ms=each_ms,
+            end_ms=each_ms * 2,
+            owned_start_ms=each_ms,
+            owned_end_ms=each_ms * 2,
+        ),
+    ]
+
+
+class TestEstimatedRemaining:
+    """ADR-0027: a rough hardcoded default seeds the estimate before this
+    run has any real data, then a completed chunk's own measured rate
+    (audio-ms transcribed vs. wall-clock-ms it took) replaces it."""
+
+    def test_cold_start_uses_default_multiplier_for_the_chosen_model(
+        self, step: TranscribeStep
+    ) -> None:
+        # base.en's default is 15x -- 1,800,000ms of audio -> 120s remaining.
+        step.set_transcript_choice(_manifest(duration_ms=1_800_000), _BASE_EN)
+        step._chunk_plans = [
+            ChunkPlan(
+                index=0,
+                start_ms=0,
+                end_ms=1_800_000,
+                owned_start_ms=0,
+                owned_end_ms=1_800_000,
+            )
+        ]
+        with patch("m4bmaker.gui.filter.wizard.transcribe_step.TranscribeWorker"):
+            _find_button(step, "Start Transcription").click()
+
+        assert step._est_remaining_seconds == pytest.approx(120.0)
+        assert "Est. remaining" in _all_text(_first_body_widget(step))
+
+    def test_cold_start_differs_by_model(self, step: TranscribeStep) -> None:
+        # small.en's default is 6x -- same audio, longer estimate.
+        step.set_transcript_choice(_manifest(duration_ms=1_800_000), _SMALL_EN)
+        step._chunk_plans = [
+            ChunkPlan(
+                index=0,
+                start_ms=0,
+                end_ms=1_800_000,
+                owned_start_ms=0,
+                owned_end_ms=1_800_000,
+            )
+        ]
+        with patch("m4bmaker.gui.filter.wizard.transcribe_step.TranscribeWorker"):
+            _find_button(step, "Start Transcription").click()
+
+        assert step._est_remaining_seconds == pytest.approx(300.0)
+
+    def test_refines_from_a_completed_chunks_real_measured_rate(
+        self, step: TranscribeStep
+    ) -> None:
+        # Two 600s chunks. Pretend this run has been going 30 real seconds
+        # when chunk 1 of 2 completes -> measured rate 20x, not the 15x
+        # base.en default -- and the estimate must reflect the real rate.
+        step.set_transcript_choice(_manifest(duration_ms=1_200_000), _BASE_EN)
+        step._chunk_plans = _two_equal_chunks(600_000)
+        with patch("m4bmaker.gui.filter.wizard.transcribe_step.TranscribeWorker"):
+            _find_button(step, "Start Transcription").click()
+        step._start_time = time.monotonic() - 30.0
+
+        step._on_progress("Transcribed chunk 1/2", 0.5)
+
+        assert step._segment_processed_audio_ms == 600_000
+        # remaining audio = 600,000ms; rate = 600,000/30,000 = 20x.
+        assert step._est_remaining_seconds == pytest.approx(30.0, abs=1.0)
+
+    def test_resumed_job_seeds_segment_start_from_prior_progress(
+        self, step: TranscribeStep, tmp_path: Path
+    ) -> None:
+        # A job paused halfway (1 of 2 chunks already committed) must not
+        # count that pre-existing progress as part of *this* segment's
+        # measured rate -- cold start for the new segment still uses the
+        # default multiplier, applied only to the remaining chunk.
+        store = JobStore(connect(tmp_path / "filter.db"))
+        store.create_job(
+            "job-1", JobType.TRANSCRIPTION, resource={"fingerprint": "sha256:real"}
+        )
+        store.transition("job-1", JobState.PREPARING)
+        store.transition("job-1", JobState.RUNNING)
+        store.update_progress("job-1", "Transcribed chunk 1/2", 0.5)
+        store.transition("job-1", JobState.PAUSING)
+        store.transition("job-1", JobState.PAUSED)
+
+        step.set_transcript_choice(_manifest(duration_ms=1_200_000), _BASE_EN)
+        step._chunk_plans = _two_equal_chunks(600_000)
+        with patch("m4bmaker.gui.filter.wizard.transcribe_step.TranscribeWorker"):
+            _find_button(step, "Resume").click()
+
+        assert step._segment_start_chunk_count == 1
+        assert step._segment_processed_audio_ms == 0.0
+        # Only the second 600s chunk remains, at the 15x default -> 40s.
+        assert step._est_remaining_seconds == pytest.approx(40.0)
+
+    def test_placeholder_shown_before_a_scan_or_run_exists(
+        self, step: TranscribeStep
+    ) -> None:
+        # A User-requested change from a blank label, which read as the
+        # feature being silently absent rather than still working on an
+        # answer — the underlying value is still None here (no different
+        # from before), only the *display text* changed.
+        assert step._est_remaining_seconds is None
+        assert step._est_remaining_display_text() == "Est. remaining: Calculating…"

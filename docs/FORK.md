@@ -1948,3 +1948,33 @@ AscendingOrder)` call at construction time.
 `tests/gui/filter/test_catalog_window.py` 40 passed (8 new total);
 full `tests/gui/filter/` 374 passed; `black`/`flake8`/`mypy` clean.
 
+## G5: Render step's ETA now spans the validate stage (ADR-0044, 2026-08-31)
+
+The User reported the "Est. remaining" label disappears once
+"Validating output…" starts, even though that phase can itself cost
+minutes — a real filter-report from an earlier investigation recorded
+~1.8 minutes of validation against ~8.4 minutes of render for a real
+~11.5-hour book, roughly 18% of the combined time, not a negligible
+tail. `render()`'s own progress fraction only covers extract→envelope→
+attenuate→encode/mux; `validate()` ran after with no progress callback
+of its own. Investigating why validation costs what it does found the
+real driver: `validate_attenuation()` spawns one real ffmpeg
+subprocess per render interval (293 for the book above), at a roughly
+uniform ~371ms/interval — knowable in advance, since the interval
+count is known the moment Render starts.
+
+Gave `validate_attenuation()`/`validate()` a real progress callback
+mirroring `render()`'s own shape, wired through a new
+`RenderWorker.validating_progress` signal to the Render step's ETA,
+using the same "hardcoded default, then corrected by this run's own
+real data" pattern already used for Transcribe and encode+mux. A
+related, separately-requested fix: whenever no estimate exists yet,
+the "Est. remaining" label now shows "Calculating…" instead of going
+blank, which had read as the feature being silently absent rather than
+still working on an answer.
+
+7 new tests plus 2 renamed for accuracy across `validator.py`/
+`workers.py`/`render_step.py`; `tests/gui/filter/` 378 passed; the
+project's real CI command 1011 passed, 2 skipped; `black`/`flake8`/
+`mypy` clean.
+

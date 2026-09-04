@@ -233,6 +233,61 @@ class TestValidateAttenuation:
         cmd = m.call_args[0][0]
         assert cmd.index("-ss") < cmd.index("-i")
 
+    def test_progress_callback_called_once_per_interval(self) -> None:
+        atten = AttenuationSettings()
+        intervals = tuple(
+            RenderInterval(
+                start_ms=i * 1000,
+                end_ms=i * 1000 + 500,
+                fade_in_ms=15,
+                fade_out_ms=15,
+                hit_ids=(f"h-{i}",),
+            )
+            for i in range(3)
+        )
+        plan = RenderPlan(
+            intervals=intervals, attenuation=atten, source_duration_ms=10_000
+        )
+        calls: list[tuple[str, float]] = []
+        with patch("subprocess.run", return_value=_astats_result("-90.0")):
+            validate_attenuation(
+                Path("/tmp/out.m4b"),
+                plan,
+                "ffmpeg",
+                progress_callback=lambda msg, frac: calls.append((msg, frac)),
+            )
+        assert len(calls) == 3
+        assert [round(frac, 4) for _, frac in calls] == [
+            round(1 / 3, 4),
+            round(2 / 3, 4),
+            1.0,
+        ]
+        assert "1 of 3" in calls[0][0]
+        assert "3 of 3" in calls[2][0]
+
+    def test_progress_callback_fires_for_a_skipped_interval_too(self) -> None:
+        # A too-short interval never reaches _measure_rms_db (see the
+        # skip test above) but progress must still advance for it, or a
+        # caller planning against len(render_plan.intervals) would see
+        # the fraction stall short of 1.0.
+        atten = AttenuationSettings(fade_in_ms=15, fade_out_ms=15)
+        short = RenderInterval(
+            start_ms=1000, end_ms=1020, fade_in_ms=15, fade_out_ms=15, hit_ids=("h-1",)
+        )
+        plan = RenderPlan(
+            intervals=(short,), attenuation=atten, source_duration_ms=10_000
+        )
+        calls: list[tuple[str, float]] = []
+        with patch("subprocess.run") as m:
+            validate_attenuation(
+                Path("/tmp/out.m4b"),
+                plan,
+                "ffmpeg",
+                progress_callback=lambda msg, frac: calls.append((msg, frac)),
+            )
+        m.assert_not_called()
+        assert calls == [("Validating output… (1 of 1)", 1.0)]
+
 
 class TestValidateAggregate:
     def test_all_clean_passes_with_no_issues(self) -> None:
@@ -274,3 +329,26 @@ class TestValidateAggregate:
         assert len(report.errors) == 1  # duration
         assert len(report.warnings) == 1  # unmeasurable attenuation window
         assert report.passed is False
+
+    def test_progress_callback_is_threaded_through_to_attenuation_check(self) -> None:
+        source = _manifest(duration_ms=5000, required_metadata={"title": "Dune"})
+        output = _manifest(duration_ms=5000, required_metadata={"title": "Dune"})
+        interval = RenderInterval(
+            start_ms=1000, end_ms=2000, fade_in_ms=15, fade_out_ms=15, hit_ids=("h-1",)
+        )
+        plan = RenderPlan(
+            intervals=(interval,),
+            attenuation=AttenuationSettings(),
+            source_duration_ms=5000,
+        )
+        calls: list[tuple[str, float]] = []
+        with patch("subprocess.run", return_value=_astats_result("-90.0")):
+            validate(
+                source,
+                output,
+                plan,
+                Path("/tmp/out.m4b"),
+                "ffmpeg",
+                progress_callback=lambda msg, frac: calls.append((msg, frac)),
+            )
+        assert calls == [("Validating output… (1 of 1)", 1.0)]

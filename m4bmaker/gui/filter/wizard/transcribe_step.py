@@ -17,7 +17,14 @@ Four states, driven by the real ``JobState`` machine (``jobs.py``) via
   a friendly "Chapter N of M" / "Section X of Y" label derived from
   ``chunking.chapter_for_chunk()`` (trivial in the common case now that
   chunks are chapter-sized, ADR-0001), Pause and Cancel as distinct
-  actions.
+  actions. Alongside Elapsed, an estimated-remaining-time label: a rough
+  hardcoded per-model realtime multiplier (``_DEFAULT_REALTIME_MULTIPLIER``)
+  seeds the very first guess, then every completed chunk in *this* run
+  segment (audio-ms actually transcribed vs. wall-clock ms it took)
+  replaces that guess with a real measured rate — chunks are
+  chapter-aligned and not uniform length, so this is weighted by each
+  chunk's own audio duration, not by chunk count the way the progress
+  bar is. Deliberately not persisted across jobs/machines; see ADR-0027.
 - **Paused** — real ``JobState.PAUSED``; Resume re-enters at the first
   uncommitted chunk, nothing already committed is redone.
 - **Needs attention** — PRD §11.2's recoverable state: a User action
@@ -71,6 +78,18 @@ _STATE_PAUSED = "paused"
 _STATE_NEEDS_ATTENTION = "needs_attention"
 _STATE_COMPLETED = "completed"
 
+#: Rough, deliberately-approximate "audio-ms per wall-clock-ms" guesses used
+#: only until this run has its own real measured rate (ADR-0027) — not
+#: calibrated to any particular machine, just enough to show *something*
+#: before the first chunk finishes. Real hardware varies far more than model
+#: choice alone (GPU vs. CPU alone is a multi-x swing, ADR-0001), so this is
+#: a starting point to correct away from, not a claim of accuracy.
+_DEFAULT_REALTIME_MULTIPLIER = {
+    "base.en": 15.0,
+    "small.en": 6.0,
+}
+_FALLBACK_REALTIME_MULTIPLIER = 6.0
+
 
 def _info_label(text: str) -> QLabel:
     label = QLabel(text)
@@ -122,6 +141,21 @@ class TranscribeStep(WizardStep):
         self._start_time: float | None = None
         self._last_progress_fraction = 0.0
 
+        # Estimated-remaining-time bookkeeping (ADR-0027). "Segment" means
+        # "since this run started" — matches _start_time's own semantics,
+        # which already reset on every resume rather than tracking the
+        # job's full lifetime, so a stale pre-pause rate never pollutes a
+        # fresh resume's estimate.
+        self._segment_start_chunk_count = 0
+        self._segment_processed_audio_ms = 0.0
+        self._est_remaining_seconds: float | None = None
+        self._est_anchor_time: float | None = None
+
+        #: Cumulative real wall-clock transcription time across every run
+        #: segment for the current source (ADR-0029) — see the
+        #: ``elapsed_seconds`` property.
+        self._elapsed_seconds = 0.0
+
         self._elapsed_timer = QTimer(self)
         self._elapsed_timer.setInterval(1000)
         self._elapsed_timer.timeout.connect(self._tick_elapsed)
@@ -134,6 +168,17 @@ class TranscribeStep(WizardStep):
     @property
     def transcript(self) -> Transcript | None:
         return self._transcript
+
+    @property
+    def elapsed_seconds(self) -> float | None:
+        """Total real wall-clock time actually spent transcribing this
+        source, summed across every run segment (ADR-0029) — resuming a
+        paused job adds to this total rather than replacing it, unlike
+        the live "Elapsed" label (which only ever shows the *current*
+        segment, resetting to blank on Pause, matching ``_start_time``'s
+        own semantics). ``None`` until this source has completed at
+        least once."""
+        return self._elapsed_seconds if self._elapsed_seconds > 0 else None
 
     def can_advance(self) -> bool:
         return self._state == _STATE_COMPLETED
@@ -164,13 +209,14 @@ class TranscribeStep(WizardStep):
         self._transcript = None
         self._error_message = None
         self._last_progress_fraction = 0.0
+        self._elapsed_seconds = 0.0
 
         existing = self._find_resumable_job(manifest.fingerprint)
         if existing is not None:
             self._job_id = existing.id
+            self._last_progress_fraction = existing.progress_fraction or 0.0
             if existing.state == JobState.PAUSED:
                 self._state = _STATE_PAUSED
-                self._last_progress_fraction = existing.progress_fraction or 0.0
             else:
                 self._state = _STATE_NEEDS_ATTENTION
                 self._error_message = existing.error_message or "Needs attention."
@@ -232,6 +278,14 @@ class TranscribeStep(WizardStep):
                 self._manifest.duration_ms, self._manifest.chapters
             )
         return self._chunk_plans
+
+    def _chunk_audio_durations_ms(self) -> list[int]:
+        """Each chunk's own audio-slice duration (``end_ms - start_ms``,
+        including its overlap padding — the actual span whisper.cpp runs
+        over, which is what compute time correlates with). Chapter-aligned
+        chunks are not uniform length, so the ETA weighs by this, not by
+        chunk count the way the progress bar does."""
+        return [p.end_ms - p.start_ms for p in self._chunk_plans_for_manifest()]
 
     # ── "ready to start" ─────────────────────────────────────────────────
 
@@ -303,9 +357,19 @@ class TranscribeStep(WizardStep):
         self._progress_label = QLabel(self._progress_display_text())
         layout.addWidget(self._progress_label)
 
+        time_row = QHBoxLayout()
+        time_row.setSpacing(12)
         self._elapsed_label = QLabel(self._elapsed_display_text())
         self._elapsed_label.setObjectName("statusLabel")
-        layout.addWidget(self._elapsed_label)
+        time_row.addWidget(self._elapsed_label)
+        separator = QLabel("·")
+        separator.setObjectName("statusLabel")
+        time_row.addWidget(separator)
+        self._eta_label = QLabel(self._est_remaining_display_text())
+        self._eta_label.setObjectName("statusLabel")
+        time_row.addWidget(self._eta_label)
+        time_row.addStretch(1)
+        layout.addLayout(time_row)
 
         btn_row = QHBoxLayout()
         pause_btn = QPushButton("⏸ Pause")
@@ -337,9 +401,64 @@ class TranscribeStep(WizardStep):
             return ""
         return f"Elapsed: {_format_elapsed(time.monotonic() - self._start_time)}"
 
+    def _default_realtime_multiplier(self) -> float:
+        if self._model_spec is None:
+            return _FALLBACK_REALTIME_MULTIPLIER
+        return _DEFAULT_REALTIME_MULTIPLIER.get(
+            self._model_spec.name, _FALLBACK_REALTIME_MULTIPLIER
+        )
+
+    def _recompute_eta(self) -> None:
+        """Re-anchor the countdown (ADR-0027): called once when this run
+        starts (seeded from the hardcoded default) and again every time a
+        chunk completes (seeded from this run's own real measured rate).
+        Between calls, :meth:`_est_remaining_display_text` just counts the
+        last anchored estimate down in real time rather than recomputing
+        from a growing elapsed-time denominator every second — recomputing
+        every tick against a not-yet-credited in-progress chunk would make
+        the estimate visibly worsen while waiting on that chunk, then jump
+        back up when it completes, which is more confusing than a plain
+        countdown that only corrects when real data arrives."""
+        durations = self._chunk_audio_durations_ms()
+        total_audio_ms = sum(durations)
+        if total_audio_ms == 0 or self._start_time is None:
+            self._est_remaining_seconds = None
+            self._est_anchor_time = None
+            return
+
+        completed_chunks = round(self._last_progress_fraction * len(durations))
+        processed_overall_ms = sum(durations[:completed_chunks])
+        remaining_audio_ms = max(0, total_audio_ms - processed_overall_ms)
+
+        elapsed_segment_ms = (time.monotonic() - self._start_time) * 1000
+        if self._segment_processed_audio_ms > 0 and elapsed_segment_ms > 0:
+            rate = self._segment_processed_audio_ms / elapsed_segment_ms
+        else:
+            rate = self._default_realtime_multiplier()
+
+        self._est_remaining_seconds = (
+            (remaining_audio_ms / rate) / 1000 if rate > 0 else None
+        )
+        self._est_anchor_time = time.monotonic()
+
+    def _est_remaining_display_text(self) -> str:
+        if self._est_remaining_seconds is None or self._est_anchor_time is None:
+            # Shown while running but before any estimate exists yet
+            # (e.g. no chunk has completed and the very first seed value
+            # hasn't landed) — a User-requested change from leaving the
+            # label blank, which read as the feature being silently
+            # absent rather than still working on an answer.
+            return "Est. remaining: Calculating…"
+        countdown = self._est_remaining_seconds - (
+            time.monotonic() - self._est_anchor_time
+        )
+        return f"Est. remaining: ~{_format_elapsed(max(0.0, countdown))}"
+
     def _tick_elapsed(self) -> None:
         if hasattr(self, "_elapsed_label"):
             self._elapsed_label.setText(self._elapsed_display_text())
+        if hasattr(self, "_eta_label"):
+            self._eta_label.setText(self._est_remaining_display_text())
 
     def _on_pause_clicked(self) -> None:
         if self._worker is not None:
@@ -473,6 +592,12 @@ class TranscribeStep(WizardStep):
         self._worker.start()
 
         self._start_time = time.monotonic()
+        durations = self._chunk_audio_durations_ms()
+        self._segment_start_chunk_count = round(
+            self._last_progress_fraction * len(durations)
+        )
+        self._segment_processed_audio_ms = 0.0
+        self._recompute_eta()
         self._elapsed_timer.start()
         self._state = _STATE_RUNNING
         self._render_body()
@@ -481,14 +606,32 @@ class TranscribeStep(WizardStep):
     def _teardown_worker(self) -> None:
         self._worker = None
         self._elapsed_timer.stop()
+        if self._start_time is not None:
+            self._elapsed_seconds += time.monotonic() - self._start_time
         self._start_time = None
+        self._est_remaining_seconds = None
+        self._est_anchor_time = None
 
     def _on_progress(self, message: str, fraction: float) -> None:
         self._last_progress_fraction = fraction
+        durations = self._chunk_audio_durations_ms()
+        completed_chunks = round(fraction * len(durations))
+        completed_in_segment = max(
+            0, completed_chunks - self._segment_start_chunk_count
+        )
+        self._segment_processed_audio_ms = sum(
+            durations[
+                self._segment_start_chunk_count : self._segment_start_chunk_count
+                + completed_in_segment
+            ]
+        )
+        self._recompute_eta()
         if hasattr(self, "_progress_bar"):
             self._progress_bar.setValue(int(fraction * 100))
         if hasattr(self, "_progress_label"):
             self._progress_label.setText(self._progress_display_text())
+        if hasattr(self, "_eta_label"):
+            self._eta_label.setText(self._est_remaining_display_text())
 
     def _on_paused(self) -> None:
         self._teardown_worker()
