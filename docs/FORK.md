@@ -1890,3 +1890,34 @@ alphabetically; sorting is case-insensitive. All pre-existing tests
 pass unmodified. Full suite 1862 passed, 2 skipped; `black`/`flake8`/
 `mypy` clean.
 
+## G5: Book 2 residual-hits investigation, and Variation Scanner multi-piece splits (ADR-0042, 2026-08-30)
+
+Investigating why a real filtered book (Carl's Doomsday Scenario, Book
+2) still had 18 profanity instances audible after re-transcription
+found that 15 of the 18 were never targeted by the render at all — the
+original transcript never produced a matchable token for those
+instances, confirmed by direct measurement of the real rendered audio.
+Three distinct sub-causes, all "recognition," not "timing": multi-piece
+splits ("damn" inside "Goddamnit" tokenized as four separate pieces,
+beyond the Variation Scanner's existing two-piece check), outright
+misrecognition ("fuck" heard as "folk," a different word entirely),
+and dropped audio ("bitch" recognized in one independent transcription
+of the same audio but nothing at all in another).
+
+Only the first is fixable by extending the scanner's existing
+mechanism. `find_word_variations()`'s split-token check generalized
+from exactly two adjacent tokens to up to 4, still exact-string-
+equality only at every length — 4 chosen because it's exactly what the
+real Book 2 case needed with one piece of headroom. Explicitly rejected
+adding fuzzy/edit-distance matching to also catch the misrecognition
+case: "folk" sits at edit-distance 2 from "fuck," a threshold loose
+enough to catch it would also flag real, unrelated words throughout a
+transcript, guarded with a permanent regression test.
+
+Verified directly against the real 18-hit dataset: extending to 4
+pieces recovers the "goddamn" case (10 real occurrences, previously
+invisible) but not the other 14 residuals — disclosed as open,
+unsolved problems rather than implied fixed. 6 new tests; all 22 tests
+in the file pass; the project's real CI command 1008 passed, 2
+skipped; `black`/`flake8`/`mypy` clean.
+
