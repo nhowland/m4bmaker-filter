@@ -1772,3 +1772,32 @@ tests, not touching production code. 29 new tests total; full suite
 1840 passed, 2 skipped, stable across repeated runs; `black`/`flake8`/
 `mypy` clean.
 
+## G5: Profile Editor tabs + attenuation tooltips (ADR-0037, 2026-08-29)
+
+`ProfileEditorDialog` stacked the category/word tree and the
+Attenuation form in one column — the User's real-world profiles grow
+to dozens of words across several categories, and the fixed-size
+Attenuation box below the tree permanently ate into the tree's own
+vertical space even though attenuation is set once and rarely
+revisited. Settled on a `QTabWidget` with "Words" and "Attenuation"
+tabs (the User's own choice among a few alternatives discussed), a
+pure layout change with no change to how either tab's own content
+works.
+
+Separately, the six attenuation numbers had no explanation anywhere
+beyond their bare labels. The User asked for a tooltip on each, then —
+after trying the first version — asked to switch to always-visible
+explainer text instead: a tooltip requires already knowing to hover
+over the right spot, and doesn't show up in a screenshot. Each field's
+label/input row is now followed by its own full-width description
+row, plain-language and example-driven rather than citing internal
+terms the User has no reason to know.
+
+9 new tests confirm the tab structure (tree under Words, every
+attenuation field under Attenuation, found via `findChildren` scoped
+to each tab) and the description rows (exactly one per field,
+non-empty, distinct from each other, no tooltip left set anywhere).
+All 13 pre-existing tests pass unmodified, confirming the redesign is
+a real layout-only change. Full suite 1848 passed, 2 skipped;
+`black`/`flake8`/`mypy` clean.
+
