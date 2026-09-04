@@ -23,13 +23,13 @@ from PySide6.QtWidgets import (
     QDialog,
     QDoubleSpinBox,
     QFormLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QTabWidget,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -79,52 +79,15 @@ class ProfileEditorDialog(QDialog):
         name_row.addWidget(self._name_input, stretch=1)
         root.addLayout(name_row)
 
-        root.addWidget(QLabel("Categories & words"))
-        hint_label = QLabel(
-            "Check the categories and words this profile should filter for."
-        )
-        hint_label.setObjectName("statusLabel")
-        root.addWidget(hint_label)
-        self._tree = QTreeWidget()
-        self._tree.setHeaderHidden(True)
-        self._tree.itemChanged.connect(self._on_tree_item_changed)
-        root.addWidget(self._tree, stretch=1)
-
-        atten_box = QGroupBox("Attenuation")
-        form = QFormLayout(atten_box)
-
-        self._lead_spin = QSpinBox()
-        self._lead_spin.setRange(0, 400)
-        self._lead_spin.setSuffix(" ms")
-        form.addRow("Lead padding", self._lead_spin)
-
-        self._tail_spin = QSpinBox()
-        self._tail_spin.setRange(0, 500)
-        self._tail_spin.setSuffix(" ms")
-        form.addRow("Tail padding", self._tail_spin)
-
-        self._merge_spin = QSpinBox()
-        self._merge_spin.setRange(0, 100)
-        self._merge_spin.setSuffix(" ms")
-        form.addRow("Merge adjacency", self._merge_spin)
-
-        self._fade_in_spin = QSpinBox()
-        self._fade_in_spin.setRange(5, 50)
-        self._fade_in_spin.setSuffix(" ms")
-        form.addRow("Fade in", self._fade_in_spin)
-
-        self._fade_out_spin = QSpinBox()
-        self._fade_out_spin.setRange(5, 50)
-        self._fade_out_spin.setSuffix(" ms")
-        form.addRow("Fade out", self._fade_out_spin)
-
-        self._gain_floor_spin = QDoubleSpinBox()
-        self._gain_floor_spin.setRange(-96.0, -60.0)
-        self._gain_floor_spin.setDecimals(1)
-        self._gain_floor_spin.setSuffix(" dBFS")
-        form.addRow("Gain floor", self._gain_floor_spin)
-
-        root.addWidget(atten_box)
+        # Tabs (not stacked in one column) so the word list — which can
+        # grow to dozens of entries across many categories — gets the
+        # dialog's full height while it's the one being worked in,
+        # rather than permanently sharing space with the attenuation
+        # form below it, which is set once and rarely revisited.
+        tabs = QTabWidget()
+        tabs.addTab(self._build_words_tab(), "Words")
+        tabs.addTab(self._build_attenuation_tab(), "Attenuation")
+        root.addWidget(tabs, stretch=1)
 
         btn_row = QHBoxLayout()
         btn_row.addStretch(1)
@@ -136,6 +99,112 @@ class ProfileEditorDialog(QDialog):
         save_btn.clicked.connect(self._on_save)
         btn_row.addWidget(save_btn)
         root.addLayout(btn_row)
+
+    def _build_words_tab(self) -> QWidget:
+        panel = QWidget()
+        layout = QVBoxLayout(panel)
+        hint_label = QLabel(
+            "Check the categories and words this profile should filter for."
+        )
+        hint_label.setObjectName("statusLabel")
+        layout.addWidget(hint_label)
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        self._tree.itemChanged.connect(self._on_tree_item_changed)
+        layout.addWidget(self._tree, stretch=1)
+        return panel
+
+    def _build_attenuation_tab(self) -> QWidget:
+        panel = QWidget()
+        form = QFormLayout(panel)
+        form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+
+        self._lead_spin = QSpinBox()
+        self._lead_spin.setRange(0, 400)
+        self._lead_spin.setSuffix(" ms")
+        self._add_form_row(
+            form,
+            "Lead padding",
+            self._lead_spin,
+            "Extra silence added just before a flagged word starts — "
+            "covers for whisper's timestamps sometimes starting a "
+            "little early or late.",
+        )
+
+        self._tail_spin = QSpinBox()
+        self._tail_spin.setRange(0, 500)
+        self._tail_spin.setSuffix(" ms")
+        self._add_form_row(
+            form,
+            "Tail padding",
+            self._tail_spin,
+            "Extra silence added just after a flagged word ends, so it "
+            "doesn't get cut off if whisper's timestamp ran short.",
+        )
+
+        self._merge_spin = QSpinBox()
+        self._merge_spin.setRange(0, 100)
+        self._merge_spin.setSuffix(" ms")
+        self._add_form_row(
+            form,
+            "Merge adjacency",
+            self._merge_spin,
+            "Flagged words closer together than this are merged into "
+            "one continuous muted stretch, instead of rapidly muting "
+            "and unmuting between them.",
+        )
+
+        self._fade_in_spin = QSpinBox()
+        self._fade_in_spin.setRange(5, 50)
+        self._fade_in_spin.setSuffix(" ms")
+        self._add_form_row(
+            form,
+            "Fade in",
+            self._fade_in_spin,
+            "How long the audio takes to fade down to silent at the "
+            "start of a muted stretch, instead of cutting off abruptly.",
+        )
+
+        self._fade_out_spin = QSpinBox()
+        self._fade_out_spin.setRange(5, 50)
+        self._fade_out_spin.setSuffix(" ms")
+        self._add_form_row(
+            form,
+            "Fade out",
+            self._fade_out_spin,
+            "How long the audio takes to fade back up to normal volume "
+            "at the end of a muted stretch.",
+        )
+
+        self._gain_floor_spin = QDoubleSpinBox()
+        self._gain_floor_spin.setRange(-96.0, -60.0)
+        self._gain_floor_spin.setDecimals(1)
+        self._gain_floor_spin.setSuffix(" dBFS")
+        self._add_form_row(
+            form,
+            "Gain floor",
+            self._gain_floor_spin,
+            "How quiet the audio gets during a muted stretch. Lower "
+            "(more negative) is more silent — -80 dBFS is very close "
+            "to complete silence.",
+        )
+
+        return panel
+
+    @staticmethod
+    def _add_form_row(
+        form: QFormLayout, label_text: str, field: QWidget, description: str
+    ) -> None:
+        """Adds *label_text*/*field* as a normal row, then *description*
+        as its own full-width row directly beneath — persistently
+        visible explainer text (the User's preference over a hover
+        tooltip, which a screenshot can't show and which requires
+        knowing to hover over the right thing in the first place)."""
+        form.addRow(label_text, field)
+        description_label = QLabel(description)
+        description_label.setObjectName("statusLabel")
+        description_label.setWordWrap(True)
+        form.addRow(description_label)
 
     def _load_initial_state(self) -> None:
         if self._profile_id is not None:
@@ -171,9 +240,10 @@ class ProfileEditorDialog(QDialog):
             # §9.2's "historical snapshots remain readable" extends to
             # this editor: an existing selection is never silently
             # dropped just because its category was archived since.
-            visible_entries = [
-                e for e in entries if not e.archived or e.id in checked_entry_ids
-            ]
+            visible_entries = sorted(
+                (e for e in entries if not e.archived or e.id in checked_entry_ids),
+                key=lambda e: e.canonical_phrase.lower(),
+            )
             if not visible_entries:
                 continue
             if category.archived and not any(

@@ -1872,3 +1872,21 @@ catalog" label appears for a covered suggestion and doesn't for one in
 a different category. Full suite 1860 passed, 2 skipped, stable across
 repeated runs; `black`/`flake8`/`mypy` clean.
 
+## G5: Profile Editor word list always alphabetical (ADR-0041, 2026-08-29)
+
+The Edit Profile dialog's word tree showed each category's entries in
+catalog insertion order, not alphabetically — with 31+ words in
+"Profanity," finding a specific word meant scanning the whole list.
+The User asked for automatic alphabetical display, explicitly not a
+manual sort control, since this dialog's tree has no column headers to
+click in the first place. `_populate_tree()` now sorts each category's
+visible entries by `canonical_phrase.lower()` before building tree
+items — case-insensitive, so capitalization doesn't distort the order.
+Categories themselves stay in catalog order; the request was
+specifically about words.
+
+2 new tests: non-alphabetical insertion order still displays
+alphabetically; sorting is case-insensitive. All pre-existing tests
+pass unmodified. Full suite 1862 passed, 2 skipped; `black`/`flake8`/
+`mypy` clean.
+

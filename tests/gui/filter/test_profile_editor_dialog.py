@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QLabel, QTabWidget
 
 from m4bmaker.filter.catalog import CatalogService
 from m4bmaker.filter.models import AttenuationSettings
@@ -219,3 +220,139 @@ class TestEditMode:
         dialog = ProfileEditorDialog(stocked_service, profile_id=None)
 
         assert dialog._tree.topLevelItemCount() == 1
+
+
+class TestWordsSortedAlphabetically:
+    """Words display in alphabetical order automatically — no sort
+    control, always sorted, per the User's own request."""
+
+    def test_entries_appear_in_alphabetical_not_insertion_order(
+        self, service: CatalogService, mock_save: MagicMock
+    ) -> None:
+        category = service.create_category("Profanity")
+        # Deliberately non-alphabetical insertion order.
+        for word in ("shit", "ass", "damn", "bitch"):
+            service.create_entry(category.id, word)
+
+        dialog = ProfileEditorDialog(service, profile_id=None)
+
+        category_item = _category_item(dialog, "Profanity")
+        phrases = [
+            category_item.child(i).text(0) for i in range(category_item.childCount())
+        ]
+        assert phrases == ["ass", "bitch", "damn", "shit"]
+
+    def test_sort_is_case_insensitive(
+        self, service: CatalogService, mock_save: MagicMock
+    ) -> None:
+        category = service.create_category("Profanity")
+        for word in ("Zebra", "apple", "Mango"):
+            service.create_entry(category.id, word)
+
+        dialog = ProfileEditorDialog(service, profile_id=None)
+
+        category_item = _category_item(dialog, "Profanity")
+        phrases = [
+            category_item.child(i).text(0) for i in range(category_item.childCount())
+        ]
+        assert phrases == ["apple", "Mango", "Zebra"]
+
+
+class TestTabs:
+    """Words and Attenuation are separate tabs (not stacked in one
+    column) so the word list gets the dialog's full height while it's
+    the one being worked in, per the User's own request."""
+
+    def test_two_tabs_named_words_and_attenuation(
+        self, stocked_service: CatalogService, mock_save: MagicMock
+    ) -> None:
+        dialog = ProfileEditorDialog(stocked_service, profile_id=None)
+        tabs = dialog.findChild(QTabWidget)
+        assert tabs is not None
+        assert tabs.count() == 2
+        assert tabs.tabText(0) == "Words"
+        assert tabs.tabText(1) == "Attenuation"
+
+    def test_tree_lives_in_the_words_tab(
+        self, stocked_service: CatalogService, mock_save: MagicMock
+    ) -> None:
+        dialog = ProfileEditorDialog(stocked_service, profile_id=None)
+        tabs = dialog.findChild(QTabWidget)
+        assert tabs is not None
+        words_tab = tabs.widget(0)
+        assert words_tab is not None
+        assert dialog._tree in words_tab.findChildren(type(dialog._tree))
+
+    def test_attenuation_fields_live_in_the_attenuation_tab(
+        self, stocked_service: CatalogService, mock_save: MagicMock
+    ) -> None:
+        dialog = ProfileEditorDialog(stocked_service, profile_id=None)
+        tabs = dialog.findChild(QTabWidget)
+        assert tabs is not None
+        attenuation_tab = tabs.widget(1)
+        assert attenuation_tab is not None
+        for spin in (
+            dialog._lead_spin,
+            dialog._tail_spin,
+            dialog._merge_spin,
+            dialog._fade_in_spin,
+            dialog._fade_out_spin,
+            dialog._gain_floor_spin,
+        ):
+            assert spin in attenuation_tab.findChildren(type(spin))
+
+
+class TestAttenuationExplainerText:
+    """Persistently visible description text under each field — the
+    User's preferred replacement for a hover tooltip, which a screenshot
+    can't show and which requires knowing to hover over the right thing
+    in the first place."""
+
+    @staticmethod
+    def _description_labels(dialog: ProfileEditorDialog) -> list[QLabel]:
+        tabs = dialog.findChild(QTabWidget)
+        assert tabs is not None
+        attenuation_tab = tabs.widget(1)
+        assert attenuation_tab is not None
+        return [
+            label
+            for label in attenuation_tab.findChildren(QLabel)
+            if label.objectName() == "statusLabel"
+        ]
+
+    def test_one_description_label_per_field(
+        self, stocked_service: CatalogService, mock_save: MagicMock
+    ) -> None:
+        dialog = ProfileEditorDialog(stocked_service, profile_id=None)
+        assert len(self._description_labels(dialog)) == 6
+
+    def test_every_description_is_non_empty_and_word_wrapped(
+        self, stocked_service: CatalogService, mock_save: MagicMock
+    ) -> None:
+        dialog = ProfileEditorDialog(stocked_service, profile_id=None)
+        for label in self._description_labels(dialog):
+            assert label.text() != ""
+            assert label.wordWrap() is True
+
+    def test_descriptions_are_distinct_per_field(
+        self, stocked_service: CatalogService, mock_save: MagicMock
+    ) -> None:
+        dialog = ProfileEditorDialog(stocked_service, profile_id=None)
+        texts = {label.text() for label in self._description_labels(dialog)}
+        assert len(texts) == 6
+
+    def test_no_tooltips_set_on_the_fields_themselves(
+        self, stocked_service: CatalogService, mock_save: MagicMock
+    ) -> None:
+        """Explainer text replaced tooltips rather than supplementing
+        them — a leftover tooltip would just be redundant/stale."""
+        dialog = ProfileEditorDialog(stocked_service, profile_id=None)
+        for spin in (
+            dialog._lead_spin,
+            dialog._tail_spin,
+            dialog._merge_spin,
+            dialog._fade_in_spin,
+            dialog._fade_out_spin,
+            dialog._gain_floor_spin,
+        ):
+            assert spin.toolTip() == ""
