@@ -2198,3 +2198,71 @@ correctly left alone rather than patched ad hoc outside that process.
 7 new/updated tests (2 for the transcript lookup, 4 for the
 confirmation defaults, 1 for the atomic report write). Full suite 1955
 passed / 2 skipped, `black`/`flake8`/`mypy` clean.
+
+## G5: "About Language Filter" menu item and dialog (ADR-0048, 2026-09-04)
+
+The User asked for an "About"-style item in the Language Filter menu
+giving a user-friendly overview of what the feature does and its real
+capabilities — informational only. The base app already has its own
+"About m4Bookmaker" (Help menu, credits/version/links, hardcoded
+light-only colors) — the wrong shape and scope for a feature tour, so
+this got its own dialog rather than extending that one.
+
+New `gui/filter/about_dialog.py` (`AboutLanguageFilterDialog`), built
+fresh on every open since there's no state to preserve between opens.
+A centered header (title, tagline, a one-line "how it works" naming
+the real wizard flow) above a scrollable list of feature cards
+covering, in the order a User actually encounters them: Word List,
+Filter Profiles, Automatic Transcription, Smart Scanning, Review
+Before You Commit, Filtered Render, and Models & Storage — real,
+theme-aware styling via the app's existing `get_stylesheet(dark)`,
+unlike the base app's own About dialog. New "About Language Filter"
+menu item, placed right after the wizard action with its own
+`MenuRole.NoRole` (same defensive pattern already used for "Settings…"
+in this menu — Qt's macOS integration would otherwise try to relocate
+an "About"-titled action into the app's own top-level menu, colliding
+with the base app's own About entry there).
+
+9 new tests; full suite 1965 passed, 2 skipped; `black`/`flake8`/`mypy`
+clean. Verified in the real running app in both dark and light mode,
+resized to confirm all 7 feature cards render correctly, not just the
+ones visible without scrolling.
+
+Real use immediately asked for the obvious next step: at its original
+520px width, the dialog needed real scrolling to reach the last few
+cards. Feature cards now lay out two-across in a grid instead of one
+long column — 7 cards become 4 short rows instead of 7 tall ones — and
+the dialog widened from 520×640 to 860×600 to fit it, confirmed
+against the real running app with no scrollbar needed at the default
+size. The scroll area stays as a fallback for an unusually small
+screen; it just isn't exercised at any normal size anymore. No test
+changes needed — the existing tests check content, not layout shape.
+
+A screenshot from the User's own machine showed that fix wasn't
+actually enough: the fixed 860×600 default still clipped the bottom
+row on a real screen, no scrollbar visible. Two compounding causes:
+860×600 was itself still a guessed constant, and even a measured
+`sizeHint()` would have kept undercounting, since every card
+description is a word-wrapped `QLabel` — a plain `sizeHint()` reports
+the *unwrapped* single-line height for those; only `heightForWidth()`
+at the real target width reflects how many lines it actually wraps
+to. The same root lesson as the Settings window's own sizing bug
+(ADR-0047 addendum), compounded by a second gotcha specific to wrapped
+text. Fixed by measuring `heightForWidth(860)` on the header's and
+body's own layouts directly and summing with the footer's `sizeHint()`,
+capped at 90% of the screen's available height. Separately, per the
+User's request, the combined "Models & Storage" card split into two —
+"Manage Transcription Models" and "Settings," each mapping to a real,
+distinct window — bringing the total to an even 8 cards (4 clean rows
+of 2). Verified against the real running app in both themes: opens at
+860×707 (computed, not guessed) with all 8 cards visible, no scrollbar
+in either theme. Full suite 1965 passed, 2 skipped; `black`/`flake8`/
+`mypy` clean.
+
+Moved "About Language Filter" to the very bottom of the menu, after
+its own separator following Settings — it had originally been placed
+second, right after the wizard action, which read as more prominent
+than an informational item belongs. Verified in the real running app:
+Filter Audiobook Language… / Word List… / Manage Transcription
+Models… / Settings… / About Language Filter, in that order. Full
+suite 1965 passed, 2 skipped; `black`/`flake8`/`mypy` clean.

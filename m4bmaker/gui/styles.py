@@ -622,6 +622,13 @@ QLabel#eligibleBadgeLarge[state="ineligible"] {
     border: 1px solid #e0b79c;
     color: #9e4719;
 }
+
+/* ── About dialog feature cards ──────────────────────────────────────── */
+QFrame#aboutFeatureCard {
+    background-color: #ebe6dd;
+    border: 1px solid #d0c9be;
+    border-radius: 6px;
+}
 """
 
 # ── Dark mode palette ─────────────────────────────────────────────────────────
@@ -1240,6 +1247,13 @@ QLabel#eligibleBadgeLarge[state="ineligible"] {
     background-color: #3a2c22;
     border: 1px solid #5a4130;
     color: #e08a52;
+}
+
+/* ── About dialog feature cards ──────────────────────────────────────── */
+QFrame#aboutFeatureCard {
+    background-color: #242424;
+    border: 1px solid #333333;
+    border-radius: 6px;
 }
 """
 

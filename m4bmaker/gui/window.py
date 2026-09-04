@@ -82,6 +82,7 @@ from m4bmaker.gui.prefs import get as _prefs_get, set as _prefs_set
 from m4bmaker.gui.queue_manager import QueueManager
 from m4bmaker.gui.queue_window import QueueWindow
 from m4bmaker.gui.updater import UpdateChecker, _RELEASES_URL
+from m4bmaker.gui.filter.about_dialog import AboutLanguageFilterDialog
 from m4bmaker.gui.filter.catalog_window import CatalogWindow
 from m4bmaker.gui.filter.model_manager_window import ModelManagerWindow
 from m4bmaker.gui.filter.settings_window import SettingsWindow
@@ -258,6 +259,15 @@ class MainWindow(QMainWindow):
         settings_action.setMenuRole(QAction.MenuRole.NoRole)
         settings_action.triggered.connect(self._show_settings_window)
         tools_menu.addAction(settings_action)
+        tools_menu.addSeparator()
+        about_language_filter_action = QAction("About Language Filter", self)
+        # Same NoRole reasoning as Settings above — Qt's macOS integration
+        # auto-detects "About"-like action text and would otherwise try to
+        # relocate this into the app's own top-level menu, colliding with
+        # the base app's own "About m4Bookmaker" entry there.
+        about_language_filter_action.setMenuRole(QAction.MenuRole.NoRole)
+        about_language_filter_action.triggered.connect(self._show_language_filter_about)
+        tools_menu.addAction(about_language_filter_action)
 
         # View menu
         view_menu = mb.addMenu("View")
@@ -1200,6 +1210,11 @@ class MainWindow(QMainWindow):
         self._model_manager_window.show()
         self._model_manager_window.raise_()
         self._model_manager_window.activateWindow()
+
+    def _show_language_filter_about(self) -> None:
+        dlg = AboutLanguageFilterDialog(parent=self)
+        dlg.apply_stylesheet(self._dark_mode)
+        dlg.exec()
 
     def _show_settings_window(self) -> None:
         if self._settings_window is None:
