@@ -1378,3 +1378,22 @@ little variance, but I think it's as good a we're going to get." This
 closes the attenuation-timing-accuracy investigation that ADR-0024
 opened — remaining variance is accepted, not hidden.
 
+## G5: Review step — Render Plan tab blank on real-sized scans (2026-08-26)
+
+Bug, not a design decision: the Render Plan tab's "Merged intervals" list
+had no scroll area — just a `QGroupBox`/`QVBoxLayout` added directly to
+the tab. On a small test fixture (2-3 intervals) this looked fine; on a
+real scan (273 hits → 250 merged intervals in the User's own real-book
+run), the group box's content requires ~5,300px of height with no way
+to fit or scroll to it inside an actual fixed-size wizard window —
+reproduced headlessly with a real `QMainWindow.setFixedSize()` (not
+just asserted): without the fix, the list only rendered when the test
+let the window grow freely to fit all content, which a real window
+never does. Fixed by wrapping the group box in a `QScrollArea`
+(`setWidgetResizable(True)`), matching how every other
+variable/unbounded-length list in this app already handles this (the
+Hits tab's own `QTableWidget` scrolls natively). 2 new tests
+(`TestRenderPlanTab`) verify the scroll area exists and that a
+120-interval scan stays reachable in a realistic fixed-size window, not
+just a synthetic one that can grow to fit anything.
+
