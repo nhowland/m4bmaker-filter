@@ -1513,3 +1513,35 @@ re-rendering fresh, the report showed 16 real hits across 1 category,
 12.76s of real attenuated audio, and a real passing validation. Full
 suite: 1738 passed, 2 skipped; `black`/`flake8`/`mypy` clean.
 
+## G5: Transcribe step — estimated remaining time (2026-08-26)
+
+The Transcribe step already showed elapsed time while a job ran, but
+nothing about how much longer it would take. The User asked for a
+rough estimate — explicitly not exact prediction, since transcription
+speed depends heavily on the machine — that starts reasonable and gets
+more accurate once the job itself produces real timing data.
+
+A two-phase estimate, computed entirely from data the step already
+has: a cold start (no chunk completed yet in this run) seeds the
+estimate from a small hardcoded per-model table
+(`_DEFAULT_REALTIME_MULTIPLIER` — base.en: 15x, small.en: 6x, both
+explicitly rough), then live refinement replaces the guess with a real
+measured rate — audio-ms actually transcribed this run divided by
+wall-clock-ms it took — the moment any chunk completes, weighted by
+each remaining chunk's own duration since chapter-aligned chunks
+aren't uniform length. "This run," not "this job," matches
+`_start_time`'s own existing convention, so a rate measured before a
+pause never carries into a fresh resume's estimate. The countdown
+itself only re-anchors on real data rather than recomputing every
+second, which would make the estimate visibly worsen while waiting on
+the in-flight chunk then jump back up the instant it completes — a
+real behavior, but a confusing one to watch.
+
+New `TestEstimatedRemaining` class in `test_transcribe_step.py`: cold
+start reflects the chosen model's own default and differs between
+base.en/small.en on identical audio; a completed chunk's real measured
+rate overrides the default; a resumed job seeds its segment
+bookkeeping from prior progress without letting pre-pause progress
+pollute this segment's own rate. 5 new tests; full suite 1722 passed,
+2 skipped; `black`/`flake8`/`mypy` clean.
+
