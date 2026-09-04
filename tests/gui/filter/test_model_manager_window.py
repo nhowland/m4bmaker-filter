@@ -26,6 +26,7 @@ from unittest.mock import patch
 import pytest
 from PySide6.QtWidgets import (
     QApplication,
+    QLabel,
     QMessageBox,
     QTableWidget,
     QTableWidgetItem,
@@ -42,6 +43,8 @@ from m4bmaker.gui.filter.model_manager_window import (
     _COL_NAME,
     _COL_STATUS,
     _NAME_ROLE,
+    _TIMING_NOTE_BODY,
+    _TIMING_NOTE_TITLE,
     ModelManagerWindow,
 )
 
@@ -110,6 +113,19 @@ class TestConstruction:
 
     def test_engine_label_when_whisper_not_found(self, win: ModelManagerWindow) -> None:
         assert "not found" in win._engine_label.text()
+
+    def test_timing_note_present_and_always_visible(
+        self, win: ModelManagerWindow
+    ) -> None:
+        # Not tied to a selection -- this explains the recommendation
+        # itself, not any one row's own details, so it must be visible
+        # before a User has clicked anything.
+        labels = win.findChildren(QLabel)
+        assert any(label.text() == _TIMING_NOTE_TITLE for label in labels)
+        assert any(label.text() == _TIMING_NOTE_BODY for label in labels)
+
+    def test_timing_note_names_base_en_by_name(self, win: ModelManagerWindow) -> None:
+        assert "base.en" in _TIMING_NOTE_BODY
 
     def test_engine_label_when_whisper_found(self, tmp_path: Path) -> None:
         with (

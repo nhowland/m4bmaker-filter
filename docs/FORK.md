@@ -2266,3 +2266,23 @@ than an informational item belongs. Verified in the real running app:
 Filter Audiobook Language… / Word List… / Manage Transcription
 Models… / Settings… / About Language Filter, in that order. Full
 suite 1965 passed, 2 skipped; `black`/`flake8`/`mypy` clean.
+
+## G5: Explain why base.en is recommended over small.en (ADR-0049, 2026-09-04)
+
+The Model Manager table already labels base.en "Recommended" but never
+said why — reading as an ordinary size/quality trade-off rather than
+what this fork's own real investigation found (ADR-0024/0025): with
+DTW enabled, base.en and small.en recognized the exact same real hits
+across every chapter tested, but small.en's own word timestamps landed
+later than base.en's on 96% of hits, never earlier — the wrong
+direction, since late timing is this app's one already-proven-fragile
+failure mode. base.en isn't a smaller fallback; it's the measurably
+safer choice for exactly what this app does with that timing.
+
+New persistent info card between the model table and the per-row
+details, reusing ADR-0048's `aboutFeatureCard` styling — visible
+immediately rather than a tooltip, matching the lesson already learned
+in ADR-0037. Plain-language, no jargon, not tied to row selection since
+it explains the recommendation itself. 2 new tests; full suite 1967
+passed, 2 skipped; `black`/`flake8`/`mypy` clean. Verified in the real
+running app in both themes.

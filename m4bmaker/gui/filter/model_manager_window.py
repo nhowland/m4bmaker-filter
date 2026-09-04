@@ -18,6 +18,11 @@ repeated per row.
 Only one download runs at a time — the Download button is disabled for
 every row while another row's download is in flight, matching how the
 base project's Convert/Split buttons behave during their own workers.
+
+A persistent info card (ADR-0049) explains why base.en, not small.en,
+is the recommended default — a real finding from this fork's own
+attenuation-timing investigation (ADR-0024/0025), not a generic
+"smaller is a fine trade-off" disclaimer.
 """
 
 from __future__ import annotations
@@ -28,6 +33,7 @@ from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -59,9 +65,53 @@ _COL_STATUS = 3
 
 _NAME_ROLE = Qt.ItemDataRole.UserRole
 
+_ACCENT = "#c45a2d"
+
+#: Real finding, not a guess (ADR-0024/0025's real-book DTW comparison,
+#: closed out in the same investigation that set this fork's default
+#: attenuation padding): with DTW enabled, base.en and small.en found
+#: the exact same real hits across every chapter tested — small.en is
+#: not more accurate at *finding* flagged words. Where they genuinely
+#: differed was timing: small.en's own word timestamps landed later
+#: than base.en's on 96% of hits (never earlier), which is the wrong
+#: direction — late timing is this app's one already-proven-fragile
+#: failure mode (a word's audio extending past its own padded silence
+#: window). base.en is recommended for exactly that reason, not as a
+#: smaller/lower-quality fallback.
+_TIMING_NOTE_TITLE = "Why base.en is recommended"
+_TIMING_NOTE_BODY = (
+    "Real testing on real audiobooks found base.en and small.en "
+    "recognize exactly the same words — small.en isn't more accurate "
+    "at catching what you've asked to filter. Where they do differ is "
+    "timing: base.en's word timestamps land a little earlier and more "
+    "consistently, which matters here since timing is what decides "
+    "exactly when audio gets silenced. small.en is still available if "
+    "you'd like to try it, but base.en is the better default for this "
+    "app's own use."
+)
+
 
 def _format_size(size_bytes: int) -> str:
     return f"{size_bytes / (1024 * 1024):.0f} MB"
+
+
+def _info_card(title: str, body: str) -> QFrame:
+    card = QFrame()
+    card.setObjectName("aboutFeatureCard")
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(14, 10, 14, 10)
+    layout.setSpacing(4)
+
+    title_lbl = QLabel(title)
+    title_lbl.setStyleSheet(f"font-weight: 600; font-size: 12px; color: {_ACCENT};")
+    layout.addWidget(title_lbl)
+
+    body_lbl = QLabel(body)
+    body_lbl.setWordWrap(True)
+    body_lbl.setObjectName("statusLabel")
+    layout.addWidget(body_lbl)
+
+    return card
 
 
 class ModelManagerWindow(QMainWindow):
@@ -127,6 +177,8 @@ class ModelManagerWindow(QMainWindow):
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.itemSelectionChanged.connect(self._on_selection_changed)
         root.addWidget(self._table, stretch=1)
+
+        root.addWidget(_info_card(_TIMING_NOTE_TITLE, _TIMING_NOTE_BODY))
 
         self._details_label = QLabel("")
         self._details_label.setObjectName("modelDetailsLabel")
