@@ -2099,3 +2099,37 @@ settings).
 5 new/updated test files, full project suite 1936 passed / 2 skipped,
 `black`/`flake8`/`mypy` clean.
 
+## G5: Real disk-space audit, and get_temp_root()'s own leak fix (ADR-0047 addendum, 2026-08-31)
+
+The User reported ~25GB of unaccounted-for disk space. Real
+investigation, not speculation: `du`/`df` against `$TMPDIR` found 20GB
+was stale `pytest-of-nate/pytest-<N>` session directories (the
+model-manager test suite's realistic-sized fake `ggml-*.bin` fixtures,
+~4GB/session, across five sessions that outlived pytest's own default
+retention) — unrelated to this feature, deleted directly. A separate
+~7MB across ~40 directories was `get_temp_root()`'s own leak
+(`m4bmaker/utils.py`, backing `cover.py`'s preview extraction) — the
+same mechanism behind this whole engagement's earlier, real 24GB
+orphaned-temp incident, still leaking at a much smaller scale.
+
+Root cause: its cleanup is `atexit`-only, which skips a crash,
+force-quit, or `kill`/`pkill` entirely — no signal handler closes that
+gap, since `SIGKILL` is uncatchable by design. Fixed with a
+startup-time sweep instead of relying solely on a shutdown-time
+promise: directory names now embed the owning PID
+(`m4bmaker_<pid>_<random>`), and each first `get_temp_root()` call in
+a process sweeps sibling directories first, removing only those whose
+embedded PID is confirmed dead and leaving everything else — including
+unrecognized pre-fix names — alone. Windows carve-out found while
+writing this: `os.kill(pid, 0)` calls `TerminateProcess()` under the
+hood there, not a safe existence probe, so the liveness check always
+reports "alive" on Windows instead of risking that, leaving it on its
+pre-existing (unchanged) behavior.
+
+Verified with real OS processes, not just mocks: spawned a subprocess
+that calls `get_temp_root()`, `SIGKILL`'d it before `atexit` could run
+(confirmed the directory survives), then spawned a second process and
+confirmed its own `get_temp_root()` call swept the first one's
+dead-pid directory away. 9 new unit tests, full suite 1948 passed / 2
+skipped, `black`/`flake8`/`mypy` clean.
+
