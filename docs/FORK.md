@@ -2133,3 +2133,68 @@ confirmed its own `get_temp_root()` call swept the first one's
 dead-pid directory away. 9 new unit tests, full suite 1948 passed / 2
 skipped, `black`/`flake8`/`mypy` clean.
 
+## G5: py-review findings — transcript lookup, confirmation defaults, atomic report write (2026-09-04)
+
+First run of the new `/py-review` skill against this whole feature,
+covering `filter/` and `gui/filter/` end to end (models, job/catalog
+persistence, matcher/scan, chunking, renderer, and the wizard steps).
+Five real findings; all addressed.
+
+**Transcript lookup — real, measured perf fix.** `find_compatible_transcript()`
+fully parsed (built every `TranscriptWord`/`TranscriptSegment` for)
+every saved transcript on every Source-step file selection, real cost
+1.5-5s once a real transcripts directory (~20 files, 321MB) had built
+up. The obvious fix — key the lookup off the fingerprint-derived
+filename `transcribe_step.py` already uses when saving — turned out
+wrong: the existing test suite explicitly exercises arbitrary
+filenames, "most recent wins" on multiple matches, and tolerating one
+corrupt file alongside a good one, none of which a pure filename
+lookup would preserve. Landed a two-pass version instead: a cheap raw-
+JSON peek at just `source.fingerprint`/`status` first, full parse only
+for the most-recent-first candidates that peek-matched, falling
+through to the next if a full parse still fails — same per-file
+semantics as the old single-pass version, just spread across two
+passes. Measured against a real-scale fixture (20 files, 477MB, 150k
+words each, this project's own reference-audiobook scale): 3.29s ->
+1.40s, a real 2.3x, not a full elimination (`json.loads()` of every
+file's raw text is still unavoidable without a persistent index).
+
+**Destructive confirmations now default to No.** `QMessageBox.question()`
+for "Delete Category"/"Delete Word" (`catalog_window.py`), "Remove
+Model" (`model_manager_window.py`), and "Archive Profile"
+(`profile_step.py`) didn't set an explicit `defaultButton` — this
+codebase already knows the fix (its own "close while a job is running"
+dialogs do set `defaultButton=No`), just hadn't applied it to the
+actual delete confirmations, arguably the higher-stakes case. All four
+now explicit.
+
+**Filter report now written atomically.** `write_filter_report()` used
+a bare `path.write_text()` — the one JSON artifact in this codebase not
+going through `storage.write_json_atomic()`, so a crash mid-write could
+leave a corrupt report next to an otherwise-good render. Now consistent
+with every other persisted JSON here.
+
+**Benchmarked, not changed:** `matcher.py`/`variation_scan.py`'s
+self-disclosed-as-unbenchmarked O(words × catalog) scans, against the
+same 150k-word real-book scale. At the actual default seeded catalog
+(29 words): `scan_transcript()` 0.38s, `find_word_variations()` 0.89s
+— both fine. Pushed to a heavily-customized 200-entry catalog (~7x the
+default): 2.0s and 5.1s — scales roughly linearly with catalog size as
+the module's own docstring predicted, noticeable but not severe, and
+`find_word_variations()` is an explicit on-demand action, not part of
+every scan. No code change — real evidence now backs "fine as-is,"
+closing the disclosed uncertainty without guessing.
+
+**Re-examined, not changed:** `compute_fingerprint()`'s placeholder
+collision risk (`media_inspector.py`) — the review had flagged this as
+higher-stakes if the transcript-lookup fix shipped in its originally-
+proposed filename-keyed form, since a collision would then alias two
+different books' transcript files directly. It didn't ship that way
+(see above) — the shipped fix still matches on `source.fingerprint`
+exactly as before, so the collision risk is unchanged from what it's
+always been. Still a tracked, deliberate open decision (ADR-0001/O-02),
+correctly left alone rather than patched ad hoc outside that process.
+
+7 new/updated tests (2 for the transcript lookup, 4 for the
+confirmation defaults, 1 for the atomic report write). Full suite 1955
+passed / 2 skipped, `black`/`flake8`/`mypy` clean.

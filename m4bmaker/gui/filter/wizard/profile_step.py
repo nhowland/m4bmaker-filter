@@ -39,6 +39,7 @@ from m4bmaker.filter.transcript_text import ensure_transcript_text
 
 from ..catalog_window import CatalogWindow
 from ..profile_editor_dialog import ProfileEditorDialog
+from ..word_variation_dialog import WordVariationDialog
 from .step_base import WizardStep
 
 
@@ -86,8 +87,26 @@ class ProfileStep(WizardStep):
         self._view_transcript_btn.clicked.connect(self._on_view_transcript)
         self._view_transcript_btn.setVisible(False)
         bottom_row.addWidget(self._view_transcript_btn)
+        # Nested at a tighter spacing than bottom_row's own (default)
+        # inter-button gap, so proximity itself reads as "this caption
+        # belongs to that button" rather than looking like one more
+        # independent item in the row.
+        find_more_words_group = QHBoxLayout()
+        find_more_words_group.setContentsMargins(0, 0, 0, 0)
+        find_more_words_group.setSpacing(4)
+        self._find_more_words_btn = QPushButton("Find More Words…")
+        self._find_more_words_btn.clicked.connect(self._on_find_more_words)
+        self._find_more_words_btn.setVisible(False)
+        find_more_words_group.addWidget(self._find_more_words_btn)
+        self._find_more_words_caption = QLabel(
+            "Scans your transcript for likely variations of catalog words"
+        )
+        self._find_more_words_caption.setObjectName("statusLabel")
+        self._find_more_words_caption.setVisible(False)
+        find_more_words_group.addWidget(self._find_more_words_caption)
+        bottom_row.addLayout(find_more_words_group)
         bottom_row.addStretch(1)
-        manage_btn = QPushButton("Manage Word Catalog…")
+        manage_btn = QPushButton("Word List…")
         manage_btn.clicked.connect(self._on_manage_catalog)
         bottom_row.addWidget(manage_btn)
         root.addLayout(bottom_row)
@@ -104,6 +123,8 @@ class ProfileStep(WizardStep):
         doesn't otherwise depend on it."""
         self._transcript = transcript
         self._view_transcript_btn.setVisible(transcript is not None)
+        self._find_more_words_btn.setVisible(transcript is not None)
+        self._find_more_words_caption.setVisible(transcript is not None)
 
     def _on_view_transcript(self) -> None:
         if self._transcript is None:
@@ -162,6 +183,7 @@ class ProfileStep(WizardStep):
             self._selected_profile_id = None
             self._edit_btn.setEnabled(False)
             self._archive_btn.setEnabled(False)
+            self._find_more_words_btn.setEnabled(False)
             self.can_advance_changed.emit(self.can_advance())
             return
 
@@ -188,12 +210,14 @@ class ProfileStep(WizardStep):
         self._selected_profile_id = chosen
         self._edit_btn.setEnabled(True)
         self._archive_btn.setEnabled(True)
+        self._find_more_words_btn.setEnabled(True)
         self.can_advance_changed.emit(self.can_advance())
 
     def _on_profile_toggled(self, checked: bool, profile_id: str) -> None:
         if not checked:
             return
         self._selected_profile_id = profile_id
+        self._find_more_words_btn.setEnabled(True)
         self.can_advance_changed.emit(self.can_advance())
 
     # ── actions ──────────────────────────────────────────────────────────
@@ -223,12 +247,28 @@ class ProfileStep(WizardStep):
             f"Archive “{profile.name}”? It stays available to any scan "
             "that already used it, but won't be offered as a choice here "
             "anymore.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
         self._service.archive_profile(self._selected_profile_id)
         save_catalog(self._service)
         self._selected_profile_id = None
+        self._refresh_profiles()
+
+    def _on_find_more_words(self) -> None:
+        if self._transcript is None or self._selected_profile_id is None:
+            return
+        snapshot = self._service.create_snapshot(self._selected_profile_id)
+        dialog = WordVariationDialog(
+            self._service, self._transcript, snapshot, parent=self
+        )
+        dialog.exec()
+        # The dialog persists each addition immediately on its own "+
+        # Add" click (ADR-0036) — refreshed unconditionally here since
+        # there's no accept/reject distinction to key off, unlike
+        # ProfileEditorDialog's own save-on-accept-only flow.
         self._refresh_profiles()
 
     def _on_manage_catalog(self) -> None:

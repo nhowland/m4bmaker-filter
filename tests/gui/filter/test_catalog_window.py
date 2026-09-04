@@ -187,6 +187,24 @@ class TestDeleteCategory:
 
         assert len(service.list_categories()) == 1
 
+    def test_confirmation_defaults_to_no(
+        self, win: CatalogWindow, service: CatalogService, mock_save: MagicMock
+    ) -> None:
+        # A destructive confirmation must never default to the destructive
+        # choice -- an accidental Enter/Return keypress on this dialog
+        # should decline, not delete.
+        service.create_category("Profanity")
+        win._refresh_categories()
+        _select_category_row(win, 0)
+
+        with patch(
+            "m4bmaker.gui.filter.catalog_window.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.No,
+        ) as mock_question:
+            win._delete_category()
+
+        assert mock_question.call_args.args[-1] == QMessageBox.StandardButton.No
+
 
 class TestShowArchivedToggle:
     def test_toggling_reveals_archived_categories(
@@ -277,7 +295,7 @@ class TestEntries:
         win._add_entry()
         assert service.list_entries(category_id=category_id) == []
 
-    def test_add_duplicate_entry_warns_via_status_label(
+    def test_add_duplicate_entry_is_rejected_not_added(
         self, win: CatalogWindow, service: CatalogService, category_id: str
     ) -> None:
         service.create_entry(category_id, "darn")
@@ -286,8 +304,44 @@ class TestEntries:
         win._new_phrase_input.setText("darn")
         win._add_entry()
 
-        assert "duplicate" in win._status_label.text()
-        assert len(service.list_entries(category_id=category_id)) == 2
+        assert "already" in win._status_label.text()
+        assert len(service.list_entries(category_id=category_id)) == 1
+
+    def test_add_duplicate_entry_is_case_insensitive(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        service.create_entry(category_id, "darn")
+        win._refresh_entries()
+
+        win._new_phrase_input.setText("DARN")
+        win._add_entry()
+
+        assert len(service.list_entries(category_id=category_id)) == 1
+
+    def test_add_duplicate_entry_leaves_input_text_for_the_user_to_see(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        service.create_entry(category_id, "darn")
+        win._refresh_entries()
+
+        win._new_phrase_input.setText("darn")
+        win._add_entry()
+
+        assert win._new_phrase_input.text() == "darn"
+
+    def test_add_entry_in_a_different_category_is_not_a_duplicate(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        service.create_entry(category_id, "darn")
+        win._refresh_entries()
+        other = service.create_category("Slurs")
+        win._refresh_categories()
+        _select_category_row(win, 1)
+
+        win._new_phrase_input.setText("darn")
+        win._add_entry()
+
+        assert len(service.list_entries(category_id=other.id)) == 1
 
     def test_delete_entry_confirmed(
         self, win: CatalogWindow, service: CatalogService, category_id: str
@@ -303,6 +357,21 @@ class TestEntries:
             win._delete_entry()
 
         assert service.list_entries(category_id=category_id) == []
+
+    def test_delete_entry_confirmation_defaults_to_no(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        entry, _ = service.create_entry(category_id, "darn")
+        win._refresh_entries()
+        win._entry_table.selectRow(0)
+
+        with patch(
+            "m4bmaker.gui.filter.catalog_window.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.No,
+        ) as mock_question:
+            win._delete_entry()
+
+        assert mock_question.call_args.args[-1] == QMessageBox.StandardButton.No
 
     def test_toggling_enabled_checkbox_updates_service(
         self, win: CatalogWindow, service: CatalogService, category_id: str
@@ -382,3 +451,224 @@ class TestEntries:
 
         assert first_phrases == {"darn"}
         assert second_phrases == {"slur-word"}
+
+
+class TestMoveEntry:
+    @pytest.fixture()
+    def category_id(self, win: CatalogWindow, service: CatalogService) -> str:
+        cat = service.create_category("Profanity")
+        win._refresh_categories()
+        _select_category_row(win, 0)
+        return cat.id
+
+    def test_no_selection_is_a_no_op(
+        self, win: CatalogWindow, category_id: str
+    ) -> None:
+        with patch(
+            "m4bmaker.gui.filter.catalog_window.QInputDialog.getItem"
+        ) as mock_get_item:
+            win._move_entry()
+        mock_get_item.assert_not_called()
+
+    def test_no_other_categories_shows_info_and_does_nothing(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        entry, _ = service.create_entry(category_id, "darn")
+        win._refresh_entries()
+        win._entry_table.selectRow(0)
+
+        with patch(
+            "m4bmaker.gui.filter.catalog_window.QMessageBox.information"
+        ) as mock_info:
+            win._move_entry()
+
+        mock_info.assert_called_once()
+        assert service.get_entry(entry.id).category_id == category_id
+
+    def test_moves_entry_to_chosen_category(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        entry, _ = service.create_entry(category_id, "darn")
+        win._refresh_entries()
+        other = service.create_category("Religious")
+        win._refresh_categories()
+        _select_category_row(win, 0)
+        win._entry_table.selectRow(0)
+
+        with patch(
+            "m4bmaker.gui.filter.catalog_window.QInputDialog.getItem",
+            return_value=("Religious", True),
+        ):
+            win._move_entry()
+
+        assert service.get_entry(entry.id).category_id == other.id
+        assert "Moved" in win._status_label.text()
+
+    def test_cancelling_dialog_moves_nothing(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        entry, _ = service.create_entry(category_id, "darn")
+        win._refresh_entries()
+        service.create_category("Religious")
+        win._refresh_categories()
+        _select_category_row(win, 0)
+        win._entry_table.selectRow(0)
+
+        with patch(
+            "m4bmaker.gui.filter.catalog_window.QInputDialog.getItem",
+            return_value=("Religious", False),
+        ):
+            win._move_entry()
+
+        assert service.get_entry(entry.id).category_id == category_id
+
+    def test_archived_categories_are_not_offered_as_targets(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        service.create_entry(category_id, "darn")
+        win._refresh_entries()
+        # A second *active* category alongside the archived one, so
+        # other_categories isn't empty — otherwise this would exercise
+        # the "nothing to move to" info-dialog path instead of the one
+        # under test here.
+        service.create_category("Religious")
+        archived = service.create_category("Old Stuff")
+        service.archive_category(archived.id)
+        win._refresh_categories()
+        _select_category_row(win, 0)
+        win._entry_table.selectRow(0)
+
+        with patch(
+            "m4bmaker.gui.filter.catalog_window.QInputDialog.getItem",
+            return_value=("", False),
+        ) as mock_get_item:
+            win._move_entry()
+
+        offered_names = mock_get_item.call_args.args[3]
+        assert "Old Stuff" not in offered_names
+        assert "Religious" in offered_names
+
+    def test_moving_into_category_with_duplicate_is_rejected_not_moved(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        entry, _ = service.create_entry(category_id, "darn")
+        win._refresh_entries()
+        other = service.create_category("Religious")
+        service.create_entry(other.id, "darn")
+        win._refresh_categories()
+        _select_category_row(win, 0)
+        win._entry_table.selectRow(0)
+
+        with patch(
+            "m4bmaker.gui.filter.catalog_window.QInputDialog.getItem",
+            return_value=("Religious", True),
+        ):
+            win._move_entry()
+
+        assert "already exists" in win._status_label.text()
+        assert service.get_entry(entry.id).category_id == category_id
+
+    def test_entry_disappears_from_source_category_view_after_move(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        service.create_entry(category_id, "darn")
+        win._refresh_entries()
+        service.create_category("Religious")
+        win._refresh_categories()
+        _select_category_row(win, 0)
+        win._entry_table.selectRow(0)
+
+        with patch(
+            "m4bmaker.gui.filter.catalog_window.QInputDialog.getItem",
+            return_value=("Religious", True),
+        ):
+            win._move_entry()
+
+        assert win._entry_table.rowCount() == 0
+
+
+class TestEntrySorting:
+    """Click-to-sort on the entries table (e.g. the "Phrase" column) —
+    makes it easy to spot an existing word, or a close variant, before
+    adding what turns out to be a duplicate."""
+
+    @pytest.fixture()
+    def category_id(self, win: CatalogWindow, service: CatalogService) -> str:
+        cat = service.create_category("Profanity")
+        win._refresh_categories()
+        _select_category_row(win, 0)
+        return cat.id
+
+    def test_sorting_is_enabled(self, win: CatalogWindow) -> None:
+        assert win._entry_table.isSortingEnabled() is True
+
+    def test_default_sort_is_ascending_not_descending(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        # Regression guard: Qt's own default sort indicator on a freshly
+        # sortable header is descending, not the A-Z a User opening this
+        # window for the first time expects.
+        for word in ("shit", "ass", "damn"):
+            service.create_entry(category_id, word)
+        win._refresh_entries()
+
+        phrases = [
+            _item(win._entry_table, r, _COL_ENTRY_PHRASE).text()
+            for r in range(win._entry_table.rowCount())
+        ]
+        assert phrases == ["ass", "damn", "shit"]
+
+    def test_clicking_phrase_header_sorts_alphabetically(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        for word in ("shit", "ass", "damn"):
+            service.create_entry(category_id, word)
+        win._refresh_entries()
+
+        win._entry_table.sortByColumn(_COL_ENTRY_PHRASE, Qt.SortOrder.AscendingOrder)
+
+        phrases = [
+            _item(win._entry_table, r, _COL_ENTRY_PHRASE).text()
+            for r in range(win._entry_table.rowCount())
+        ]
+        assert phrases == ["ass", "damn", "shit"]
+
+    def test_descending_sort(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        for word in ("shit", "ass", "damn"):
+            service.create_entry(category_id, word)
+        win._refresh_entries()
+
+        win._entry_table.sortByColumn(_COL_ENTRY_PHRASE, Qt.SortOrder.DescendingOrder)
+
+        phrases = [
+            _item(win._entry_table, r, _COL_ENTRY_PHRASE).text()
+            for r in range(win._entry_table.rowCount())
+        ]
+        assert phrases == ["shit", "damn", "ass"]
+
+    def test_each_rows_cells_stay_together_after_sort_then_refresh(
+        self, win: CatalogWindow, service: CatalogService, category_id: str
+    ) -> None:
+        """Regression guard: sorting must be suspended while
+        _refresh_entries() populates rows, or Qt can re-sort mid-insert
+        and scatter a row's own cells (phrase/enabled/mask/notes) across
+        the wrong table rows."""
+        shit, _ = service.create_entry(category_id, "shit")
+        service.update_entry(shit.id, notes="loud")
+        ass, _ = service.create_entry(category_id, "ass")
+        service.update_entry(ass.id, notes="mild")
+        win._refresh_entries()
+        win._entry_table.sortByColumn(_COL_ENTRY_PHRASE, Qt.SortOrder.AscendingOrder)
+
+        # Triggers a fresh populate while the table is already sorted.
+        service.create_entry(category_id, "damn")
+        win._refresh_entries()
+
+        for row in range(win._entry_table.rowCount()):
+            phrase_item = _item(win._entry_table, row, _COL_ENTRY_PHRASE)
+            notes_item = _item(win._entry_table, row, _COL_ENTRY_NOTES)
+            entry = service.get_entry(phrase_item.data(_ID_ROLE))
+            assert entry.canonical_phrase == phrase_item.text()
+            assert entry.notes == notes_item.text()

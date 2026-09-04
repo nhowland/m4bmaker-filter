@@ -266,24 +266,46 @@ def find_compatible_transcript(
     the wizard can actually reuse (PRD §10.4). A transcript file that
     fails to parse is skipped rather than raised — one corrupt file in
     the directory shouldn't block finding a good one.
+
+    Two passes, deliberately: a cheap first pass reads each file's raw
+    JSON (unavoidable — the fingerprint is inside it) but stops there,
+    checking only ``source.fingerprint``/``status`` without building any
+    :class:`TranscriptWord`/:class:`TranscriptSegment` objects. Only the
+    most-recent-first candidates that actually pass that check go through
+    :func:`read_transcript`'s full parse, which is where the real cost of
+    a large transcript lives — constructing and validating one dataclass
+    per recognized word, tens of thousands of them for a long audiobook.
+    A real transcripts directory (~20 files, 321MB) measured 1.5-5s per
+    call under the old single-pass version, which fully parsed every
+    file whether or not it matched; this directory is scanned on every
+    Source-step file selection, so that cost was paid repeatedly, not
+    once. If a peek-matched file then fails its full parse (corrupt
+    beyond the header, or a shape :func:`transcript_from_dict` rejects),
+    the next most-recent candidate is tried instead of giving up —
+    matching the single-pass version's own per-file skip-and-continue
+    behavior exactly, just spread across two passes instead of one.
     """
     directory = transcripts_dir or _default_transcripts_dir()
     if not directory.is_dir():
         return None
 
-    matches: list[tuple[float, Transcript]] = []
+    candidates: list[tuple[float, Path]] = []
     for path in directory.glob("*.m4bt.json"):
         try:
-            transcript = read_transcript(path)
+            data = read_json(path)
         except Exception:  # noqa: BLE001 — any parse/shape failure, not just JSON
             continue
-        if transcript.source.fingerprint != fingerprint:
+        source = data.get("source")
+        if not isinstance(source, dict) or source.get("fingerprint") != fingerprint:
             continue
-        if transcript.status != TranscriptStatus.COMPLETE:
+        if data.get("status") != TranscriptStatus.COMPLETE.value:
             continue
-        matches.append((path.stat().st_mtime, transcript))
+        candidates.append((path.stat().st_mtime, path))
 
-    if not matches:
-        return None
-    matches.sort(key=lambda pair: pair[0], reverse=True)
-    return matches[0][1]
+    candidates.sort(key=lambda pair: pair[0], reverse=True)
+    for _, path in candidates:
+        try:
+            return read_transcript(path)
+        except Exception:  # noqa: BLE001 — any parse/shape failure, not just JSON
+            continue
+    return None

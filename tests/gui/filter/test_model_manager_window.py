@@ -380,6 +380,19 @@ class TestRemove:
         assert (tmp_path / _BASE_EN.filename()).exists()
         assert _status_cell(win, "base.en") == "Installed"
 
+    def test_confirmation_defaults_to_no(self, win: ModelManagerWindow) -> None:
+        # A destructive confirmation must never default to the destructive
+        # choice -- an accidental Enter/Return keypress on this dialog
+        # should decline, not remove the model.
+        _select_row_for(win, "base.en")
+        with patch(
+            "m4bmaker.gui.filter.model_manager_window.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.No,
+        ) as mock_question:
+            win._on_remove_clicked()
+
+        assert mock_question.call_args.args[-1] == QMessageBox.StandardButton.No
+
 
 class TestCloseEvent:
     def test_close_without_active_download_closes_immediately(
@@ -387,6 +400,46 @@ class TestCloseEvent:
     ) -> None:
         win.close()
         assert win.isVisible() is False
+
+    def test_close_emits_closed_signal(self, win: ModelManagerWindow) -> None:
+        received = []
+        win.closed.connect(lambda: received.append(True))
+        win.close()
+        assert received == [True]
+
+    def test_declined_close_during_download_does_not_emit_closed(
+        self, win: ModelManagerWindow, tmp_path: Path
+    ) -> None:
+        def fake_download(
+            spec: ModelSpec,
+            dest_dir: Path,
+            progress_callback: _ProgressCallback | None = None,
+            cancel_event: threading.Event | None = None,
+        ) -> Path:
+            assert cancel_event is not None
+            cancel_event.wait(2)
+            raise ModelDownloadCancelled("cancelled")
+
+        received = []
+        win.closed.connect(lambda: received.append(True))
+        _select_row_for(win, "base.en")
+        with patch(
+            "m4bmaker.gui.filter.workers.download_model", side_effect=fake_download
+        ):
+            win._on_download_clicked()
+            worker = win._download_worker
+            assert worker is not None
+            worker.wait(200)
+
+            with patch(
+                "m4bmaker.gui.filter.model_manager_window.QMessageBox.question",
+                return_value=QMessageBox.StandardButton.No,
+            ):
+                win.close()
+            assert received == []
+
+            worker.request_cancel()
+            worker.wait(3000)
 
     def test_close_during_download_prompts_and_can_be_declined(
         self, win: ModelManagerWindow, tmp_path: Path

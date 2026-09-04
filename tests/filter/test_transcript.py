@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import replace
@@ -227,6 +228,44 @@ class TestFindCompatibleTranscript:
         found = find_compatible_transcript("sha256:abc", transcripts_dir=tmp_path)
         assert found == replace(t, path=path)
 
+    def test_non_matching_files_never_get_a_full_parse(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The whole point of the two-pass lookup: a file whose fingerprint
+        # doesn't match should never pay for building its
+        # TranscriptWord/TranscriptSegment objects (the real cost on a
+        # long transcript) -- only the cheap raw-JSON peek. Proven here by
+        # wrapping read_transcript() (the full-parse path) and asserting
+        # it's called only for the one file that actually matches.
+        import m4bmaker.filter.transcript as transcript_module
+
+        matching = _sample_transcript()
+        matching_path = tmp_path / "matching.m4bt.json"
+        write_transcript(matching_path, matching)
+
+        other = replace(
+            _sample_transcript(),
+            source=replace(_sample_transcript().source, fingerprint="sha256:other"),
+        )
+        write_transcript(tmp_path / "other-1.m4bt.json", other)
+        write_transcript(tmp_path / "other-2.m4bt.json", other)
+
+        real_read_transcript = transcript_module.read_transcript
+        parsed_paths: list[Path] = []
+
+        def _tracking_read_transcript(path: Path) -> Transcript:
+            parsed_paths.append(path)
+            return real_read_transcript(path)
+
+        monkeypatch.setattr(
+            transcript_module, "read_transcript", _tracking_read_transcript
+        )
+
+        found = find_compatible_transcript("sha256:abc", transcripts_dir=tmp_path)
+
+        assert found == replace(matching, path=matching_path)
+        assert parsed_paths == [matching_path]
+
     def test_no_match_returns_none(self, tmp_path: Path) -> None:
         write_transcript(tmp_path / "book.m4bt.json", _sample_transcript())
         assert (
@@ -290,3 +329,65 @@ class TestFindCompatibleTranscript:
         assert (
             find_compatible_transcript("sha256:abc", transcripts_dir=tmp_path) is None
         )
+
+    def test_falls_back_to_next_candidate_when_the_newest_match_fails_full_parse(
+        self, tmp_path: Path
+    ) -> None:
+        # The two-pass lookup (a cheap fingerprint/status peek, then a
+        # full parse of only the surviving candidates) must fall through
+        # to the next most-recent match if the winning candidate's full
+        # parse fails -- exactly like the old single-pass version's own
+        # per-file try/except already did, just split across two passes
+        # now. A file can pass the cheap peek (valid top-level JSON,
+        # matching fingerprint/status) and still fail the full parse
+        # (e.g. an out-of-order word timestamp TranscriptWord's own
+        # validation rejects) -- this is that case.
+        newer_but_broken = tmp_path / "newer.m4bt.json"
+        newer_but_broken.write_text(
+            json.dumps(
+                {
+                    "schemaVersion": 1,
+                    "status": "complete",
+                    "source": {
+                        "fingerprint": "sha256:abc",
+                        "durationMs": 1000,
+                        "selectedAudioStream": 0,
+                    },
+                    "engine": {
+                        "name": "whisper.cpp",
+                        "version": "1",
+                        "model": "base.en",
+                        "modelChecksum": "x",
+                        "parameters": {},
+                    },
+                    "segments": [
+                        {
+                            "id": "seg-0",
+                            "startMs": 0,
+                            "endMs": 1000,
+                            "status": "completed",
+                            "words": [
+                                {
+                                    "text": "bad",
+                                    "normalized": "bad",
+                                    # endMs <= startMs -- TranscriptWord's
+                                    # own __post_init__ rejects this.
+                                    "startMs": 500,
+                                    "endMs": 500,
+                                    "confidence": None,
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        older_but_valid_path = tmp_path / "older.m4bt.json"
+        write_transcript(older_but_valid_path, _sample_transcript())
+        now = time.time()
+        os.utime(older_but_valid_path, (now - 10, now - 10))
+        os.utime(newer_but_broken, (now, now))
+
+        found = find_compatible_transcript("sha256:abc", transcripts_dir=tmp_path)
+        assert found == replace(_sample_transcript(), path=older_but_valid_path)

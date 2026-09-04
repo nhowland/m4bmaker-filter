@@ -85,7 +85,7 @@ class CatalogWindow(QMainWindow):
         self._show_archived = False
         self._selected_category_id: str | None = None
 
-        self.setWindowTitle("Word Catalog")
+        self.setWindowTitle("Word List")
         self.setMinimumSize(640, 420)
         self.resize(820, 520)
 
@@ -185,6 +185,19 @@ class CatalogWindow(QMainWindow):
         self._entry_table.setHorizontalHeaderLabels(
             ["Phrase", "Enabled", "Mask", "Notes"]
         )
+        # Click any header (e.g. "Phrase") to sort by that column — makes
+        # it easy to spot an existing word (or a close variant) before
+        # adding what turns out to be a duplicate. Population in
+        # _refresh_entries() suspends this while inserting rows — Qt
+        # re-sorts on every insertRow()/setItem() otherwise, which can
+        # scatter a row's own cells across the wrong rows mid-populate.
+        self._entry_table.setSortingEnabled(True)
+        # Without an explicit initial sort, Qt's own default sort
+        # indicator on a freshly-sortable header is descending (Z-A) —
+        # not the ascending order a User opening this window for the
+        # first time expects. Set once here, not per-refresh, so a later
+        # User click on a header still controls the order from then on.
+        self._entry_table.sortByColumn(_COL_ENTRY_PHRASE, Qt.SortOrder.AscendingOrder)
         header = self._entry_table.horizontalHeader()
         header.setSectionResizeMode(
             _COL_ENTRY_PHRASE, QHeaderView.ResizeMode.Interactive
@@ -231,6 +244,9 @@ class CatalogWindow(QMainWindow):
         delete_entry_btn = QPushButton("Delete")
         delete_entry_btn.clicked.connect(self._delete_entry)
         entry_btn_row.addWidget(delete_entry_btn)
+        move_entry_btn = QPushButton("Move to Category…")
+        move_entry_btn.clicked.connect(self._move_entry)
+        entry_btn_row.addWidget(move_entry_btn)
         entry_btn_row.addStretch(1)
         layout.addLayout(entry_btn_row)
 
@@ -364,6 +380,8 @@ class CatalogWindow(QMainWindow):
             "Delete Category",
             f"Delete “{category.name}” and its words? If this category is "
             "used by a saved profile, it will be archived instead of removed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
@@ -376,6 +394,7 @@ class CatalogWindow(QMainWindow):
     # ── entries ──────────────────────────────────────────────────────────────
 
     def _refresh_entries(self) -> None:
+        self._entry_table.setSortingEnabled(False)
         self._entry_table.blockSignals(True)
         self._entry_table.setRowCount(0)
         category_id = self._selected_category_id
@@ -384,6 +403,7 @@ class CatalogWindow(QMainWindow):
             self._entry_table.setEnabled(False)
             self._new_phrase_input.setEnabled(False)
             self._entry_table.blockSignals(False)
+            self._entry_table.setSortingEnabled(True)
             return
 
         self._entry_table.setEnabled(True)
@@ -433,6 +453,7 @@ class CatalogWindow(QMainWindow):
             self._entry_table.setItem(row, _COL_ENTRY_NOTES, notes_item)
 
         self._entry_table.blockSignals(False)
+        self._entry_table.setSortingEnabled(True)
 
     def _add_entry(self) -> None:
         category_id = self._selected_category_id
@@ -441,22 +462,28 @@ class CatalogWindow(QMainWindow):
         phrase = self._new_phrase_input.text().strip()
         if not phrase:
             return
+        # CatalogService.create_entry() itself still allows duplicates
+        # (PRD §9.2: "warn about duplicates," not reject them — callers
+        # decide) — this UI's own manual "+ Word" flow is where the User
+        # asked for an outright block instead, checked with the same
+        # normalized-phrase matching the real Matcher uses, so "Shit"
+        # and "shit" are correctly treated as the same word.
+        duplicate = self._service.find_duplicate_entry(category_id, phrase)
+        if duplicate is not None:
+            self._set_status(
+                f"“{phrase}” is already in this category, as "
+                f"“{duplicate.canonical_phrase}” — not added again."
+            )
+            return
         try:
-            entry, duplicate = self._service.create_entry(category_id, phrase)
+            entry, _ = self._service.create_entry(category_id, phrase)
         except SchemaValidationError as exc:
             QMessageBox.warning(self, "Invalid Word", str(exc))
             return
         self._save()
         self._new_phrase_input.clear()
         self._refresh_entries()
-        if duplicate is not None:
-            self._set_status(
-                f"Added “{entry.canonical_phrase}” — note: this looks "
-                f"like a duplicate of “{duplicate.canonical_phrase}” already "
-                "in this category."
-            )
-        else:
-            self._set_status(f"Added “{entry.canonical_phrase}”.")
+        self._set_status(f"Added “{entry.canonical_phrase}”.")
 
     def _current_entry_id(self) -> str | None:
         rows = self._entry_table.selectionModel().selectedRows()
@@ -475,6 +502,8 @@ class CatalogWindow(QMainWindow):
             "Delete Word",
             f"Delete “{entry.canonical_phrase}”? If it is used by a saved "
             "profile, it will be archived instead of removed.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
@@ -482,6 +511,56 @@ class CatalogWindow(QMainWindow):
         self._save()
         self._refresh_entries()
         self._set_status(f"Removed “{entry.canonical_phrase}”.")
+
+    def _move_entry(self) -> None:
+        entry_id = self._current_entry_id()
+        if entry_id is None:
+            return
+        entry = self._service.get_entry(entry_id)
+        # Archived categories aren't offered as move targets — moving an
+        # active word into one would silently drop it out of any live
+        # filtering, the same reasoning _add_entry() never lets a User
+        # add straight into an archived category.
+        other_categories = [
+            c
+            for c in self._service.list_categories(include_archived=False)
+            if c.id != entry.category_id
+        ]
+        if not other_categories:
+            QMessageBox.information(
+                self,
+                "Move Word",
+                "There are no other categories to move this word to.",
+            )
+            return
+        names = [c.name for c in other_categories]
+        chosen_name, ok = QInputDialog.getItem(
+            self,
+            "Move Word",
+            f"Move “{entry.canonical_phrase}” to:",
+            names,
+            editable=False,
+        )
+        if not ok:
+            return
+        target = other_categories[names.index(chosen_name)]
+        # Same normalized-phrase duplicate check and outright block as
+        # _add_entry()'s own manual-add flow (ADR-0040) — a move that
+        # would create a duplicate in the target category gets the same
+        # treatment as adding one there directly.
+        duplicate = self._service.find_duplicate_entry(
+            target.id, entry.canonical_phrase
+        )
+        if duplicate is not None:
+            self._set_status(
+                f"“{entry.canonical_phrase}” already exists in “{target.name}”, "
+                f"as “{duplicate.canonical_phrase}” — not moved."
+            )
+            return
+        self._service.update_entry(entry_id, category_id=target.id)
+        self._save()
+        self._refresh_entries()
+        self._set_status(f"Moved “{entry.canonical_phrase}” to “{target.name}”.")
 
     def _on_entry_item_changed(self, item: QTableWidgetItem) -> None:
         entry_id = item.data(_ID_ROLE)

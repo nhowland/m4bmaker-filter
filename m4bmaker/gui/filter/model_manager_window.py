@@ -24,7 +24,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -65,7 +65,17 @@ def _format_size(size_bytes: int) -> str:
 
 
 class ModelManagerWindow(QMainWindow):
-    """Secondary window for STT model download/removal."""
+    """Secondary window for STT model download/removal.
+
+    :attr:`closed` fires whenever this window is closed (including a
+    plain "hide, don't destroy" close under the lazy-create-and-reuse
+    pattern ``MainWindow``/the wizard's Transcript step both use) — same
+    purpose as ``CatalogWindow.closed``: lets a caller whose own displayed
+    install-state can go stale from a download/removal made here (e.g.
+    Transcript step's model list and its ``can_advance()``) refresh once
+    this window goes away, without polling."""
+
+    closed = Signal()
 
     def __init__(
         self, dest_dir: Path | None = None, parent: QWidget | None = None
@@ -75,7 +85,7 @@ class ModelManagerWindow(QMainWindow):
         self._download_worker: ModelDownloadWorker | None = None
         self._downloading_name: str | None = None
 
-        self.setWindowTitle("Model Manager")
+        self.setWindowTitle("Transcription Models")
         self.setMinimumSize(560, 380)
         self.resize(640, 460)
 
@@ -315,6 +325,8 @@ class ModelManagerWindow(QMainWindow):
             "Remove Model",
             f"Remove the downloaded “{spec.name}” model? "
             "You can download it again later.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
         if confirm != QMessageBox.StandardButton.Yes:
             return
@@ -339,3 +351,4 @@ class ModelManagerWindow(QMainWindow):
             self._download_worker.request_cancel()
             self._download_worker.wait(5000)
         super().closeEvent(event)
+        self.closed.emit()

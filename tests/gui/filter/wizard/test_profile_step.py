@@ -249,6 +249,23 @@ class TestArchiveProfile:
         assert len(service.list_profiles()) == 1
         mock_save.assert_not_called()
 
+    def test_confirmation_defaults_to_no(
+        self, service: CatalogService, step: ProfileStep
+    ) -> None:
+        # A destructive confirmation must never default to the destructive
+        # choice -- an accidental Enter/Return keypress on this dialog
+        # should decline, not archive the profile.
+        service.create_profile("Stays")
+        step._refresh_profiles()
+
+        with patch(
+            "m4bmaker.gui.filter.wizard.profile_step.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.No,
+        ) as mock_question:
+            step._on_archive_profile()
+
+        assert mock_question.call_args.args[-1] == QMessageBox.StandardButton.No
+
 
 class TestManageCatalog:
     def test_opens_catalog_window_sharing_the_same_service(
@@ -334,3 +351,90 @@ class TestViewTranscript:
         ) as mock_open:
             step._on_view_transcript()
         mock_open.assert_not_called()
+
+
+class TestFindMoreWords:
+    """ADR-0036: needs both a transcript (like View Transcript) and a
+    selected profile (unlike View Transcript) — the scan runs against a
+    specific profile's own catalog entries."""
+
+    def test_button_hidden_until_a_transcript_is_set(self, step: ProfileStep) -> None:
+        assert step._find_more_words_btn.isVisibleTo(step) is False
+
+    def test_set_transcript_shows_the_button(self, step: ProfileStep, tmp_path) -> None:
+        step.set_transcript(_sample_transcript(tmp_path / "book.m4bt.json"))
+        assert step._find_more_words_btn.isVisibleTo(step) is True
+
+    def test_caption_hidden_until_a_transcript_is_set(self, step: ProfileStep) -> None:
+        assert step._find_more_words_caption.isVisibleTo(step) is False
+
+    def test_set_transcript_shows_the_caption(
+        self, step: ProfileStep, tmp_path
+    ) -> None:
+        step.set_transcript(_sample_transcript(tmp_path / "book.m4bt.json"))
+        assert step._find_more_words_caption.isVisibleTo(step) is True
+
+    def test_set_transcript_none_hides_the_caption(
+        self, step: ProfileStep, tmp_path
+    ) -> None:
+        step.set_transcript(_sample_transcript(tmp_path / "book.m4bt.json"))
+        step.set_transcript(None)
+        assert step._find_more_words_caption.isVisibleTo(step) is False
+
+    def test_disabled_with_no_profile_selected(
+        self, step: ProfileStep, tmp_path
+    ) -> None:
+        step.set_transcript(_sample_transcript(tmp_path / "book.m4bt.json"))
+        assert step._find_more_words_btn.isEnabled() is False
+
+    def test_enabled_once_a_profile_is_selected(
+        self, service: CatalogService, step: ProfileStep, tmp_path
+    ) -> None:
+        service.create_profile("First")
+        step._refresh_profiles()
+        step.set_transcript(_sample_transcript(tmp_path / "book.m4bt.json"))
+        assert step._find_more_words_btn.isEnabled() is True
+
+    def test_clicking_opens_dialog_with_a_real_snapshot_and_refreshes(
+        self, service: CatalogService, step: ProfileStep, tmp_path
+    ) -> None:
+        cat = service.create_category("Profanity")
+        entry, _ = service.create_entry(cat.id, "shuck")
+        profile = service.create_profile("Family Friendly", entry_ids=[entry.id])
+        step._refresh_profiles()
+        step.set_transcript(_sample_transcript(tmp_path / "book.m4bt.json"))
+
+        with patch(
+            "m4bmaker.gui.filter.wizard.profile_step.WordVariationDialog"
+        ) as mock_dialog_cls:
+            instance = mock_dialog_cls.return_value
+            step._on_find_more_words()
+
+        [call_args] = mock_dialog_cls.call_args_list
+        passed_service, passed_transcript, passed_snapshot = call_args.args[:3]
+        assert passed_service is service
+        assert passed_transcript is step._transcript
+        assert passed_snapshot.profile_id == profile.id
+        assert passed_snapshot.entries[0].canonical_phrase == "shuck"
+        instance.exec.assert_called_once()
+
+    def test_no_op_without_a_transcript(
+        self, service: CatalogService, step: ProfileStep
+    ) -> None:
+        service.create_profile("First")
+        step._refresh_profiles()
+        with patch(
+            "m4bmaker.gui.filter.wizard.profile_step.WordVariationDialog"
+        ) as mock_dialog_cls:
+            step._on_find_more_words()
+        mock_dialog_cls.assert_not_called()
+
+    def test_no_op_without_a_selected_profile(
+        self, step: ProfileStep, tmp_path
+    ) -> None:
+        step.set_transcript(_sample_transcript(tmp_path / "book.m4bt.json"))
+        with patch(
+            "m4bmaker.gui.filter.wizard.profile_step.WordVariationDialog"
+        ) as mock_dialog_cls:
+            step._on_find_more_words()
+        mock_dialog_cls.assert_not_called()
