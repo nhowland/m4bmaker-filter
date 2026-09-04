@@ -1738,3 +1738,37 @@ sections, every field persisting immediately on change.
 `transcript_step.py`/`settings_window.py`; full suite 1809 passed, 2
 skipped; `black`/`flake8`/`mypy` clean on every changed/new file.
 
+## G5: Word Variation Scanner (ADR-0036, 2026-08-29)
+
+The User noticed words still getting through a filtered audiobook,
+largely because whisper.cpp's own tokenization doesn't line up with a
+catalog entry — a target word transcribed as a different surface form,
+or split across two adjacent tokens. This had already come up earlier
+(the "shuck"/"shucking"/"sh uck" example is the User's own real-world
+one), where the explicit decision was to leave the Matcher
+exact-match-only and instead grow the catalog by hand. This is a tool
+to make that hand-curation faster, not a reopening of that decision.
+
+New `filter/variation_scan.py` — pure detection logic, no Qt:
+`find_word_variations()` finds stem matches (a transcript word that's
+a catalog entry's normalized form plus one of a small explicit suffix
+set) and split-token matches (two adjacent transcript words, within
+the Matcher's own gap tolerance, whose concatenated normalized forms
+exactly equal a catalog entry) — both checked against what the real
+Matcher already catches, so a suggestion is always a genuine gap. New
+`gui/filter/word_variation_dialog.py` (`WordVariationDialog`) shows a
+table of suggestions with a short "Why" label, occurrence count, real
+context snippet, and a per-row "+ Add" button, wired into `ProfileStep`
+as a new "Find More Words…" button.
+
+A real test-infrastructure bug was found along the way: the full suite
+segfaulted deterministically at the exact signature ADR-0023 already
+diagnosed, but this time `gc.disable()` didn't prevent it — bisection
+found `test_word_variation_dialog.py` as the trigger, via real Qt
+event-queue growth from repeated `setCellWidget()` calls scheduling old
+widgets for `deleteLater()`, not CPython cyclic garbage. Fixed by
+flushing the event queue immediately after each such click in the
+tests, not touching production code. 29 new tests total; full suite
+1840 passed, 2 skipped, stable across repeated runs; `black`/`flake8`/
+`mypy` clean.
+
