@@ -1478,3 +1478,38 @@ realtime) landed close to both the hardcoded default (80x) and
 ADR-0007's own original measurement (82.7x). 7 new tests; full suite
 1731 passed, 2 skipped; `black`/`flake8`/`mypy` clean.
 
+## G5: Widened filter-report.json (2026-08-26)
+
+The filter report written next to a render's output only ever held the
+output path/duration/bitrate and the validation result — real, but not
+what a User would actually want to know about a run. The User asked
+for exactly this, naming transcription and rendering timing as
+examples.
+
+`write_filter_report()` widened to a keyword-only, all-optional
+signature covering source path, transcript JSON/text paths and model,
+filter stats, and per-stage timings — schema bumped to 2. Filter stats
+are deliberately category-level counts, never raw matched terms: a
+slur category's name isn't sensitive, the actual words matched under
+it are, and this is a plain-text file that might be opened by someone
+other than the person who set up the profile — the same reasoning
+behind this app's own catalog masking feature. The call itself moved
+from `RenderWorker` to `RenderStep._on_result_ready` (the UI thread)
+since the `Transcript`/`Scan`/`CatalogService`/earlier-stage timings a
+useful report needs all already live at the step, not the worker.
+Per-stage timing is captured where the wall-clock boundary actually is:
+`TranscribeStep` now accumulates real elapsed time across every run
+segment, `ScanStep` gained its own start/finish timestamp capture, and
+Render/Validate timing came for free from `RenderStep`'s own existing
+`_start_time` and `validating` signal.
+
+Real-pipeline verification generated an actual report from real
+chapter_01 data — real transcript, real scan, real render, real
+validation — and the first attempt surfaced two genuine things, not
+synthetic: a stale on-disk render (the User's own catalog had grown
+since that chapter was last rendered) and the `ggml-` model-name prefix
+leaking into the JSON, both caught and fixed before shipping. After
+re-rendering fresh, the report showed 16 real hits across 1 category,
+12.76s of real attenuated audio, and a real passing validation. Full
+suite: 1738 passed, 2 skipped; `black`/`flake8`/`mypy` clean.
+
