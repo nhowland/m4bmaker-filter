@@ -1828,3 +1828,20 @@ catalog is untouched.
 blank/whitespace-only entries. Full suite 1850 passed, 2 skipped;
 `black`/`flake8`/`mypy` clean.
 
+## G5: Word List click-to-sort (ADR-0039, 2026-08-29)
+
+With the catalog now holding 31+ words in one category, the entries
+table's fixed insertion order made it hard to tell whether a word — or
+a close variant — was already present before adding what turns out to
+be a duplicate. The User asked for a sort function on the "Phrase"
+column header. Standard Qt click-to-sort, scoped to the entries table
+only. Population had to suspend it: `QTableWidget` re-sorts on every
+`insertRow()`/`setItem()` call while sorting is enabled, which can
+scatter a row's own cells across the wrong rows mid-populate —
+`_refresh_entries()` now disables sorting before repopulating and
+re-enables it after, on every exit path.
+
+4 new tests, including a regression guard that specifically reproduces
+the population pitfall this ADR guards against. Full suite 1854
+passed, 2 skipped; `black`/`flake8`/`mypy` clean.
+
