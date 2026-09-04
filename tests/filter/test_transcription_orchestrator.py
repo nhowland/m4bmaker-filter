@@ -10,6 +10,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import struct
+import subprocess
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
@@ -25,6 +27,8 @@ from m4bmaker.filter.transcript import (
 )
 from m4bmaker.filter.transcription_orchestrator import (
     TranscriptionPaused,
+    _actual_wav_duration_ms,
+    _extract_chunk_wav,
     run_transcription_job,
 )
 
@@ -537,3 +541,187 @@ class TestRealPauseResume:
         assert "darn" in words
         assert "hell" in words
         assert words.count("hell") == 1  # confirms real dedup, not just presence
+
+
+def _write_test_wav(
+    path: Path,
+    num_frames: int,
+    *,
+    sample_rate: int = 16000,
+    riff_size: int | None = None,
+    data_size: int | None = None,
+    include_list_chunk: bool = False,
+) -> None:
+    """Write a minimal pcm_s16le mono WAV for testing.
+
+    *riff_size*/*data_size*, when given, override the declared size fields
+    instead of the correct computed value — this is how the real
+    corruption (ffmpeg's unpatched ``0xFFFFFFFF`` "unknown size"
+    placeholder) is simulated.
+    """
+    data_bytes = b"\x00\x00" * num_frames  # 16-bit mono silence
+    fmt_chunk = struct.pack(
+        "<4sIHHIIHH", b"fmt ", 16, 1, 1, sample_rate, sample_rate * 2, 2, 16
+    )
+    body = fmt_chunk
+    if include_list_chunk:
+        list_payload = b"INFOIART\x0c\x00\x00\x00Test Author\x00"
+        body += struct.pack("<4sI", b"LIST", len(list_payload)) + list_payload
+
+    declared_data_size = len(data_bytes) if data_size is None else data_size
+    body += struct.pack("<4sI", b"data", declared_data_size) + data_bytes
+
+    declared_riff_size = (4 + len(body)) if riff_size is None else riff_size
+    with path.open("wb") as f:
+        f.write(struct.pack("<4sI4s", b"RIFF", declared_riff_size, b"WAVE"))
+        f.write(body)
+
+
+class TestActualWavDurationMs:
+    def test_well_formed_wav_reports_correct_duration(self, tmp_path: Path) -> None:
+        path = tmp_path / "chunk.wav"
+        _write_test_wav(path, num_frames=16000)  # 1s at 16kHz
+        assert _actual_wav_duration_ms(path) == 1000
+
+    def test_placeholder_header_still_reports_true_byte_based_duration(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "chunk.wav"
+        _write_test_wav(
+            path, num_frames=16000, riff_size=0xFFFFFFFF, data_size=0xFFFFFFFF
+        )
+        assert _actual_wav_duration_ms(path) == 1000
+
+    def test_list_chunk_before_data_is_skipped_correctly(self, tmp_path: Path) -> None:
+        path = tmp_path / "chunk.wav"
+        _write_test_wav(path, num_frames=16000, include_list_chunk=True)
+        assert _actual_wav_duration_ms(path) == 1000
+
+    def test_truly_truncated_file_reports_short_actual_duration(
+        self, tmp_path: Path
+    ) -> None:
+        # Simulates the real bug: header claims (via placeholder) an unknown
+        # size, but the process was cut off after writing only half the
+        # intended audio to disk.
+        path = tmp_path / "chunk.wav"
+        _write_test_wav(
+            path, num_frames=8000, riff_size=0xFFFFFFFF, data_size=0xFFFFFFFF
+        )
+        assert _actual_wav_duration_ms(path) == 500
+
+    def test_non_wav_file_returns_none(self, tmp_path: Path) -> None:
+        path = tmp_path / "not_a_wav.wav"
+        path.write_bytes(b"this is not a wav file at all")
+        assert _actual_wav_duration_ms(path) is None
+
+
+class TestExtractChunkWavValidation:
+    """ffmpeg reporting success (returncode 0) does not guarantee a complete
+    file — a real production run produced a chunk truncated to ~59% of its
+    requested span with a corrupt/placeholder header, which whisper.cpp's
+    WAV decoder then crashed on natively instead of failing cleanly."""
+
+    def test_complete_extraction_succeeds_without_retry(self, tmp_path: Path) -> None:
+        dest = tmp_path / "chunk.wav"
+        calls = []
+
+        def _fake_run(
+            cmd: list[str], **kwargs: Any
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            _write_test_wav(Path(cmd[-1]), num_frames=16000)  # exactly 1000ms
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        with patch(f"{_ORCH}.subprocess.run", side_effect=_fake_run):
+            _extract_chunk_wav(tmp_path / "source.m4b", 0, 1000, "ffmpeg", dest)
+
+        assert len(calls) == 1
+
+    def test_minor_shortfall_within_tolerance_is_accepted(self, tmp_path: Path) -> None:
+        dest = tmp_path / "chunk.wav"
+
+        def _fake_run(
+            cmd: list[str], **kwargs: Any
+        ) -> subprocess.CompletedProcess[str]:
+            # 500ms short of the requested 5000ms — ordinary input-seek
+            # imprecision, well under the tolerance.
+            _write_test_wav(Path(cmd[-1]), num_frames=72000)
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        with patch(f"{_ORCH}.subprocess.run", side_effect=_fake_run):
+            _extract_chunk_wav(tmp_path / "source.m4b", 0, 5000, "ffmpeg", dest)
+
+    def test_truncated_first_attempt_succeeds_on_retry(self, tmp_path: Path) -> None:
+        # Expected span is 10000ms so a truncation well past the tolerance
+        # (~59% of the requested span, matching the real observed bug) is
+        # unambiguous rather than lost in seek-imprecision noise.
+        dest = tmp_path / "chunk.wav"
+        calls = []
+
+        def _fake_run(
+            cmd: list[str], **kwargs: Any
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            if len(calls) == 1:
+                # Truncated to ~59% of the 10000ms request, corrupt
+                # placeholder header — the real observed failure mode.
+                _write_test_wav(
+                    Path(cmd[-1]),
+                    num_frames=94400,
+                    riff_size=0xFFFFFFFF,
+                    data_size=0xFFFFFFFF,
+                )
+            else:
+                _write_test_wav(Path(cmd[-1]), num_frames=160000)
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        with patch(f"{_ORCH}.subprocess.run", side_effect=_fake_run):
+            _extract_chunk_wav(tmp_path / "source.m4b", 0, 10000, "ffmpeg", dest)
+
+        assert len(calls) == 2
+        # The final file on disk is the good retry, not the truncated first pass.
+        assert _actual_wav_duration_ms(dest) == 10000
+
+    def test_repeated_truncation_raises_after_max_attempts(
+        self, tmp_path: Path
+    ) -> None:
+        dest = tmp_path / "chunk.wav"
+        calls = []
+
+        def _fake_run(
+            cmd: list[str], **kwargs: Any
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            _write_test_wav(
+                Path(cmd[-1]),
+                num_frames=94400,
+                riff_size=0xFFFFFFFF,
+                data_size=0xFFFFFFFF,
+            )
+            return subprocess.CompletedProcess(cmd, returncode=0, stdout="", stderr="")
+
+        with patch(f"{_ORCH}.subprocess.run", side_effect=_fake_run):
+            with pytest.raises(RuntimeError, match="truncated/corrupt chunk"):
+                _extract_chunk_wav(tmp_path / "source.m4b", 0, 10000, "ffmpeg", dest)
+
+        assert len(calls) == 2  # _CHUNK_EXTRACTION_MAX_ATTEMPTS
+
+    def test_ffmpeg_nonzero_exit_raises_immediately_without_retry(
+        self, tmp_path: Path
+    ) -> None:
+        dest = tmp_path / "chunk.wav"
+        calls = []
+
+        def _fake_run(
+            cmd: list[str], **kwargs: Any
+        ) -> subprocess.CompletedProcess[str]:
+            calls.append(cmd)
+            return subprocess.CompletedProcess(
+                cmd, returncode=1, stdout="", stderr="ffmpeg: input error"
+            )
+
+        with patch(f"{_ORCH}.subprocess.run", side_effect=_fake_run):
+            with pytest.raises(RuntimeError, match="ffmpeg failed to extract"):
+                _extract_chunk_wav(tmp_path / "source.m4b", 0, 1000, "ffmpeg", dest)
+
+        assert len(calls) == 1

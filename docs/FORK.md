@@ -1545,3 +1545,35 @@ bookkeeping from prior progress without letting pre-pause progress
 pollute this segment's own rate. 5 new tests; full suite 1722 passed,
 2 skipped; `black`/`flake8`/`mypy` clean.
 
+## G5: Chunk-extraction truncation guard (ADR-0031, 2026-08-28)
+
+A real transcription job (the User's own 26.8-hour book, 79
+chapter-aligned chunks) crashed at chunk 50 with a native `SIGABRT`
+from `whisper-cli` — no Python exception, just the process dying
+inside miniaudio's WAV decode. A live filesystem watcher captured the
+actual crashing chunk file, and direct inspection against a clean
+manual re-extraction of the same byte range was conclusive: the real
+file was only 59% the expected size, with a RIFF header still holding
+ffmpeg's own placeholder size — the extraction's ffmpeg process had
+been cut short before finishing, yet still returned exit code 0, since
+the only success check up to that point was the return code.
+
+Fixed by verifying actual audio duration on disk after every
+extraction, never trusting the WAV header's declared size (exactly
+what's unreliable in this failure mode): `_actual_wav_duration_ms()`
+parses the RIFF chunk structure directly, counting everything from the
+`data` chunk's payload start to the real end-of-file rather than its
+own declared size. A single retry is attempted before failing loudly
+with a clear `RuntimeError` that surfaces through the job's existing
+`NEEDS_ATTENTION` → Retry flow, since a clean manual re-extraction of
+the identical range had succeeded, real evidence this is a transient
+condition.
+
+Verified directly against the real captured evidence from the
+investigation: the real crashing file computes at 106,478ms actual
+against 181,395ms expected (correctly rejected, past tolerance); the
+clean re-extraction computes at exactly 181,395ms (correctly accepted)
+— an exact match to the independently-obtained `ffprobe` durations
+from the original investigation. 10 new tests; full suite 1757 passed,
+2 skipped; `black`/`flake8`/`mypy` clean.
+
