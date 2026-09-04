@@ -1845,3 +1845,30 @@ re-enables it after, on every exit path.
 the population pitfall this ADR guards against. Full suite 1854
 passed, 2 skipped; `black`/`flake8`/`mypy` clean.
 
+## G5: Word List rejects duplicate words outright (ADR-0040, 2026-08-29)
+
+`CatalogService.create_entry()` deliberately allows duplicates, and
+`CatalogWindow`'s manual "+ Word" flow used that latitude to add the
+word anyway, just noting the duplicate afterward. With the catalog now
+holding dozens of words, the User asked for this specific flow to
+prevent duplicates outright. `CatalogWindow._add_entry()` now checks
+`find_duplicate_entry()` before creating anything, using the same
+normalized-phrase matching the real Matcher itself uses. If a
+duplicate is found, nothing is created and the typed text stays in the
+input field so the User can see what triggered the rejection.
+
+A same-day follow-up found the Word Variation dialog had a worse
+version of the same gap: its own suggestions are only checked against
+the selected profile's entries, so a word already in the catalog under
+the same category but not yet part of this profile wasn't excluded at
+all. `_populate_table()` now checks for a duplicate per suggestion at
+population time and shows "Already in catalog" instead of an active
+"+ Add" button.
+
+New tests for both: a duplicate add is rejected and the typed text
+remains in the field; the same word in a different category is
+correctly not treated as a duplicate; the dialog's "Already in
+catalog" label appears for a covered suggestion and doesn't for one in
+a different category. Full suite 1860 passed, 2 skipped, stable across
+repeated runs; `black`/`flake8`/`mypy` clean.
+
