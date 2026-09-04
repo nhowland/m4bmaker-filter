@@ -1978,3 +1978,24 @@ still working on an answer.
 project's real CI command 1011 passed, 2 skipped; `black`/`flake8`/
 `mypy` clean.
 
+## G5: Review step explains overlapping-hit merging (ADR-0045, 2026-08-31)
+
+The User asked what happens when two hits overlap — e.g. a single
+word and a phrase containing it, both flagged at the same spot. The
+real answer, confirmed against the actual code rather than assumed:
+they're separate `ScanHit` records merged into one padded
+`RenderInterval` at render-plan time, and "Attenuated total" already
+reflects that merged duration, not a naive sum — but nothing in the UI
+said so. Two small, coordinated additions, iterated on directly with
+the User to keep the wording simple and jargon-free: the Render Plan
+tab's explainer note now describes overlapping hits being "combined
+into one silenced section instead of being treated separately," with a
+generic example rather than the real profanity pair that prompted the
+question; and "Attenuated total" gained a tooltip explaining that
+overlapping time is only counted once.
+
+2 new tests confirm both pieces of text; all 35 pre-existing tests
+pass unmodified, since this is additive UI text with no behavior
+change. `tests/gui/filter/wizard/test_review_step.py` 37 passed, full
+`tests/gui/filter/` 380 passed; `black`/`flake8`/`mypy` clean.
+

@@ -44,6 +44,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QScrollArea,
     QTableWidget,
     QTableWidgetItem,
     QTabWidget,
@@ -227,9 +228,12 @@ class ReviewStep(WizardStep):
         layout = QVBoxLayout(pane)
 
         note = QLabel(
-            "What will actually run when you click Render — merged, padded "
-            "intervals with provenance back to the hits that produced each "
-            "one. Most people won't need to check this before continuing."
+            "This is what actually gets silenced when you render. When "
+            "hits are close together or overlap — like “darn” "
+            "and “darn it” appearing at the same spot — they're "
+            "combined into one silenced section instead of being treated "
+            "separately. Most people won't need to check this before "
+            "continuing."
         )
         note.setObjectName("statusLabel")
         note.setWordWrap(True)
@@ -240,7 +244,19 @@ class ReviewStep(WizardStep):
 
         self._plan_group = QGroupBox("Merged intervals")
         self._plan_layout = QVBoxLayout(self._plan_group)
-        layout.addWidget(self._plan_group, stretch=1)
+
+        # A real scan can produce hundreds of merged intervals — without a
+        # scroll area, the group box just grows to fit all of them (well
+        # past any real window height) and, depending on how the wizard
+        # shell constrains this tab's actual allocated space, the whole
+        # list can end up clipped to nothing visible at all rather than
+        # merely "cut off after a screenful." Scrolling here is not a
+        # nicety, it's what makes this tab render at all past a handful of
+        # hits.
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setWidget(self._plan_group)
+        layout.addWidget(scroll, stretch=1)
 
         return pane
 
@@ -582,15 +598,27 @@ class _StatStrip(QWidget):
         self._included = self._make_stat(layout, "Included")
         self._excluded = self._make_stat(layout, "Excluded")
         self._unique_terms = self._make_stat(layout, "Unique terms hit")
-        self._attenuated = self._make_stat(layout, "Attenuated total")
+        self._attenuated = self._make_stat(
+            layout,
+            "Attenuated total",
+            tooltip=(
+                "How much audio will actually go quiet. If two flagged "
+                "hits overlap, that time is only counted once."
+            ),
+        )
         layout.addStretch(1)
 
-    def _make_stat(self, layout: QHBoxLayout, label: str) -> QLabel:
+    def _make_stat(
+        self, layout: QHBoxLayout, label: str, tooltip: str | None = None
+    ) -> QLabel:
         box = QVBoxLayout()
         caption = QLabel(label)
         caption.setObjectName("statusLabel")
         value = QLabel("0")
         value.setStyleSheet("font-size: 15px; font-weight: 600;")
+        if tooltip is not None:
+            caption.setToolTip(tooltip)
+            value.setToolTip(tooltip)
         box.addWidget(caption)
         box.addWidget(value)
         wrapper = QWidget()

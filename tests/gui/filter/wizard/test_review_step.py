@@ -13,7 +13,15 @@ from __future__ import annotations
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import (
+    QApplication,
+    QLabel,
+    QMainWindow,
+    QScrollArea,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+)
 
 from m4bmaker.filter.catalog import CatalogService
 from m4bmaker.filter.models import AttenuationSettings, ReviewStatus
@@ -182,6 +190,15 @@ class TestSetScan:
         assert step._stat_strip._included.text() == "3"
         assert step._stat_strip._excluded.text() == "0"
         assert step._stat_strip._unique_terms.text() == "3"
+
+    def test_attenuated_total_explains_overlap_is_not_double_counted(
+        self, step: ReviewStep
+    ) -> None:
+        # A User asked for this after being surprised that "Total hits"
+        # can be higher than the number of distinct silenced spots —
+        # overlapping hits (e.g. a word and a phrase containing it) merge
+        # into one interval, and this number already reflects that.
+        assert "only counted once" in step._stat_strip._attenuated.toolTip()
 
     def test_profanity_terms_display_unmasked(
         self, step: ReviewStep, fixture: _Fixture
@@ -387,6 +404,15 @@ class TestFilters:
 
 
 class TestRenderPlanTab:
+    def test_note_explains_overlapping_hits_merge(self, step: ReviewStep) -> None:
+        notes = [
+            w
+            for w in step.findChildren(QLabel)
+            if "combined into one silenced section" in w.text()
+        ]
+        assert len(notes) == 1
+        assert "darn" in notes[0].text()
+
     def test_plan_summary_reflects_included_hits(
         self, step: ReviewStep, fixture: _Fixture
     ) -> None:
@@ -403,6 +429,54 @@ class TestRenderPlanTab:
 
     def test_empty_scan_shows_empty_plan_message(self, step: ReviewStep) -> None:
         assert step._plan_layout.count() >= 1
+
+    def test_plan_group_is_wrapped_in_a_scroll_area(self, step: ReviewStep) -> None:
+        # A real scan can produce hundreds of merged intervals -- without a
+        # scroll area, the group box just grows to fit all of them (well
+        # past any real window height), and depending on how the wizard
+        # shell's actual fixed window size constrains this tab, the whole
+        # list can render as entirely invisible rather than merely "cut off
+        # after a screenful" (reproduced directly against a fixed-size
+        # QMainWindow, not just asserted here).
+        scroll = step.findChild(QScrollArea)
+        assert scroll is not None
+        assert scroll.widget() is step._plan_group
+        assert scroll.widgetResizable() is True
+
+    def test_large_scan_remains_visible_in_a_realistic_fixed_size_window(
+        self, step: ReviewStep, service: CatalogService
+    ) -> None:
+        cat = service.create_category("Profanity")
+        darn, _ = service.create_entry(cat.id, "darn")
+        profile = service.create_profile("Big", entry_ids=[darn.id])
+        snapshot = service.create_snapshot(profile.id)
+
+        words = []
+        t = 0
+        for _ in range(120):
+            words.append(_word("darn", t, t + 300))
+            t += 5000  # spaced far apart -> no merging, ~120 distinct intervals
+        transcript = _transcript(words)
+        scan = run_scan(transcript, snapshot, NORMALIZATION_VERSION)
+        step.set_scan(scan, service, transcript, source_duration_ms=t + 1000)
+        assert step._plan_layout.count() == 120
+
+        win = QMainWindow()
+        win.setCentralWidget(step)
+        win.setFixedSize(1200, 800)
+        win.show()
+        tabw = step.findChild(QTabWidget)
+        assert tabw is not None
+        tabw.setCurrentIndex(1)
+        QApplication.processEvents()
+
+        first_item = step._plan_layout.itemAt(0)
+        assert first_item is not None
+        first_label = first_item.widget()
+        assert first_label is not None
+        assert first_label.isVisible()
+        assert not first_label.visibleRegion().isEmpty()
+        win.close()
 
 
 class TestCurrentRenderPlan:
