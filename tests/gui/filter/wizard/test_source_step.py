@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtCore import QMimeData, Qt, QUrl
@@ -87,18 +87,25 @@ def _ineligible_manifest() -> MediaManifest:
 
 @pytest.fixture(autouse=True)
 def _fast_transcript_lookup():
-    """find_compatible_transcript() (ADR-0013) falls back to scanning the
-    real, user-wide transcripts directory when given no override --
-    glob-scanning and JSON-parsing dozens of real *.m4bt.json files left
-    over from real-book runs takes seconds, not milliseconds, and makes
-    every test that reaches _on_inspect_finished() depend on
-    machine-specific state it must not depend on. Default it to a cheap
-    no-op here; the two tests below that specifically exercise transcript
-    lookup wrap their own more specific patch around this one.
+    """TranscriptLookupWorker (ADR-0050) runs find_compatible_transcript()
+    on a background thread -- that lookup falls back to scanning the
+    real, user-wide transcripts directory when given no override, and
+    glob-scanning/JSON-parsing dozens of real *.m4bt.json files left
+    over from real-book runs takes seconds, not milliseconds. Patched
+    out here so _on_inspect_finished() never starts a real thread; the
+    tests below that specifically exercise transcript lookup instead
+    deliver a result manually via _on_transcript_ready(), the same way
+    TestCoverArt delivers cover results via _on_cover_ready().
     """
+    # side_effect=lambda: MagicMock(), not a bare patch() -- a bare
+    # patch's mock class returns the *same* .return_value from every
+    # call, so two selections in one test (as the staleness test below
+    # does) would get back the same worker "instance" and could never
+    # tell them apart, unlike a real TranscriptLookupWorker() call which
+    # constructs a distinct object each time.
     with patch(
-        "m4bmaker.gui.filter.wizard.source_step.find_compatible_transcript",
-        return_value=None,
+        "m4bmaker.gui.filter.wizard.source_step.TranscriptLookupWorker",
+        side_effect=lambda *_a, **_k: MagicMock(),
     ):
         yield
 
@@ -117,15 +124,21 @@ def _select_and_finish(step: SourceStep, path: Path, manifest: MediaManifest) ->
     state this test just asserted on, depending on thread timing — so
     the worker class is patched out for the selection itself.
 
-    _on_inspect_finished() also kicks off a real CoverArtWorker
-    (ADR-0046) — patched out here too, same reasoning; the cover-art
-    path has its own dedicated coverage below (TestCoverArt) rather than
-    firing unmocked on every other test in this file.
+    _on_file_selected() also kicks off a real CoverArtWorker (ADR-0046),
+    now started alongside inspection rather than after it (ADR-0050) —
+    patched out here too, same reasoning; the cover-art path has its own
+    dedicated coverage below (TestCoverArt) rather than firing unmocked
+    on every other test in this file. TranscriptLookupWorker (also
+    ADR-0050, started from _on_inspect_finished) is patched process-wide
+    by the autouse _fast_transcript_lookup fixture instead, so it needs
+    no patch here.
     """
-    with patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"):
+    with (
+        patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"),
+        patch("m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"),
+    ):
         step._picker.set_path(path)
-    with patch("m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"):
-        step._on_inspect_finished(manifest)
+    step._on_inspect_finished(manifest)
 
 
 class TestFormatDuration:
@@ -178,7 +191,10 @@ class TestEmptyState:
         # later. It now stays visible, still in its placeholder state,
         # for the whole "Inspecting…" window -- the info panel is
         # never removed from the layout at all, just updated in place.
-        with patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"):
+        with (
+            patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"),
+            patch("m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"),
+        ):
             step._picker.set_path(tmp_path / "book.m4b")
         # isHidden(), not isVisible() -- step itself is a bare,
         # never-.show()-called widget in this test, which makes
@@ -196,11 +212,17 @@ class TestFileSelection:
         self, step: SourceStep, tmp_path: Path
     ) -> None:
         path = tmp_path / "book.m4b"
-        # Patch the worker class itself so no real QThread actually starts
-        # — a real one would race the next test's qapp.processEvents().
-        with patch(
-            "m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"
-        ) as mock_worker_cls:
+        # Patch the worker classes themselves so no real QThread actually
+        # starts — a real one would race the next test's
+        # qapp.processEvents(). CoverArtWorker also needs patching here
+        # now (ADR-0050): it starts alongside MediaInspectWorker, not
+        # after it, so selecting a file kicks off both at once.
+        with (
+            patch(
+                "m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"
+            ) as mock_worker_cls,
+            patch("m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"),
+        ):
             step._picker.set_path(path)
             mock_worker_cls.assert_called_once_with(path)
             mock_worker_cls.return_value.start.assert_called_once()
@@ -269,14 +291,21 @@ class TestEligibleResult:
         expected_gb = expected_bytes / (1024**3)
         assert f"{expected_gb:.1f} GB" in text
 
+    def test_saved_transcript_shows_checking_before_lookup_resolves(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        # ADR-0050: the lookup runs on a background thread now, so the
+        # row must read as "still working" rather than blank or stale
+        # for the (possibly several-second) window before it resolves.
+        _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        panel = _first_result_widget(step)
+        assert "Checking" in _all_text(panel)
+
     def test_no_saved_transcript_shows_none_found(
         self, step: SourceStep, tmp_path: Path
     ) -> None:
-        with patch(
-            "m4bmaker.gui.filter.wizard.source_step.find_compatible_transcript",
-            return_value=None,
-        ):
-            _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        step._on_transcript_ready(None, step._transcript_worker)
         panel = _first_result_widget(step)
         assert "None found" in _all_text(panel)
 
@@ -299,16 +328,34 @@ class TestEligibleResult:
             ),
             segments=(),
         )
-        with patch(
-            "m4bmaker.gui.filter.wizard.source_step.find_compatible_transcript",
-            return_value=transcript,
-        ):
-            _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        step._on_transcript_ready(transcript, step._transcript_worker)
         panel = _first_result_widget(step)
         text = _all_text(panel)
         assert "whisper.cpp" in text
         assert "1.9.2" in text
         assert "base.en" in text
+
+    def test_stale_transcript_workers_result_is_ignored(
+        self, step: SourceStep, tmp_path: Path
+    ) -> None:
+        # Mirrors TestCoverArt.test_stale_workers_result_is_ignored --
+        # an older TranscriptLookupWorker's late result must not
+        # overwrite a newer selection's own state.
+        _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
+        stale_worker = step._transcript_worker
+        assert stale_worker is not None
+
+        _select_and_finish(
+            step, tmp_path / "other.m4b", _eligible_manifest(fingerprint="sha256:other")
+        )
+        current_worker = step._transcript_worker
+        assert current_worker is not None
+        assert current_worker is not stale_worker
+
+        step._on_transcript_ready(None, stale_worker)
+        panel = _first_result_widget(step)
+        assert "Checking" in _all_text(panel)  # stale result had no effect
 
     def test_metadata_fields_listed(self, step: SourceStep, tmp_path: Path) -> None:
         _select_and_finish(step, tmp_path / "book.m4b", _eligible_manifest())
@@ -363,17 +410,24 @@ class TestEligibleResult:
 
 
 class TestCoverArt:
-    def test_worker_started_with_the_manifests_own_source_path(
+    def test_worker_started_with_the_selected_path_alongside_inspection(
         self, step: SourceStep, tmp_path: Path
     ) -> None:
-        manifest = _eligible_manifest()
-        with patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"):
-            step._picker.set_path(tmp_path / "book.m4b")
-        with patch(
-            "m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"
-        ) as mock_worker_cls:
-            step._on_inspect_finished(manifest)
-            mock_worker_cls.assert_called_once_with(Path(manifest.source_path))
+        # ADR-0050: CoverArtWorker now starts from _on_file_selected,
+        # concurrently with MediaInspectWorker, rather than waiting for
+        # _on_inspect_finished -- cover extraction doesn't depend on
+        # anything ffprobe reports, so there's no reason for it to wait.
+        # It's built from the path the User picked directly, not
+        # manifest.source_path (no manifest exists yet at this point).
+        path = tmp_path / "book.m4b"
+        with (
+            patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"),
+            patch(
+                "m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"
+            ) as mock_worker_cls,
+        ):
+            step._picker.set_path(path)
+            mock_worker_cls.assert_called_once_with(path)
             mock_worker_cls.return_value.start.assert_called_once()
 
     def test_cover_ready_signal_fires_with_real_result(
@@ -458,7 +512,10 @@ class TestInspectionError:
     def test_worker_error_disables_advance_and_shows_message(
         self, step: SourceStep, tmp_path: Path
     ) -> None:
-        with patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"):
+        with (
+            patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"),
+            patch("m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"),
+        ):
             step._picker.set_path(tmp_path / "book.m4b")
         step._on_inspect_error("ffprobe not found.")
         assert step.can_advance() is False
@@ -488,10 +545,13 @@ class TestPickerDragAndDrop:
             Qt.KeyboardModifier.NoModifier,
         )
         # step._picker is wired to the real SourceStep, so dropEvent()
-        # would also kick off a real MediaInspectWorker via
-        # _on_file_selected — patched out for the same reason
-        # _select_and_finish() patches it.
-        with patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"):
+        # would also kick off real MediaInspectWorker and CoverArtWorker
+        # instances via _on_file_selected — patched out for the same
+        # reason _select_and_finish() patches them.
+        with (
+            patch("m4bmaker.gui.filter.wizard.source_step.MediaInspectWorker"),
+            patch("m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"),
+        ):
             step._picker.dropEvent(event)
         assert received == [path]
 

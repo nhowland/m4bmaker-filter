@@ -29,7 +29,11 @@ from m4bmaker.filter.model_manager import (
 from m4bmaker.filter.models import FilterProfileSnapshot, MediaManifest, RenderPlan
 from m4bmaker.filter.renderer import RenderError, RenderResult, render
 from m4bmaker.filter.scan import Scan, run_scan
-from m4bmaker.filter.transcript import Transcript, TranscriptSource
+from m4bmaker.filter.transcript import (
+    Transcript,
+    TranscriptSource,
+    find_compatible_transcript,
+)
 from m4bmaker.filter.transcript_engine import find_whisper_cli
 from m4bmaker.filter.transcription_orchestrator import (
     TranscriptionPaused,
@@ -159,9 +163,10 @@ class MediaInspectWorker(QThread):
 
 
 class CoverArtWorker(QThread):
-    """Run :func:`m4bmaker.cover.extract_cover_from_audio` (an ffmpeg
-    subprocess call, with a mutagen fallback) off the UI thread, for the
-    Source step / persistent file card's cover-art preview (ADR-0046).
+    """Run :func:`m4bmaker.cover.extract_cover_from_audio` (mutagen first
+    -- no subprocess -- with an ffmpeg fallback for anything mutagen
+    can't read, ADR-0050 addendum) off the UI thread, for the Source
+    step / persistent file card's cover-art preview (ADR-0046).
 
     Purely a preview convenience — unlike :class:`MediaInspectWorker`,
     a missing ffmpeg here isn't a recoverable-error condition worth an
@@ -190,6 +195,30 @@ class CoverArtWorker(QThread):
         except Exception:  # noqa: BLE001
             cover_path = None
         self.result_ready.emit(cover_path)
+
+
+class TranscriptLookupWorker(QThread):
+    """Run :func:`transcript.find_compatible_transcript` off the UI
+    thread, for the Source step's "Saved transcript" row (ADR-0050).
+
+    That lookup's own docstring measures a real saved-transcripts
+    directory scan (peek-then-parse over every ``*.m4bt.json`` file) at
+    1.5-5s -- too slow to run synchronously on the UI thread without
+    blocking first paint of the rest of the panel, cover art included.
+    Mirrors :class:`CoverArtWorker`'s shape: one result, no error signal
+    (a lookup that finds nothing is a normal, expected outcome, not a
+    failure worth a second signal path).
+    """
+
+    result_ready = Signal(object)  # Transcript | None
+
+    def __init__(self, fingerprint: str) -> None:
+        super().__init__()
+        self._fingerprint = fingerprint
+
+    def run(self) -> None:
+        transcript = find_compatible_transcript(self._fingerprint)
+        self.result_ready.emit(transcript)
 
 
 TranscribeStartMode = Literal["fresh", "resume", "retry"]

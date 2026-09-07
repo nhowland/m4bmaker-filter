@@ -51,6 +51,7 @@ from m4bmaker.gui.filter.workers import (
     RenderWorker,
     ScanWorker,
     TranscribeWorker,
+    TranscriptLookupWorker,
 )
 
 _SPEC = ModelSpec(
@@ -339,6 +340,55 @@ class TestCoverArtWorker:
             ),
         ):
             worker = CoverArtWorker(tmp_path / "book.m4b")
+            worker.result_ready.connect(results.append)
+            worker.start()
+            worker.wait(3000)
+
+        qapp.processEvents()
+        assert results == [None]
+
+
+class TestTranscriptLookupWorker:
+    def test_match_found_emits_the_transcript(
+        self, qapp: QApplication, tmp_path: Path
+    ) -> None:
+        transcript = Transcript(
+            schema_version=1,
+            status=TranscriptStatus.COMPLETE,
+            source=TranscriptSource(
+                fingerprint="sha256:real",
+                duration_ms=48_693_108,
+                selected_audio_stream=0,
+            ),
+            engine=TranscriptEngine(
+                name="whisper.cpp",
+                version="1.9.2",
+                model="base.en",
+                model_checksum="sha256:c",
+            ),
+            segments=(),
+        )
+        results: list[Transcript | None] = []
+        with patch(
+            "m4bmaker.gui.filter.workers.find_compatible_transcript",
+            return_value=transcript,
+        ) as mock_lookup:
+            worker = TranscriptLookupWorker("sha256:real")
+            worker.result_ready.connect(results.append)
+            worker.start()
+            worker.wait(3000)
+            mock_lookup.assert_called_once_with("sha256:real")
+
+        qapp.processEvents()
+        assert results == [transcript]
+
+    def test_no_match_emits_none(self, qapp: QApplication, tmp_path: Path) -> None:
+        results: list[Transcript | None] = []
+        with patch(
+            "m4bmaker.gui.filter.workers.find_compatible_transcript",
+            return_value=None,
+        ):
+            worker = TranscriptLookupWorker("sha256:nomatch")
             worker.result_ready.connect(results.append)
             worker.start()
             worker.wait(3000)

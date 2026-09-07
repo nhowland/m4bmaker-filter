@@ -47,22 +47,33 @@ def _fast_transcript_lookup():
     real, user-wide transcripts directory when given no override --
     same cost test_source_step.py's own `_fast_transcript_lookup` fixture
     exists to avoid. Nearly every test in this file drives the wizard
-    shell past Source (which calls it via source_step.py) and/or into
-    Transcript (which calls it again via transcript_step.py's own
-    set_manifest()), so left unpatched this real disk scan runs on
-    almost every test here, not just a handful. Default both call sites
-    to a cheap no-op; every test in this file already treats "not found"
-    (None) as the expected outcome for its fake fingerprints, so this
-    changes no test's behavior. Tests that need a specific *found*
-    transcript (e.g. TestTranscriptToProfileWiring's reuse test) set
+    shell past Source (which now runs the lookup on a background
+    TranscriptLookupWorker via source_step.py, ADR-0050) and/or into
+    Transcript (which calls find_compatible_transcript directly, via
+    transcript_step.py's own set_manifest()), so left unpatched this
+    real disk scan runs on almost every test here, not just a handful.
+    Both call sites are defaulted to a cheap no-op; every test in this
+    file already treats "not found" (None) as the expected outcome for
+    its fake fingerprints, so this changes no test's behavior. Tests
+    that need a specific *found* transcript (e.g.
+    TestTranscriptToProfileWiring's reuse test) set
     `TranscriptStep._compatible_transcript` directly rather than relying
     on find_compatible_transcript's return value, so they're unaffected
     too.
+
+    source_step's TranscriptLookupWorker is patched with a
+    side_effect, not a bare patch -- a bare patch's mock class returns
+    the *same* .return_value from every call, so a test that advances
+    Source more than once (e.g. TestSourceToTranscriptWiring's "second
+    pass with a different source") would get back the same worker
+    "instance" every time, unlike a real TranscriptLookupWorker() call
+    which constructs a distinct object per selection (see
+    test_source_step.py's own identical fixture for the same reasoning).
     """
     with (
         patch(
-            "m4bmaker.gui.filter.wizard.source_step.find_compatible_transcript",
-            return_value=None,
+            "m4bmaker.gui.filter.wizard.source_step.TranscriptLookupWorker",
+            side_effect=lambda *_a, **_k: MagicMock(),
         ),
         patch(
             "m4bmaker.gui.filter.wizard.transcript_step.find_compatible_transcript",
@@ -111,17 +122,13 @@ def _make_source_eligible(win: WizardWindow) -> None:
         cover_present=False,
         eligible=True,
     )
-    # _on_inspect_finished() now also kicks off a real CoverArtWorker
-    # (ADR-0046) -- these navigation tests use a fake, nonexistent
-    # source_path ("/books/a.m4b"), and this class calls this helper
-    # across many tests, so leaving that unmocked means a real QThread
-    # (and, if ffmpeg is on PATH, a real subprocess) spun up dozens of
-    # times per run; SourceStep's own dedicated tests cover the cover-
-    # art path for real. Patched at the import site inside source_step,
-    # not workers.py, matching this suite's own patch-where-imported
-    # convention.
-    with patch("m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"):
-        source._on_inspect_finished(manifest)
+    # CoverArtWorker (ADR-0046) now starts from _on_file_selected, not
+    # _on_inspect_finished (ADR-0050) -- calling _on_inspect_finished
+    # directly, as this helper does, never touches it, so no patch is
+    # needed here for that. TranscriptLookupWorker (also started from
+    # _on_inspect_finished, ADR-0050) is patched process-wide by the
+    # module's own autouse _fast_transcript_lookup fixture instead.
+    source._on_inspect_finished(manifest)
 
 
 def _make_transcript_ready(win: WizardWindow) -> None:
@@ -495,11 +502,52 @@ class TestSourceToTranscriptWiring:
             cover_present=False,
             eligible=True,
         )
-        with patch("m4bmaker.gui.filter.wizard.source_step.CoverArtWorker"):
-            source._on_inspect_finished(new_manifest)
+        source._on_inspect_finished(new_manifest)
         win._on_continue()
 
         assert transcript_step.manifest is new_manifest
+
+
+class TestFileCardRefresh:
+    def test_file_card_updates_after_inspect_even_when_cover_already_arrived(
+        self, win: WizardWindow
+    ) -> None:
+        # Regression: CoverArtWorker and MediaInspectWorker now run
+        # concurrently (ADR-0050 addendum), so cover art can finish
+        # before inspection does. The persistent file card reads
+        # manifest and cover_path together in one call
+        # (WizardWindow._refresh_file_card), but was only ever told to
+        # re-read them via SourceStep.cover_ready's *cover* emission
+        # point -- so a manifest that arrived *after* cover art (the
+        # common case now, since mutagen-first cover extraction is
+        # faster than the ffprobe inspect subprocess, ADR-0050
+        # addendum) was never shown on the card at all, leaving it
+        # stuck on its placeholder even though the Source step's own
+        # info panel below had already fully populated.
+        source = win._steps[STEP_LABELS.index("Source")]
+        assert isinstance(source, SourceStep)
+
+        # Simulate cover art finishing first: set the cover path
+        # directly, the same state _on_cover_ready() would leave behind,
+        # without ever going through _on_inspect_finished().
+        source._cover_path = Path("/fake/cover.jpg")
+
+        manifest = MediaManifest(
+            schema_version=1,
+            source_path="/books/regression.m4b",
+            fingerprint="sha256:regression",
+            duration_ms=10_000,
+            tracks=(),
+            selected_track_index=None,
+            selected_track_is_fallback=False,
+            chapters=(),
+            required_metadata={},
+            cover_present=False,
+            eligible=True,
+        )
+        source._on_inspect_finished(manifest)
+
+        assert "regression.m4b" in win._file_card._name_label.text()
 
 
 class TestTranscriptReuseSkipsTranscribe:

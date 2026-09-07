@@ -199,6 +199,56 @@ class TestMultipleImages:
 # ---------------------------------------------------------------------------
 
 
+class TestExtractCoverFromAudioOrdering:
+    """ADR-0050 addendum: mutagen is tried first (no subprocess), ffmpeg
+    only as a fallback for what mutagen can't read -- a real measured
+    ~65-70x faster path for the common case (a valid .m4b/.mp3 with its
+    cover stored as a tag mutagen understands, not a video stream)."""
+
+    def test_mutagen_found_skips_ffmpeg_entirely(self, tmp_path: Path) -> None:
+        from m4bmaker.cover import extract_cover_from_audio
+
+        audio_file = tmp_path / "book.m4b"
+        audio_file.write_bytes(b"\x00")
+
+        mock_mp4 = MagicMock()
+        mock_mp4.tags = {"covr": [b"fake-jpeg-bytes" * 10]}  # > 100 bytes
+
+        with (
+            patch("m4bmaker.cover.get_temp_root", return_value=tmp_path),
+            patch("mutagen.mp4.MP4", return_value=mock_mp4),
+            patch("subprocess.run") as mock_run,
+        ):
+            result = extract_cover_from_audio(audio_file, "ffmpeg")
+
+        assert result is not None
+        mock_run.assert_not_called()
+
+    def test_ffmpeg_fallback_used_when_mutagen_finds_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        from m4bmaker.cover import extract_cover_from_audio
+
+        audio_file = tmp_path / "book.wav"
+        audio_file.write_bytes(b"\x00")
+
+        def _fake_ffmpeg_run(args: list[str], **_kwargs: object) -> MagicMock:
+            Path(args[-1]).write_bytes(b"fake-jpeg-bytes-from-ffmpeg" * 10)
+            return MagicMock()
+
+        with (
+            patch("m4bmaker.cover.get_temp_root", return_value=tmp_path),
+            patch("mutagen.mp4.MP4", side_effect=Exception("not an MP4")),
+            patch("mutagen.id3.ID3", side_effect=Exception("not an MP3")),
+            patch("subprocess.run", side_effect=_fake_ffmpeg_run) as mock_run,
+        ):
+            result = extract_cover_from_audio(audio_file, "ffmpeg")
+
+        assert result is not None
+        assert result.read_bytes() == b"fake-jpeg-bytes-from-ffmpeg" * 10
+        mock_run.assert_called_once()
+
+
 class TestExtractCoverTempRoot:
     """extract_cover_from_audio should allocate under the shared temp root."""
 

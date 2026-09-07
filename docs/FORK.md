@@ -2286,3 +2286,102 @@ in ADR-0037. Plain-language, no jargon, not tied to row selection since
 it explains the recommendation itself. 2 new tests; full suite 1967
 passed, 2 skipped; `black`/`flake8`/`mypy` clean. Verified in the real
 running app in both themes.
+
+## G5: Source step cover art latency fixed (ADR-0050, 2026-09-07)
+
+The User noticed the filter wizard's Source step took several seconds
+to show cover art, versus almost instantly in the main app. Reading the
+code (not guessing) found the cause was ordering: `_on_inspect_finished()`
+ran `find_compatible_transcript()` — a saved-transcripts directory scan
+documented at 1.5-5s on a real transcripts directory — synchronously on
+the UI thread, and only started `CoverArtWorker` after that returned.
+The cover worker wasn't even launched until an ffprobe subprocess *and*
+a multi-second disk scan had both finished.
+
+Fixed by decoupling both from the critical path: `CoverArtWorker` now
+starts from `_on_file_selected()`, alongside `MediaInspectWorker`, not
+after it — cover extraction never depended on ffprobe's output in the
+first place. The transcript lookup moved to a new
+`TranscriptLookupWorker` (mirrors `CoverArtWorker`'s shape) running on
+its own background thread; the "Saved transcript" row shows "Checking…"
+until it resolves. `_InfoPanel` gained narrow `update_cover()` /
+`set_saved_transcript()` setters so the two independently-backgrounded
+results can arrive in either order without one clobbering the other's
+already-shown answer.
+
+4 new tests (2 in `test_workers.py` for the new worker, 2 in
+`test_source_step.py` for the "Checking…" state and stale-worker
+guard); existing transcript-lookup tests in both `test_source_step.py`
+and `test_wizard_window.py` updated for the new async path. Full suite
+1971 passed, 2 skipped; `black`/`flake8`/`mypy` clean on every file
+touched. Verified in the real running app with the real, user-wide
+transcripts directory (19 files, 320MB) — selected a fresh source and
+the panel resolved correctly with cover art, chapters, metadata, and
+the matched saved transcript. Directly measured the real transcript
+scan at 0.84s on this machine — a real cost the old code paid before
+even starting cover extraction.
+
+## G5: Cover extraction tries mutagen before ffmpeg (ADR-0050 addendum, 2026-09-07)
+
+Follow-up to the latency fix above: the User asked whether switching
+`CoverArtWorker`'s cover extraction to mutagen-first (matching the main
+app's own `LoadM4bWorker`) would help further. Benchmarked directly:
+the existing ffmpeg-first path cost ~0.065-0.071s per real `.m4b` file
+(ffmpeg actually succeeds on the first attempt — the cost is pure
+subprocess-spawn overhead), versus ~0.001s reading the same file's
+cover via mutagen alone — a real, measured ~65-70x difference, small in
+absolute terms next to the ordering fix above but real.
+
+Reordered `m4bmaker.cover.extract_cover_from_audio()` (shared by the
+CLI pipeline, the filter renderer's own cover step, and this wizard's
+CoverArtWorker) to try mutagen first, ffmpeg only as a last resort for
+whatever mutagen can't read — not a new function, since mutagen's
+attempts already fail fast (an exception) on formats they don't
+understand, so ffmpeg is still reached for everything it used to
+handle; only the order changed, a strict improvement for every caller.
+
+2 new tests (`TestExtractCoverFromAudioOrdering` in `test_cover.py`)
+assert ffmpeg is skipped when mutagen finds a cover, and still used as
+a fallback when it doesn't. Full suite 1973 passed, 2 skipped;
+`black`/`flake8`/`mypy` clean. Verified in the real running app — a
+freshly selected source's cover art rendered correctly under the new
+ordering.
+
+## G5: Persistent file card fix — real regression from the fix above (ADR-0050 addendum, 2026-09-07)
+
+The User caught, via screenshot, that the small persistent file card
+below the stepper had stopped updating at all after picking a source —
+stuck on "No file selected yet" even though the Source step's own
+larger info panel right below it showed a fully populated result
+(cover art, chapters, matched transcript). A real regression from this
+same ADR's first change.
+
+Root cause: the file card refreshes only when `SourceStep.cover_ready`
+fires, reading `manifest` and `cover_path` together in one call. That
+worked as long as cover extraction always finished strictly after
+inspection (the old sequential ordering) — but now that the two run
+concurrently, and mutagen-first extraction is usually faster than the
+ffprobe inspect subprocess, cover routinely finishes *first*. The
+signal fired with a cover and no manifest yet, and nothing fired it
+again once the manifest actually arrived.
+
+Fixed with one line: `_on_inspect_finished()` now also emits
+`cover_ready` once it sets `self._manifest`, so the file card always
+learns about a new manifest no matter which of the two workers
+finishes last. New regression test in `test_wizard_window.py`
+confirmed against the un-fixed code first (reproduced the exact "No
+file selected yet" bug), then confirmed fixed. Full suite 1974 passed,
+2 skipped; `black`/`flake8`/`mypy` clean. Verified in the real running
+app — the file card now updates immediately alongside the info panel.
+
+(Also recorded here as a caution to self: reproducing this bug
+involved temporarily deleting the fix and running `git checkout --` on
+the file to restore it afterward — which, since the file had other
+uncommitted work on it from earlier in this same session, discarded
+all of it, not just the one line removed for the test. Recovered by
+manually reapplying every edit from this conversation's own history
+rather than from any git ref, verified by a clean full-suite pass
+afterward. No data was actually lost, but the near-miss is worth
+remembering: `git checkout --`/`git restore` on a file with any
+uncommitted work always discards the whole file, not just the change
+you meant to undo.)

@@ -36,8 +36,12 @@ from PySide6.QtWidgets import (
 
 from m4bmaker.filter.models import MediaManifest
 from m4bmaker.filter.renderer import estimate_storage_bytes
-from m4bmaker.filter.transcript import find_compatible_transcript
-from m4bmaker.gui.filter.workers import CoverArtWorker, MediaInspectWorker
+from m4bmaker.filter.transcript import Transcript
+from m4bmaker.gui.filter.workers import (
+    CoverArtWorker,
+    MediaInspectWorker,
+    TranscriptLookupWorker,
+)
 
 from .file_card import set_cover_pixmap
 from .step_base import WizardStep
@@ -200,11 +204,19 @@ class _M4bPicker(QFrame):
 
 
 class SourceStep(WizardStep):
-    #: Fires whenever cover_path changes -- including to None, so a
-    #: listener (the persistent file card) always learns "extraction
-    #: finished, here's the answer" rather than staying stuck on a stale
-    #: value from a previously-loaded file while a new one is still
-    #: being inspected/extracted.
+    #: Fires whenever ``manifest`` or ``cover_path`` changes -- including
+    #: to None -- so a listener (the persistent file card) always learns
+    #: "something new is known, re-read both" rather than staying stuck
+    #: on a stale value. Despite the name, this now also fires from
+    #: ``_on_inspect_finished()``, not just once cover art itself
+    #: arrives (ADR-0050 addendum): CoverArtWorker and MediaInspectWorker
+    #: now run concurrently rather than strictly cover-after-inspect, so
+    #: either one can finish first, and the file card (which reads both
+    #: ``manifest`` and ``cover_path`` together in one call) needs telling
+    #: no matter which one just changed -- listening only for the cover
+    #: half left it permanently stuck on its placeholder whenever
+    #: inspect happened to be the *last* one to finish, since nothing
+    #: told it a manifest had newly arrived.
     cover_ready = Signal()
 
     #: Fires when the User clicks the "Temp storage needed" row's "Change
@@ -227,6 +239,7 @@ class SourceStep(WizardStep):
         self._inspect_worker: MediaInspectWorker | None = None
         self._cover_path: Path | None = None
         self._cover_worker: CoverArtWorker | None = None
+        self._transcript_worker: TranscriptLookupWorker | None = None
 
         self._build_ui()
 
@@ -303,6 +316,25 @@ class SourceStep(WizardStep):
         self._inspect_worker.error.connect(self._on_inspect_error)
         self._inspect_worker.start()
 
+        # Started here, alongside the inspect worker, not after it
+        # finishes -- cover extraction doesn't depend on anything
+        # ffprobe reports, so waiting for inspect (and, previously, the
+        # saved-transcript scan) to finish first only delayed the cover
+        # art for no reason. The two workers now run concurrently on
+        # separate threads; whichever finishes first paints first.
+        cover_worker = CoverArtWorker(path)
+        # Captures *worker* itself, not just its result, so a stale
+        # worker's late-arriving signal (the User picked a different
+        # file while this one was still extracting) can be told apart
+        # from the current one -- same default-arg lambda-capture
+        # pattern already used for per-row context elsewhere in this
+        # package (e.g. word_variation_dialog.py's own "+ Add" hookup).
+        cover_worker.result_ready.connect(
+            lambda cover_path, w=cover_worker: self._on_cover_ready(cover_path, w)
+        )
+        cover_worker.start()
+        self._cover_worker = cover_worker
+
     def _on_inspect_error(self, message: str) -> None:
         self._status_label.setText("Inspection failed.")
         self._show_secondary(_error_label(f"Couldn't inspect this file: {message}"))
@@ -311,26 +343,29 @@ class SourceStep(WizardStep):
     def _on_inspect_finished(self, manifest: MediaManifest) -> None:
         self._manifest = manifest
         self._status_label.setText("")
+        # CoverArtWorker runs concurrently with inspection now (ADR-0050
+        # addendum), so it may well have already finished by this point
+        # -- but nothing told the persistent file card a *manifest* had
+        # arrived, only a cover. Emitted here too so it always learns
+        # about this manifest, whether or not cover art beat inspect to
+        # the finish line.
+        self.cover_ready.emit()
         if manifest.eligible:
             self._clear_secondary()
             self._info_panel.setVisible(True)
             self._info_panel.show_eligible(manifest, self._cover_path)
+
+            transcript_worker = TranscriptLookupWorker(manifest.fingerprint)
+            transcript_worker.result_ready.connect(
+                lambda transcript, w=transcript_worker: self._on_transcript_ready(
+                    transcript, w
+                )
+            )
+            transcript_worker.start()
+            self._transcript_worker = transcript_worker
         else:
             self._show_secondary(_IneligiblePanel(manifest))
         self.can_advance_changed.emit(self.can_advance())
-
-        worker = CoverArtWorker(Path(manifest.source_path))
-        # Captures *worker* itself, not just its result, so a stale
-        # worker's late-arriving signal (the User picked a different
-        # file while this one was still extracting) can be told apart
-        # from the current one -- same default-arg lambda-capture
-        # pattern already used for per-row context elsewhere in this
-        # package (e.g. word_variation_dialog.py's own "+ Add" hookup).
-        worker.result_ready.connect(
-            lambda cover_path, w=worker: self._on_cover_ready(cover_path, w)
-        )
-        worker.start()
-        self._cover_worker = worker
 
     def _on_cover_ready(self, cover_path: Path | None, worker: CoverArtWorker) -> None:
         if worker is not self._cover_worker:
@@ -339,9 +374,22 @@ class SourceStep(WizardStep):
         self.cover_ready.emit()
         # Updates the already-showing panel's own thumbnail in place --
         # a no-op if the source turned out ineligible (the info panel
-        # isn't the visible widget in that case at all).
+        # isn't the visible widget in that case at all), or if inspect
+        # hasn't finished yet (the cover worker started at the same
+        # time and may well finish first -- show_eligible() will pick
+        # up the now-known cover path once inspect catches up). Calls
+        # update_cover(), not show_eligible() again -- the latter would
+        # also reset the "Saved transcript" row back to "Checking…",
+        # clobbering a real answer if that lookup finished first.
         if self._manifest is not None and self._manifest.eligible:
-            self._info_panel.show_eligible(self._manifest, cover_path)
+            self._info_panel.update_cover(cover_path)
+
+    def _on_transcript_ready(
+        self, transcript: Transcript | None, worker: TranscriptLookupWorker
+    ) -> None:
+        if worker is not self._transcript_worker:
+            return  # superseded by a newer file selection -- ignore.
+        self._info_panel.set_saved_transcript(transcript)
 
 
 def _error_label(text: str) -> QLabel:
@@ -501,9 +549,7 @@ class _InfoPanel(QFrame):
         self._heading.setText("✓ Eligible for filtering")
         self._heading.setProperty("state", "eligible")
         _repolish(self._heading)
-        set_cover_pixmap(
-            self._cover_label, cover_path, self._cover_size, fallback_text="Cover"
-        )
+        self.update_cover(cover_path)
 
         track = next(
             (t for t in manifest.tracks if t.index == manifest.selected_track_index),
@@ -541,7 +587,34 @@ class _InfoPanel(QFrame):
         else:
             self._set_row("Metadata", "None found")
 
-        transcript = find_compatible_transcript(manifest.fingerprint)
+        # The saved-transcripts directory scan this row depends on runs
+        # in the background (TranscriptLookupWorker) and can take
+        # several seconds on a real transcripts directory -- shown as
+        # "Checking…" here rather than left blank so the row still
+        # reads as "something is happening" rather than "forgotten".
+        # set_saved_transcript() below fills in the real answer once
+        # the scan finishes.
+        self._set_row("Saved transcript", "Checking…")
+
+        estimate = estimate_storage_bytes(manifest)
+        self._set_row(
+            "Temp storage needed", _format_bytes(estimate) if estimate else "Unknown"
+        )
+
+    def update_cover(self, cover_path: Path | None) -> None:
+        """Update just the cover thumbnail -- used both by
+        :meth:`show_eligible` and, separately, whenever
+        ``CoverArtWorker`` finishes *after* the panel is already
+        showing (extraction runs concurrently with inspection, so
+        either can finish first). Never touches the other rows, so a
+        late-arriving cover can't stomp a "Saved transcript" answer
+        that already came in from its own, independent background
+        lookup."""
+        set_cover_pixmap(
+            self._cover_label, cover_path, self._cover_size, fallback_text="Cover"
+        )
+
+    def set_saved_transcript(self, transcript: Transcript | None) -> None:
         if transcript is not None:
             self._set_row(
                 "Saved transcript",
@@ -550,11 +623,6 @@ class _InfoPanel(QFrame):
             )
         else:
             self._set_row("Saved transcript", "None found for this source")
-
-        estimate = estimate_storage_bytes(manifest)
-        self._set_row(
-            "Temp storage needed", _format_bytes(estimate) if estimate else "Unknown"
-        )
 
 
 class _IneligiblePanel(QFrame):
