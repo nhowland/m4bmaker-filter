@@ -410,7 +410,23 @@ class WizardWindow(QMainWindow):
         Transcribe has nothing to do, so skip straight to Profile. This
         bypasses ``_on_continue``'s own dispatch table entirely, so the
         Transcribe -> Profile push has to happen here too, not just on
-        the normal-advance path."""
+        the normal-advance path.
+
+        Also tells TranscribeStep itself, via ``set_reused()``, right
+        here at skip-time rather than waiting for the User to navigate
+        back into it (ADR-0050 follow-up) — Back and a direct stepper
+        click both land a User on a previously-visited step the same
+        way, so fixing only one of those entry points would leave the
+        other showing the same stuck "not ready" screen."""
+        transcript_step = self._steps[_TRANSCRIPT_INDEX]
+        transcribe_step = self._steps[_TRANSCRIBE_INDEX]
+        assert isinstance(transcript_step, TranscriptStep)
+        assert isinstance(transcribe_step, TranscribeStep)
+        manifest = transcript_step.manifest
+        transcript = transcript_step.compatible_transcript
+        if manifest is not None and transcript is not None:
+            transcribe_step.set_reused(manifest, transcript)
+
         self._skipped.add(_TRANSCRIBE_INDEX)
         self._active = _PROFILE_INDEX
         self._furthest = max(self._furthest, self._active)

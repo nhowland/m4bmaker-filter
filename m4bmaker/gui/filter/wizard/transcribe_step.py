@@ -4,11 +4,23 @@ Real, not a placeholder — the wizard's fourth fully-built step. Wired
 directly to its immediate predecessor, same as Source->Transcript
 (ADR-0014): ``wizard_window.py`` calls :meth:`set_transcript_choice` with
 Transcript's own ``MediaManifest`` and chosen ``ModelSpec`` when the User
-continues past it (never called when Transcript's "Use existing" path
-skips this step entirely — that path has nothing to transcribe).
+continues past it.
 
-Four states, driven by the real ``JobState`` machine (``jobs.py``) via
-:class:`~m4bmaker.gui.filter.workers.TranscribeWorker`:
+When Transcript's "Use existing" path skips this step entirely instead,
+``wizard_window.py`` calls :meth:`set_reused` at that same moment (not
+merely when the User later navigates back here) — see ADR-0050's
+follow-up: this step used to have no idea it had been skipped, so
+re-entering it via Back (or a direct stepper click, which reaches any
+previously-visited step the same way) landed on the plain "not ready"
+placeholder with Continue permanently disabled, since nothing had ever
+called either entry point for this source. Populating :meth:`set_reused`
+at skip-time keeps this step's own state correct regardless of *how* a
+User later reaches it, matching every other step's own rule of owning
+and rendering its real state rather than the shell patching around a
+gap in it.
+
+Five states, four of them driven by the real ``JobState`` machine
+(``jobs.py``) via :class:`~m4bmaker.gui.filter.workers.TranscribeWorker`:
 
 - **Ready to start** — nothing runs until this is confirmed, matching
   every other commit-point in this wizard (Source's eligibility gate,
@@ -29,6 +41,12 @@ Four states, driven by the real ``JobState`` machine (``jobs.py``) via
   uncommitted chunk, nothing already committed is redone.
 - **Needs attention** — PRD §11.2's recoverable state: a User action
   (Retry or Cancel Job), not a dead end.
+
+The fifth, **Reused**, isn't part of that job-state machine at all — it
+means this step was skipped, so there's no job, running or otherwise.
+Continue is enabled here same as Completed, since there's nothing left
+to do; a "View Transcript" link works exactly like Completed's own,
+reading the same saved transcript Transcript step already found.
 
 Durable across app restarts, not just within one session: entering this
 step checks the real job store for an existing incomplete
@@ -77,6 +95,7 @@ _STATE_RUNNING = "running"
 _STATE_PAUSED = "paused"
 _STATE_NEEDS_ATTENTION = "needs_attention"
 _STATE_COMPLETED = "completed"
+_STATE_REUSED = "reused"
 
 #: Rough, deliberately-approximate "audio-ms per wall-clock-ms" guesses used
 #: only until this run has its own real measured rate (ADR-0027) — not
@@ -181,7 +200,7 @@ class TranscribeStep(WizardStep):
         return self._elapsed_seconds if self._elapsed_seconds > 0 else None
 
     def can_advance(self) -> bool:
-        return self._state == _STATE_COMPLETED
+        return self._state in (_STATE_COMPLETED, _STATE_REUSED)
 
     def set_transcript_choice(
         self, manifest: MediaManifest, model_spec: ModelSpec
@@ -224,6 +243,31 @@ class TranscribeStep(WizardStep):
             self._job_id = None
             self._state = _STATE_READY
 
+        self._render_body()
+        self.can_advance_changed.emit(self.can_advance())
+
+    def set_reused(self, manifest: MediaManifest, transcript: Transcript) -> None:
+        """Entry point, called by the wizard shell instead of
+        :meth:`set_transcript_choice` the moment Transcript step's "Use
+        existing" path skips this step entirely (ADR-0050 follow-up) —
+        not lazily whenever the User later happens to navigate back
+        here. Keeps this step's own state accurate no matter how it's
+        later reached (Back, or a direct stepper click on an
+        already-visited step), rather than leaving it stuck on the
+        plain "not ready" placeholder with Continue disabled, which
+        nothing had ever cleared for this source.
+
+        Storing *transcript* here (not just leaving it to
+        ``TranscriptStep.compatible_transcript``) is what makes "View
+        Transcript" work the same way it does after a real
+        transcription — this step's own copy, read the same way
+        Completed's already is."""
+        self._manifest = manifest
+        self._model_spec = None
+        self._job_id = None
+        self._transcript = transcript
+        self._error_message = None
+        self._state = _STATE_REUSED
         self._render_body()
         self.can_advance_changed.emit(self.can_advance())
 
@@ -270,6 +314,8 @@ class TranscribeStep(WizardStep):
             self._body_layout.addWidget(self._build_needs_attention_panel())
         elif self._state == _STATE_COMPLETED:
             self._body_layout.addWidget(self._build_completed_panel())
+        elif self._state == _STATE_REUSED:
+            self._body_layout.addWidget(self._build_reused_panel())
 
     def _chunk_plans_for_manifest(self) -> list[ChunkPlan]:
         assert self._manifest is not None
@@ -546,6 +592,32 @@ class TranscribeStep(WizardStep):
             return
         text_path = ensure_transcript_text(self._transcript)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(text_path)))
+
+    # ── "reused" (Transcript step's saved transcript was reused) ────────
+
+    def _build_reused_panel(self) -> QFrame:
+        assert self._transcript is not None
+        panel = QFrame()
+        layout = QVBoxLayout(panel)
+        heading = QLabel("✓ Using existing transcript")
+        heading.setStyleSheet("font-weight: 600;")
+        layout.addWidget(heading)
+        layout.addWidget(
+            _info_label(
+                "You chose to reuse a saved transcript for this source on "
+                "the previous step, so there's nothing to transcribe here "
+                "— Continue to keep going, or go back to Transcript if "
+                "you'd rather transcribe it again instead."
+            )
+        )
+
+        view_btn = QPushButton("View Transcript")
+        view_btn.clicked.connect(self._on_view_transcript)
+        row = QHBoxLayout()
+        row.addWidget(view_btn)
+        row.addStretch(1)
+        layout.addLayout(row)
+        return panel
 
     # ── worker lifecycle ─────────────────────────────────────────────────
 

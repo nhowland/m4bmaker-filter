@@ -263,6 +263,64 @@ class TestReentryGuard:
         assert "Start Transcription" in text
 
 
+class TestReused:
+    """ADR-0050 follow-up: called by the wizard shell the moment
+    Transcript step's "Use existing" path skips this step entirely, not
+    lazily whenever the User later navigates back here — see this
+    step's own module docstring for why that timing matters."""
+
+    def test_can_advance_true(self, step: TranscribeStep) -> None:
+        step.set_reused(_manifest(), _transcript())
+        assert step.can_advance() is True
+
+    def test_transcript_stored(self, step: TranscribeStep) -> None:
+        transcript = _transcript()
+        step.set_reused(_manifest(), transcript)
+        assert step.transcript is transcript
+
+    def test_panel_explains_reuse_not_the_stuck_not_ready_placeholder(
+        self, step: TranscribeStep
+    ) -> None:
+        step.set_reused(_manifest(), _transcript())
+        text = _all_text(_first_body_widget(step))
+        assert "existing transcript" in text.lower()
+        assert "Choose a transcript path first" not in text
+
+    def test_view_transcript_button_present_and_works(
+        self, step: TranscribeStep, tmp_path: Path
+    ) -> None:
+        transcript_path = tmp_path / "book.m4bt.json"
+        step.set_reused(_manifest(), replace(_transcript(), path=transcript_path))
+        with patch(
+            "m4bmaker.gui.filter.wizard.transcribe_step.QDesktopServices.openUrl"
+        ) as mock_open:
+            _find_button(step, "View Transcript").click()
+        mock_open.assert_called_once()
+
+    def test_can_advance_changed_signal_fires_true(self, step: TranscribeStep) -> None:
+        received: list[bool] = []
+        step.can_advance_changed.connect(received.append)
+        step.set_reused(_manifest(), _transcript())
+        assert received[-1] is True
+
+    def test_choosing_to_transcribe_for_real_afterward_resets_to_ready(
+        self, step: TranscribeStep
+    ) -> None:
+        # The round trip this whole feature exists for: reused, then the
+        # User goes back to Transcript and picks "Transcribe again
+        # instead", then continues past it for real. set_transcript_choice
+        # must fully take over from the reused state, not treat it as
+        # "already in flight" the way a real running/completed job is.
+        manifest = _manifest()
+        step.set_reused(manifest, _transcript())
+        assert step.can_advance() is True
+
+        step.set_transcript_choice(manifest, _BASE_EN)
+        assert step.can_advance() is False
+        text = _all_text(_first_body_widget(step))
+        assert "Start Transcription" in text
+
+
 class TestStartAndRunning:
     def test_start_click_launches_worker_and_enters_running(
         self, step: TranscribeStep

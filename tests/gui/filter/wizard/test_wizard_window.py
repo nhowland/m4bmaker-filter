@@ -591,6 +591,97 @@ class TestTranscriptReuseSkipsTranscribe:
         assert win._active == transcribe_index
         assert transcribe_index not in win._skipped
 
+    def test_transcribe_step_itself_is_told_at_skip_time(
+        self, win: WizardWindow
+    ) -> None:
+        """ADR-0050 follow-up regression guard: before this fix,
+        TranscribeStep had no idea it had been skipped — it just sat in
+        its "not ready" state forever, since nothing had ever called
+        either of its two entry points for this source. Checked here
+        directly on TranscribeStep, not just on the shell's own
+        `_skipped` bookkeeping, since that's the actual bug: the shell
+        knew Transcribe was skipped the whole time, but the step itself
+        didn't."""
+        _make_source_eligible(win)
+        win._on_continue()  # Source -> Transcript
+        transcript_step = win._steps[STEP_LABELS.index("Transcript")]
+        transcribe_step = win._steps[STEP_LABELS.index("Transcribe")]
+        assert isinstance(transcript_step, TranscriptStep)
+        assert isinstance(transcribe_step, TranscribeStep)
+        reused = Transcript(
+            schema_version=1,
+            status=TranscriptStatus.COMPLETE,
+            source=TranscriptSource(
+                fingerprint="sha256:x", duration_ms=10_000, selected_audio_stream=0
+            ),
+            engine=TranscriptEngine(
+                name="whisper.cpp", version="1.9.2", model="base.en", model_checksum="x"
+            ),
+        )
+        transcript_step._compatible_transcript = reused
+
+        transcript_step.reuse_requested.emit()
+
+        assert transcribe_step.can_advance() is True
+        assert transcribe_step.transcript is reused
+
+    def test_back_from_profile_into_skipped_transcribe_enables_continue(
+        self, win: WizardWindow
+    ) -> None:
+        """The exact bug the User reported: reuse a transcript, then hit
+        Back from Profile — landing on Transcribe with Continue
+        permanently disabled and no way forward except leaving the
+        step entirely."""
+        _make_source_eligible(win)
+        win._on_continue()  # Source -> Transcript
+        transcript_step = win._steps[STEP_LABELS.index("Transcript")]
+        assert isinstance(transcript_step, TranscriptStep)
+        transcript_step._compatible_transcript = Transcript(
+            schema_version=1,
+            status=TranscriptStatus.COMPLETE,
+            source=TranscriptSource(
+                fingerprint="sha256:x", duration_ms=10_000, selected_audio_stream=0
+            ),
+            engine=TranscriptEngine(
+                name="whisper.cpp", version="1.9.2", model="base.en", model_checksum="x"
+            ),
+        )
+        transcript_step.reuse_requested.emit()  # skips straight to Profile
+        assert win._active == STEP_LABELS.index("Profile")
+
+        win._on_back()  # Profile -> Transcribe
+
+        assert win._active == STEP_LABELS.index("Transcribe")
+        assert win._continue_btn.isEnabled() is True
+
+    def test_direct_stepper_click_into_skipped_transcribe_enables_continue(
+        self, win: WizardWindow
+    ) -> None:
+        """Same bug, reached the other way: the stepper's own step
+        circles let a User jump straight to any previously-visited step
+        (`_go_to_step`), not just via the Back button — that path has
+        to land in the same working state, not just Back."""
+        _make_source_eligible(win)
+        win._on_continue()  # Source -> Transcript
+        transcript_step = win._steps[STEP_LABELS.index("Transcript")]
+        assert isinstance(transcript_step, TranscriptStep)
+        transcript_step._compatible_transcript = Transcript(
+            schema_version=1,
+            status=TranscriptStatus.COMPLETE,
+            source=TranscriptSource(
+                fingerprint="sha256:x", duration_ms=10_000, selected_audio_stream=0
+            ),
+            engine=TranscriptEngine(
+                name="whisper.cpp", version="1.9.2", model="base.en", model_checksum="x"
+            ),
+        )
+        transcript_step.reuse_requested.emit()  # skips straight to Profile
+
+        win._go_to_step(STEP_LABELS.index("Transcribe"))
+
+        assert win._active == STEP_LABELS.index("Transcribe")
+        assert win._continue_btn.isEnabled() is True
+
 
 class TestTranscriptToProfileWiring:
     """ADR-0022: Profile only needs the real Transcript to offer "View

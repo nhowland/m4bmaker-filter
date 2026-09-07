@@ -2385,3 +2385,36 @@ afterward. No data was actually lost, but the near-miss is worth
 remembering: `git checkout --`/`git restore` on a file with any
 uncommitted work always discards the whole file, not just the change
 you meant to undo.)
+
+## G5: Transcribe step gets a real "reused" state (ADR-0051, 2026-09-07)
+
+The User reported: "Use existing →" on Transcript correctly skips
+Transcribe and jumps to Profile, but Back from Profile lands on
+Transcribe stuck showing "Choose a transcript path first." with
+Continue permanently disabled — a dead end. Root cause: `TranscribeStep`
+only ever left its not-ready state via `set_transcript_choice()`, called
+by the shell only on the forward-transcribe path; the reuse path never
+called it at all. Also confirmed the stepper's own step circles
+(`_go_to_step`) reach the same stuck screen via a direct click, not just
+Back — a fix scoped to the Back button alone would have left that path
+broken.
+
+Evaluated two shapes with the User before building (reactively detect
+the stuck state on Back vs. give the step a real, always-correct state)
+and picked the latter: new `_STATE_REUSED` + `set_reused(manifest,
+transcript)`, called by `_on_transcript_reuse()` at skip-time itself —
+not lazily whenever the User later happens to navigate back — so the
+step's own state is right no matter which of the two entry paths
+reaches it. `can_advance()` now also accepts `_STATE_REUSED`; the new
+panel explains why nothing needs transcribing and offers "View
+Transcript", reusing the same handler Completed's own panel already
+has.
+
+9 new tests across `test_transcribe_step.py` and `test_wizard_window.py`
+— the three shell-level ones confirmed to actually reproduce the
+reported bug (fail without the fix, pass with it) before moving on.
+Full suite 1983 passed, 2 skipped; `black`/`flake8`/`mypy` clean.
+Verified in the real running app in both themes: loaded a source with a
+real saved transcript, reused it, backed into Transcribe, saw the new
+message with Continue enabled, and confirmed Continue correctly
+advances back to Profile with the skip glyph intact.
