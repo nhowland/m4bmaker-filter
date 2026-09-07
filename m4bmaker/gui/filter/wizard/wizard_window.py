@@ -361,18 +361,22 @@ class WizardWindow(QMainWindow):
             scan_step.set_inputs(transcript, self._catalog_service, profile_id)
 
     def _push_scan_to_review(self) -> None:
+        source = self._steps[_SOURCE_INDEX]
         scan_step = self._steps[_SCAN_INDEX]
         review_step = self._steps[_REVIEW_INDEX]
+        assert isinstance(source, SourceStep)
         assert isinstance(scan_step, ScanStep)
         assert isinstance(review_step, ReviewStep)
         scan = scan_step.scan
         transcript = scan_step.transcript
-        if scan is not None and transcript is not None:
+        manifest = source.manifest
+        if scan is not None and transcript is not None and manifest is not None:
             review_step.set_scan(
                 scan,
                 self._catalog_service,
                 transcript,
                 transcript.source.duration_ms,
+                Path(manifest.source_path),
             )
 
     def _push_review_to_render(self) -> None:

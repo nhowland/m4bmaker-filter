@@ -2418,3 +2418,103 @@ Verified in the real running app in both themes: loaded a source with a
 real saved transcript, reused it, backed into Transcribe, saw the new
 message with Continue enabled, and confirmed Continue correctly
 advances back to Profile with the skip glyph intact.
+
+## G5: Review hit preview playback — design decided (ADR-0052, 2026-09-08)
+
+PRD §5.3 explicitly deferred "Built-in player deep-link/preview from
+match results" out of MVP; with every MVP step now shipped, the User
+asked to pick it up — hear a Review hit's own audio before deciding to
+include or exclude it, reusing the base app's own `AudioPlayerWidget`
+rather than building a new player.
+
+Design worked out through an interactive mockup
+(`docs/design/review-hit-preview-wireframe.html`) across several real
+iterations, not settled on the first pass: a Six Thinking Hats
+brainstorm surfaced the idea; confirmed `AudioPlayerWidget`'s real
+public surface (`load`/`seek_chapter`/path+ms, no `Book`/`Chapter`
+coupling) is trivially reusable; decided to preview the hit's own
+*padded* window (what Render actually silences) as the default, with a
+second fixed-±2s "context" mode for "is this really the flagged word"
+— fixed seconds chosen over exact transcript word-count boundaries
+after checking `TranscriptWordIndex` would need new data exposed for
+marginal benefit; iterated the toggle labels toward what a User
+recognizes ("Filtered word" / "Word in context", not "padded"/
+"lead-in"); rejected a third "Player" tab in favor of a slim docked
+row under the Hits table, matching the base app's own Chapters-tab
+placement of this exact widget; dropped a separate Stop button since
+these clips are only a few seconds (▶/⏸ always resets to the clip's
+own start); and caught + fixed a real overflow bug the User spotted
+from a live screenshot — a long catalog phrase could push controls off
+the row edge, fixed with the same elide-to-tooltip convention
+`source_step.py`'s `_InfoPanel` already uses, verified against the
+wizard's actual minimum window size.
+
+New capability added to `AudioPlayerWidget` itself (not forked into the
+filter package): `play_clip(path, start_ms, end_ms)`, auto-pausing at
+`end_ms`, plus a bare `pause()` and a `playback_state_changed` signal —
+both needed once real Qt code exposed that `load_paused()` alone
+doesn't stop genuinely playing audio, and that the dock's own icon
+needs to react to the clip's *own* automatic pause, not just clicks on
+itself. Reusing the widget wholesale also meant hiding its own Play/Stop
+buttons (new `show_controls=False` option) — its own Stop resets to
+position 0 of the whole file, wrong for a bounded clip — and injecting
+the dock's own Play button, term label, and mode toggle into that same
+row layout, the identical trick the Chapters tab already uses for its
+own prev/next buttons. `ReviewStep.set_scan()` gained the one new
+`source_path` argument; nothing else downstream changed.
+
+## G5: Hit preview playback — implemented and verified (ADR-0052, 2026-09-08)
+
+Built the design above for real. 32 new tests (15 on `AudioPlayerWidget`,
+17 on `ReviewStep`) — the widget treated as a black box from
+`ReviewStep`'s own tests, same "test the shell, not the (already
+dedicated-tested) widget" split this file's tests already use for
+`CatalogService`/`Scan`. Full suite 2015 passed, 2 skipped;
+`black`/`flake8`/`mypy` clean.
+
+Verified end to end in the real running app through the actual wizard —
+a real source, real saved transcript, real profile, a real scan (345
+real hits): selected a hit, confirmed the padded window's computed
+start via the real slider's own reported position (not just that a row
+highlighted), pressed Play and watched the real slider advance in real
+time, confirmed it auto-stopped at exactly the padded window's own
+computed end and the button reset to ▶ on its own with no further
+input, then toggled to "Word in context" and confirmed it reseeked to
+the wider window's own start, exactly 2000ms earlier. See ADR-0052 for
+the two implementation wrinkles real Qt code surfaced that the design
+pass hadn't fully resolved.
+
+## G5: Two real bugs from a live screenshot (ADR-0052 addendum, 2026-09-08)
+
+The User caught both at a real, much-larger-than-default window size —
+neither had reproduced in this feature's own original verification
+pass, which never drove the app that large.
+
+The Hits table had collapsed to about 1.5 visible rows with a big blank
+gap below. Not a stretch-factor bug (confirmed by isolating `ReviewStep`
+in a bare window at the same size — laid out correctly there):
+`QTableWidget.wordWrap` defaults to `True` in Qt, and a long enough
+Context cell can silently wrap onto 2-3 lines, ballooning that row's
+height — pre-existing behavior, just not visible until a real 800-hit
+scan with long context strings was reviewed at a wide window (a
+`Stretch`-mode column has more room to hold text that still doesn't fit
+one line). Fixed the same way `source_step.py`'s `_InfoPanel` already
+handles this exact class of problem: `setWordWrap(False)` plus a
+tooltip carrying the untruncated text per row.
+
+The preview dock's progress bar also barely moved during playback —
+this one *was* this feature's own design (`AudioPlayerWidget`'s
+whole-file slider, explicitly disclosed as file-absolute not
+clip-relative), but seeing it live showed the trade-off wasn't right:
+a clip is seconds out of a multi-hour book, so the slider barely
+crawls, reading as stuck rather than playing. Reversed it: the widget
+gained a `position_changed` signal, `show_controls=False` now hides its
+slider/time too, and the dock builds its own clip-relative progress
+bar — restoring what the original interactive mockup had before the Qt
+pass traded it away for simplicity.
+
+8 new tests; full suite 2023 passed, 2 skipped; `black`/`flake8`/`mypy`
+clean. Verified in the real app at the same large window size and a
+real 820-hit scan: 14 full single-line rows with no gap, and the
+progress bar visibly filling (`0.5s / 1.3s`, ~75%) during real
+playback.

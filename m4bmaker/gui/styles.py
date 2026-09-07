@@ -629,6 +629,42 @@ QFrame#aboutFeatureCard {
     border: 1px solid #d0c9be;
     border-radius: 6px;
 }
+
+/* ── Review hit preview dock (ADR-0052) ──────────────────────────────── */
+QFrame#reviewPreviewDock {
+    background-color: #ebe6dd;
+    border: 1px solid #d0c9be;
+    border-radius: 6px;
+}
+QPushButton#previewPlayBtn {
+    background-color: #c45a2d;
+    border: none;
+    border-radius: 14px;
+    color: #faf8f4;
+    font-size: 11px;
+    padding: 0;
+}
+QPushButton#previewPlayBtn:hover {
+    background-color: #a84a22;
+}
+QPushButton#previewModeBtn {
+    background-color: transparent;
+    border: 1px solid #d0c9be;
+    border-radius: 10px;
+    color: #7a7a7a;
+    font-size: 11px;
+    padding: 2px 10px;
+}
+QPushButton#previewModeBtn:hover {
+    border-color: #c45a2d;
+    color: #c45a2d;
+}
+QPushButton#previewModeBtn:checked {
+    background-color: #c45a2d;
+    border-color: #c45a2d;
+    color: #faf8f4;
+    font-weight: 600;
+}
 """
 
 # ── Dark mode palette ─────────────────────────────────────────────────────────
@@ -1254,6 +1290,42 @@ QFrame#aboutFeatureCard {
     background-color: #242424;
     border: 1px solid #333333;
     border-radius: 6px;
+}
+
+/* ── Review hit preview dock (ADR-0052) ──────────────────────────────── */
+QFrame#reviewPreviewDock {
+    background-color: #242424;
+    border: 1px solid #333333;
+    border-radius: 6px;
+}
+QPushButton#previewPlayBtn {
+    background-color: #c45a2d;
+    border: none;
+    border-radius: 14px;
+    color: #f5f2ed;
+    font-size: 11px;
+    padding: 0;
+}
+QPushButton#previewPlayBtn:hover {
+    background-color: #e07a4c;
+}
+QPushButton#previewModeBtn {
+    background-color: transparent;
+    border: 1px solid #333333;
+    border-radius: 10px;
+    color: #888888;
+    font-size: 11px;
+    padding: 2px 10px;
+}
+QPushButton#previewModeBtn:hover {
+    border-color: #c45a2d;
+    color: #c45a2d;
+}
+QPushButton#previewModeBtn:checked {
+    background-color: #c45a2d;
+    border-color: #c45a2d;
+    color: #f5f2ed;
+    font-weight: 600;
 }
 """
 

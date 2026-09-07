@@ -11,8 +11,12 @@ own rendering logic in isolation.
 
 from __future__ import annotations
 
+from pathlib import Path
+from unittest.mock import PropertyMock, patch
+
 import pytest
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QHideEvent
 from PySide6.QtWidgets import (
     QApplication,
     QLabel,
@@ -41,9 +45,12 @@ from m4bmaker.gui.filter.wizard.review_step import (
     _COL_INCLUDED,
     _COL_TERM,
     _COL_TIME,
+    _MODE_CONTEXT,
+    _MODE_PADDED,
     ReviewStep,
     _mask_term,
 )
+from m4bmaker.gui.player import AudioPlayerWidget
 
 pytestmark = pytest.mark.usefixtures("qapp")
 
@@ -142,7 +149,11 @@ class _Fixture:
 
     def load(self, step: ReviewStep) -> None:
         step.set_scan(
-            self.scan, self.service, self.transcript, source_duration_ms=60_000
+            self.scan,
+            self.service,
+            self.transcript,
+            source_duration_ms=60_000,
+            source_path=Path("/books/test.m4b"),
         )
 
 
@@ -458,7 +469,13 @@ class TestRenderPlanTab:
             t += 5000  # spaced far apart -> no merging, ~120 distinct intervals
         transcript = _transcript(words)
         scan = run_scan(transcript, snapshot, NORMALIZATION_VERSION)
-        step.set_scan(scan, service, transcript, source_duration_ms=t + 1000)
+        step.set_scan(
+            scan,
+            service,
+            transcript,
+            source_duration_ms=t + 1000,
+            source_path=Path("/books/big.m4b"),
+        )
         assert step._plan_layout.count() == 120
 
         win = QMainWindow()
@@ -519,3 +536,291 @@ class TestCurrentRenderPlan:
         second = step.current_render_plan()
         assert first == second
         assert first is not second
+
+
+class TestHitPreviewPlayback:
+    """ADR-0052: hear a selected hit's own audio before deciding to
+    include or exclude it. AudioPlayerWidget itself has its own
+    dedicated tests (test_player.py) — these treat it as a black box,
+    same "test the shell, not the already-tested widget" split this
+    file already uses for the real Scan/CatalogService objects."""
+
+    def test_idle_before_any_selection(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        assert step._preview_idle_label.isHidden() is False
+        assert step._audio_player.isHidden() is True
+        assert step._selected_hit is None
+
+    def test_selecting_one_row_loads_padded_window_paused(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        with patch.object(step._audio_player, "load_paused") as mock_load:
+            step._table.selectRow(0)  # sorted by time: darn @ 500-600ms first
+
+        assert step._selected_hit is not None
+        assert step._selected_hit.entry_id == fixture.darn.id
+        # AttenuationSettings(lead_padding_ms=60, tail_padding_ms=80)
+        assert step._preview_windows[_MODE_PADDED] == (440, 680)
+        # ±2000ms, clamped to [0, source_duration_ms] -- 500-2000 clamps to 0
+        assert step._preview_windows[_MODE_CONTEXT] == (0, 2600)
+        mock_load.assert_called_once_with(Path("/books/test.m4b"), 440)
+        assert step._preview_idle_label.isHidden() is True
+        assert step._audio_player.isHidden() is False
+
+    def test_selecting_two_rows_shows_idle_and_clears_selection(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+        selection_model = step._table.selectionModel()
+        selection_model.select(
+            step._table.model().index(1, 0),
+            selection_model.SelectionFlag.Select | selection_model.SelectionFlag.Rows,
+        )
+
+        assert step._selected_hit is None
+        assert step._preview_idle_label.isHidden() is False
+        assert step._audio_player.isHidden() is True
+
+    def test_deselecting_shows_idle(self, step: ReviewStep, fixture: _Fixture) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+        step._table.clearSelection()
+        assert step._selected_hit is None
+        assert step._preview_idle_label.isHidden() is False
+
+    def test_mode_toggle_switches_to_context_window_and_reloads_paused(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+
+        with (
+            patch.object(step._audio_player, "pause") as mock_pause,
+            patch.object(step._audio_player, "load_paused") as mock_load,
+        ):
+            step._mode_context_btn.setChecked(True)
+
+        mock_pause.assert_called_once()
+        mock_load.assert_called_once_with(Path("/books/test.m4b"), 0)
+        assert step._preview_mode == _MODE_CONTEXT
+
+    def test_toggling_back_to_padded_reloads_padded_window(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+        step._mode_context_btn.setChecked(True)
+
+        with patch.object(step._audio_player, "load_paused") as mock_load:
+            step._mode_padded_btn.setChecked(True)
+
+        mock_load.assert_called_once_with(Path("/books/test.m4b"), 440)
+        assert step._preview_mode == _MODE_PADDED
+
+    def test_selecting_a_different_row_resets_mode_to_padded(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+        step._mode_context_btn.setChecked(True)
+        assert step._preview_mode == _MODE_CONTEXT
+
+        step._table.selectRow(1)  # heck @ 1000-1100ms
+
+        assert step._preview_mode == _MODE_PADDED
+        assert step._mode_padded_btn.isChecked() is True
+
+    def test_play_click_starts_play_clip_with_the_active_window(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+        with (
+            patch.object(
+                type(step._audio_player),
+                "is_playing",
+                new_callable=PropertyMock,
+                return_value=False,
+            ),
+            patch.object(step._audio_player, "play_clip") as mock_play_clip,
+        ):
+            step._preview_play_btn.click()
+        mock_play_clip.assert_called_once_with(Path("/books/test.m4b"), 440, 680)
+
+    def test_play_click_while_playing_pauses_and_resets_to_clip_start(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        """No separate Stop control (ADR-0052) — clicking mid-playback
+        halts *and* resets to this clip's own start, same as letting it
+        finish naturally already does."""
+        fixture.load(step)
+        step._table.selectRow(0)
+        with (
+            patch.object(
+                type(step._audio_player),
+                "is_playing",
+                new_callable=PropertyMock,
+                return_value=True,
+            ),
+            patch.object(step._audio_player, "pause") as mock_pause,
+            patch.object(step._audio_player, "load_paused") as mock_load,
+        ):
+            step._preview_play_btn.click()
+        mock_pause.assert_called_once()
+        mock_load.assert_called_once_with(Path("/books/test.m4b"), 440)
+
+    def test_playback_state_changed_signal_updates_button_icon(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+        step._on_audio_playback_state_changed(True)
+        assert step._preview_play_btn.text() == "⏸"
+        step._on_audio_playback_state_changed(False)
+        assert step._preview_play_btn.text() == "▶"
+
+    def test_preview_label_shows_term_and_tooltip_has_padding_detail(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+        assert "darn" in step._preview_label.text()
+        tooltip = step._preview_label.toolTip()
+        assert "darn" in tooltip
+        assert "lead-in" in tooltip
+        assert "tail" in tooltip
+
+    def test_context_mode_tooltip_explains_before_after(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+        step._mode_context_btn.setChecked(True)
+        assert "before / after" in step._preview_label.toolTip()
+
+    def test_masked_term_stays_masked_in_preview_label(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(2)  # badword @ 1500-1600ms, in a masked category
+        assert step._selected_hit is not None
+        assert step._selected_hit.entry_id == fixture.slur.id
+        assert "badword" not in step._preview_label.toolTip()
+        assert _mask_term("badword") in step._preview_label.toolTip()
+
+    def test_long_term_is_elided_with_full_text_in_tooltip(
+        self, step: ReviewStep, service: CatalogService
+    ) -> None:
+        cat = service.create_category("Crude language")
+        phrase = "a genuinely absurdly long multi word catalog phrase entry"
+        entry, _ = service.create_entry(cat.id, phrase)
+        profile = service.create_profile("Long", entry_ids=[entry.id])
+        snapshot = service.create_snapshot(profile.id)
+        words = [_word(w, i * 200, i * 200 + 150) for i, w in enumerate(phrase.split())]
+        transcript = _transcript(words)
+        scan = run_scan(transcript, snapshot, NORMALIZATION_VERSION)
+        step.set_scan(
+            scan,
+            service,
+            transcript,
+            source_duration_ms=10_000,
+            source_path=Path("/books/long.m4b"),
+        )
+
+        step._table.selectRow(0)
+
+        full = f'Previewing "{phrase}"'
+        assert step._preview_label.text() != full
+        assert "…" in step._preview_label.text()
+        assert phrase in step._preview_label.toolTip()
+
+    def test_hide_event_stops_playback(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+        with patch.object(step._audio_player, "stop") as mock_stop:
+            step.hideEvent(QHideEvent())
+        mock_stop.assert_called_once()
+
+    def test_set_scan_again_resets_preview_to_idle(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+        assert step._selected_hit is not None
+
+        with patch.object(step._audio_player, "stop") as mock_stop:
+            fixture.load(step)
+
+        mock_stop.assert_called_once()
+        assert step._selected_hit is None
+        assert step._preview_idle_label.isHidden() is False
+
+    def test_audio_player_built_with_show_controls_false(
+        self, step: ReviewStep
+    ) -> None:
+        # The dock drives its own Play (and has no Stop at all) rather
+        # than this widget's own whole-file pause/resume semantics, and
+        # shows its own clip-relative progress rather than this
+        # widget's own file-absolute slider/time — none of the four
+        # built-in row widgets may appear in the row.
+        assert isinstance(step._audio_player, AudioPlayerWidget)
+        row = step._audio_player.layout().itemAt(0).layout()
+        widgets = [row.itemAt(i).widget() for i in range(row.count())]
+        assert step._audio_player._play_btn not in widgets
+        assert step._audio_player._stop_btn not in widgets
+        assert step._audio_player._slider not in widgets
+        assert step._audio_player._time_lbl not in widgets
+        assert step._preview_play_btn in widgets
+        assert step._preview_progress in widgets
+        assert step._preview_time_label in widgets
+
+    def test_selecting_a_hit_resets_progress_display_immediately(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+        # padded window for "darn" (500-600ms, lead=60/tail=80) is 240ms
+        assert step._preview_progress.value() == 0
+        assert step._preview_time_label.text() == "0.0s / 0.2s"
+
+    def test_position_changed_updates_progress_relative_to_the_clip(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)  # padded window: 440-680ms (240ms long)
+        step._on_audio_position_changed(560)  # 120ms into the clip == 50%
+        assert step._preview_progress.value() == 500
+        assert step._preview_time_label.text() == "0.1s / 0.2s"
+
+    def test_position_changed_clamps_to_the_clip_bounds(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._table.selectRow(0)
+        step._on_audio_position_changed(999_999)  # far past the clip's own end
+        assert step._preview_progress.value() == 1000
+        step._on_audio_position_changed(0)  # before the clip's own start
+        assert step._preview_progress.value() == 0
+
+    def test_position_changed_before_any_selection_is_a_noop(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._on_audio_position_changed(5000)  # must not raise with no hit selected
+
+    def test_context_column_does_not_wrap(self, step: ReviewStep) -> None:
+        assert step._table.wordWrap() is False
+
+    def test_context_cell_tooltip_has_the_full_text(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        item = _item(step._table, 0, _COL_CONTEXT)
+        assert item.toolTip() == item.text()
+        assert len(item.toolTip()) > 0

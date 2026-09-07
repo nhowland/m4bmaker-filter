@@ -31,18 +31,37 @@ directly rather than only through the now-real end-to-end wizard flow.
 purely to unblock its own successor: Render needed a public way to read
 this screen's *live* include/exclude decisions as a real ``RenderPlan``,
 which nothing outside this widget could reach before.
+
+**Hit preview playback (ADR-0052)** lets a User hear a selected hit's
+own audio before deciding to include or exclude it, rather than relying
+only on the transcript's text. A single ``AudioPlayerWidget``
+(``m4bmaker/gui/player.py`` — the base app's own audio widget, imported
+directly rather than duplicated; its ``load``/``load_paused`` interface
+takes only a path and millisecond offsets, no ``Book``/``Chapter``
+coupling) is docked directly below the Hits table, matching where the
+base app's own Chapters tab already docks this exact widget below its
+own big table. Two toggleable windows per hit: the *padded* window
+(what Render will actually silence) or a fixed ±2s *context* window
+(for "is this really the flagged word") — see ``AudioPlayerWidget.
+play_clip()`` for the auto-stop-at-a-boundary mechanism this relies on.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QHideEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QComboBox,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QTableWidget,
@@ -62,6 +81,7 @@ from m4bmaker.filter.models import (
 )
 from m4bmaker.filter.scan import Scan, TranscriptWordIndex, build_report
 from m4bmaker.filter.transcript import Transcript
+from m4bmaker.gui.player import AudioPlayerWidget
 
 from .step_base import WizardStep
 
@@ -75,6 +95,21 @@ _COL_CONFIDENCE = 5
 _ROLE_HIT_ID = Qt.ItemDataRole.UserRole
 
 _FILTER_ALL = "__all__"
+
+#: Preview modes (ADR-0052) — a plain ±2s either side of the hit, the
+#: same fixed-seconds choice made over exact transcript word-count
+#: boundaries (steady audiobook narration pace already reads as "a few
+#: words" at this length; word-count boundaries don't avoid crossing a
+#: chapter break any better than fixed seconds do either).
+_MODE_PADDED = "padded"
+_MODE_CONTEXT = "context"
+_CONTEXT_MS = 2000
+
+#: Elide budget for the preview dock's own term label — the same
+#: fixed-width elide-with-tooltip convention _InfoPanel's own
+#: _ROW_VALUE_ELIDE_WIDTH already established in source_step.py, sized
+#: for this row's own compact layout rather than that panel's wider one.
+_PREVIEW_LABEL_ELIDE_WIDTH = 170
 
 
 def _mask_term(term: str) -> str:
@@ -109,6 +144,7 @@ class ReviewStep(WizardStep):
         self._word_index: TranscriptWordIndex | None = None
         self._source_duration_ms = 0
         self._attenuation: AttenuationSettings | None = None
+        self._source_path: Path | None = None
 
         self._filter_category = _FILTER_ALL
         self._filter_term = _FILTER_ALL
@@ -117,8 +153,30 @@ class ReviewStep(WizardStep):
         self._sort_key = "time"
         self._sort_descending = False
 
+        # ── hit preview playback (ADR-0052) ─────────────────────────────
+        self._selected_hit: ScanHit | None = None
+        self._preview_mode = _MODE_PADDED
+        #: {_MODE_PADDED/_MODE_CONTEXT: (start_ms, end_ms)} for whichever
+        #: hit is currently selected -- computed once on selection, not
+        #: recomputed per mode switch or per Play click.
+        self._preview_windows: dict[str, tuple[int, int]] = {}
+        self._preview_attenuation: AttenuationSettings | None = None
+
         self._build_ui()
         self._refresh()
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        # Leaving Review (Back/Continue, or the wizard closing) must not
+        # leave audio quietly playing behind the scenes -- the wizard
+        # shell has no per-step lifecycle hook of its own, but switching
+        # QStackedWidget pages already fires real hide events on the
+        # outgoing step, so this needs no shell changes.
+        self._audio_player.stop()
+        super().hideEvent(event)
+
+    def _effective_attenuation(self) -> AttenuationSettings:
+        assert self._scan is not None
+        return self._attenuation or self._scan.profile_snapshot.attenuation
 
     # ── construction ─────────────────────────────────────────────────────
 
@@ -197,6 +255,15 @@ class ReviewStep(WizardStep):
         layout.addLayout(bulk_row)
 
         self._table = QTableWidget(0, 6)
+        # QTableWidget.wordWrap defaults to True in Qt -- a long enough
+        # Context cell (up to ~10 words of before/after context,
+        # TranscriptWordIndex's own window) can silently wrap onto 2-3
+        # lines and balloon that one row's height, cutting how many
+        # rows fit in the same pixel space. Every row must stay exactly
+        # one line, same guarantee _InfoPanel's own row values already
+        # make in source_step.py -- full text still recoverable via
+        # tooltip (set per-row below), same convention.
+        self._table.setWordWrap(False)
         self._table.setHorizontalHeaderLabels(
             ["Included", "Time", "Category", "Term", "Context", "Conf."]
         )
@@ -218,10 +285,111 @@ class ReviewStep(WizardStep):
         self._table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self._table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self._table.itemSelectionChanged.connect(self._update_bulk_bar)
+        self._table.itemSelectionChanged.connect(self._update_preview_selection)
         self._table.itemChanged.connect(self._on_item_changed)
         layout.addWidget(self._table, stretch=1)
 
+        layout.addWidget(self._build_preview_dock())
+
         return pane
+
+    def _build_preview_dock(self) -> QFrame:
+        """The hit preview playback dock (ADR-0052) — a single slim row
+        directly below the Hits table, not a third tab: the whole point
+        is hearing the audio *while* looking at the Context column and
+        the Include checkbox for that same hit, and a separate tab would
+        split those across two screens. Mirrors where the base app's own
+        Chapters tab already docks this exact widget below its own big
+        table (``gui/window.py``), including that tab's own trick of
+        inserting extra widgets directly into the player's row layout —
+        here, a Play button and mode toggle that drive :meth:`AudioPlayerWidget.
+        play_clip`/``pause`` directly rather than that widget's own
+        Play/Stop (built with ``show_controls=False``: this dock's ▶/⏸
+        always resets to the clip's own start on pause, since these
+        clips run a few seconds and resuming mid-clip isn't worth a
+        second control the way it is for a whole book)."""
+        container = QFrame()
+        container.setObjectName("reviewPreviewDock")
+        container.setFixedHeight(44)
+        root = QHBoxLayout(container)
+        root.setContentsMargins(12, 0, 12, 0)
+
+        self._preview_idle_label = QLabel(
+            "Select a hit above to preview the audio that will be muted."
+        )
+        self._preview_idle_label.setObjectName("statusLabel")
+        root.addWidget(self._preview_idle_label)
+
+        self._audio_player = AudioPlayerWidget(show_controls=False)
+        root.addWidget(self._audio_player, stretch=1)
+
+        self._preview_play_btn = QPushButton("▶")
+        self._preview_play_btn.setFixedSize(28, 28)
+        self._preview_play_btn.setObjectName("previewPlayBtn")
+        self._preview_play_btn.setToolTip("Play / Pause")
+        self._preview_play_btn.clicked.connect(self._on_preview_play_clicked)
+
+        self._preview_label = QLabel("")
+        self._preview_label.setToolTip("")
+
+        self._mode_padded_btn = QPushButton("Filtered word")
+        self._mode_padded_btn.setObjectName("previewModeBtn")
+        self._mode_padded_btn.setCheckable(True)
+        self._mode_padded_btn.setChecked(True)
+        self._mode_context_btn = QPushButton("Word in context")
+        self._mode_context_btn.setObjectName("previewModeBtn")
+        self._mode_context_btn.setCheckable(True)
+        self._mode_group = QButtonGroup(container)
+        self._mode_group.setExclusive(True)
+        self._mode_group.addButton(self._mode_padded_btn)
+        self._mode_group.addButton(self._mode_context_btn)
+        self._mode_padded_btn.toggled.connect(self._on_mode_toggled)
+        self._mode_context_btn.toggled.connect(self._on_mode_toggled)
+
+        # Clip-relative, not the widget's own whole-file slider/time --
+        # a clip is a few seconds out of a multi-hour book, so the
+        # widget's own file-absolute progress barely moves at all
+        # during playback (caught by the User against the real app).
+        # Driven entirely by AudioPlayerWidget.position_changed below.
+        self._preview_progress = QProgressBar()
+        self._preview_progress.setObjectName("previewProgress")
+        self._preview_progress.setRange(0, 1000)
+        self._preview_progress.setTextVisible(False)
+        self._preview_progress.setFixedHeight(4)
+
+        self._preview_time_label = QLabel("0.0s / 0.0s")
+        self._preview_time_label.setObjectName("statusLabel")
+        self._preview_time_label.setMinimumWidth(90)
+        self._preview_time_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        # Same trick the base app's Chapters tab already uses to add its
+        # own prev/next-chapter buttons to this widget's row — inserted
+        # in reverse order since each insertWidget(0, ...) pushes the
+        # previous ones right. show_controls=False means the row starts
+        # empty, so this ends up
+        # [play][label][mode][mode][progress][time].
+        outer_layout = self._audio_player.layout()
+        assert outer_layout is not None
+        row_item = outer_layout.itemAt(0)
+        assert row_item is not None
+        player_row = row_item.layout()
+        assert isinstance(player_row, QHBoxLayout)
+        player_row.insertWidget(0, self._mode_context_btn)
+        player_row.insertWidget(0, self._mode_padded_btn)
+        player_row.insertWidget(0, self._preview_label)
+        player_row.insertWidget(0, self._preview_play_btn)
+        player_row.addWidget(self._preview_progress, 1)
+        player_row.addWidget(self._preview_time_label)
+
+        self._audio_player.playback_state_changed.connect(
+            self._on_audio_playback_state_changed
+        )
+        self._audio_player.position_changed.connect(self._on_audio_position_changed)
+
+        self._show_preview_idle()
+        return container
 
     def _build_plan_tab(self) -> QWidget:
         pane = QWidget()
@@ -268,20 +436,29 @@ class ReviewStep(WizardStep):
         catalog: CatalogService,
         transcript: Transcript,
         source_duration_ms: int,
+        source_path: Path,
         attenuation: AttenuationSettings | None = None,
     ) -> None:
         """Load a completed :class:`~m4bmaker.filter.scan.Scan` for review.
         The caller (the Scan step, ADR-0018) owns producing the scan;
-        this step only displays and records decisions against it."""
+        this step only displays and records decisions against it.
+
+        *source_path* (ADR-0052) is the real source ``.m4b`` — the same
+        one ``SourceStep.manifest.source_path`` already holds and Render
+        already reads — needed here only for hit preview playback."""
         self._scan = scan
         self._catalog = catalog
         self._word_index = TranscriptWordIndex(transcript)
         self._source_duration_ms = source_duration_ms
+        self._source_path = source_path
         self._attenuation = attenuation
         self._filter_category = _FILTER_ALL
         self._filter_term = _FILTER_ALL
         self._filter_confidence = _FILTER_ALL
         self._filter_state = _FILTER_ALL
+        self._selected_hit = None
+        self._audio_player.stop()
+        self._show_preview_idle()
         self._refresh()
 
     def current_render_plan(self) -> RenderPlan | None:
@@ -294,11 +471,10 @@ class ReviewStep(WizardStep):
         the first real predecessor Render is wired to (ADR-0019)."""
         if self._scan is None:
             return None
-        effective_attenuation = (
-            self._attenuation or self._scan.profile_snapshot.attenuation
-        )
         return build_render_plan(
-            self._scan.included_hits(), self._source_duration_ms, effective_attenuation
+            self._scan.included_hits(),
+            self._source_duration_ms,
+            self._effective_attenuation(),
         )
 
     # ── derived data ─────────────────────────────────────────────────────
@@ -445,8 +621,10 @@ class ReviewStep(WizardStep):
             term_item.setFlags(term_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
             self._table.setItem(row, _COL_TERM, term_item)
 
-            context_item = QTableWidgetItem(self._context_text(hit))
+            context_text = self._context_text(hit)
+            context_item = QTableWidgetItem(context_text)
             context_item.setFlags(context_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            context_item.setToolTip(context_text)
             self._table.setItem(row, _COL_CONTEXT, context_item)
 
             conf_text = (
@@ -481,11 +659,10 @@ class ReviewStep(WizardStep):
             self._plan_layout.addWidget(QLabel("No scan loaded yet."))
             return
 
-        effective_attenuation = (
-            self._attenuation or self._scan.profile_snapshot.attenuation
-        )
         plan = build_render_plan(
-            self._scan.included_hits(), self._source_duration_ms, effective_attenuation
+            self._scan.included_hits(),
+            self._source_duration_ms,
+            self._effective_attenuation(),
         )
         total_ms = sum(iv.end_ms - iv.start_ms for iv in plan.intervals)
         self._plan_summary_label.setText(
@@ -580,6 +757,146 @@ class ReviewStep(WizardStep):
         self._table.clearSelection()
         self._refresh_stats_and_table()
         self._refresh_plan_tab()
+
+    # ── hit preview playback (ADR-0052) ─────────────────────────────────
+
+    def _update_preview_selection(self) -> None:
+        rows = self._table.selectionModel().selectedRows()
+        if len(rows) != 1 or self._scan is None or self._source_path is None:
+            self._selected_hit = None
+            self._audio_player.stop()
+            self._show_preview_idle()
+            return
+
+        item = self._table.item(rows[0].row(), _COL_INCLUDED)
+        hit_id = item.data(_ROLE_HIT_ID) if item is not None else None
+        hit = next((h for h in self._scan.hits if h.id == hit_id), None)
+        if hit is None:
+            self._selected_hit = None
+            self._audio_player.stop()
+            self._show_preview_idle()
+            return
+
+        self._selected_hit = hit
+        self._load_preview_windows()
+        self._show_preview_loaded()
+
+    def _load_preview_windows(self) -> None:
+        """Compute both preview windows for the newly-selected hit and
+        load-paused at the (now default) padded window's start —
+        mirrors the base app's own chapter-preview click behavior
+        exactly (seek position, don't auto-play) rather than a new
+        pattern for this screen."""
+        hit = self._selected_hit
+        assert hit is not None
+        assert self._source_path is not None
+        attenuation = self._effective_attenuation()
+        self._preview_attenuation = attenuation
+        self._preview_windows = {
+            _MODE_PADDED: (
+                max(0, hit.start_ms - attenuation.lead_padding_ms),
+                min(self._source_duration_ms, hit.end_ms + attenuation.tail_padding_ms),
+            ),
+            _MODE_CONTEXT: (
+                max(0, hit.start_ms - _CONTEXT_MS),
+                min(self._source_duration_ms, hit.end_ms + _CONTEXT_MS),
+            ),
+        }
+        self._preview_mode = _MODE_PADDED
+        self._mode_padded_btn.setChecked(True)
+        self._render_preview_label()
+        start_ms, _ = self._preview_windows[self._preview_mode]
+        self._audio_player.load_paused(self._source_path, start_ms)
+
+    def _render_preview_label(self) -> None:
+        hit = self._selected_hit
+        attenuation = self._preview_attenuation
+        assert hit is not None
+        assert attenuation is not None
+        start_ms, end_ms = self._preview_windows[self._preview_mode]
+
+        full_text = f'Previewing "{self._display_term(hit)}"'
+        metrics = self._preview_label.fontMetrics()
+        self._preview_label.setText(
+            metrics.elidedText(
+                full_text, Qt.TextElideMode.ElideRight, _PREVIEW_LABEL_ELIDE_WIDTH
+            )
+        )
+        if self._preview_mode == _MODE_CONTEXT:
+            detail = (
+                f"{_ms_to_clock(start_ms)}–{_ms_to_clock(end_ms)} "
+                f"({_CONTEXT_MS // 1000}s before / after)"
+            )
+        else:
+            detail = (
+                f"{_ms_to_clock(start_ms)}–{_ms_to_clock(end_ms)} (incl. "
+                f"{attenuation.lead_padding_ms / 1000:.1f}s lead-in / "
+                f"{attenuation.tail_padding_ms / 1000:.1f}s tail)"
+            )
+        self._preview_label.setToolTip(f"{full_text} — {detail}")
+
+        # Immediate reset, not waiting on the next position_changed
+        # signal to arrive (load_paused() defers the seek by up to
+        # AudioPlayerWidget._SEEK_DELAY_MS on a brand new source) --
+        # otherwise the bar/time could flash the *previous* clip's
+        # last-known progress for a moment after switching hits or mode.
+        clip_len_ms = max(1, end_ms - start_ms)
+        self._preview_progress.setValue(0)
+        self._preview_time_label.setText(f"0.0s / {clip_len_ms / 1000:.1f}s")
+
+    def _on_audio_position_changed(self, position_ms: int) -> None:
+        if self._selected_hit is None:
+            return
+        start_ms, end_ms = self._preview_windows[self._preview_mode]
+        clip_len_ms = max(1, end_ms - start_ms)
+        elapsed_ms = max(0, min(clip_len_ms, position_ms - start_ms))
+        self._preview_progress.setValue(round(elapsed_ms / clip_len_ms * 1000))
+        self._preview_time_label.setText(
+            f"{elapsed_ms / 1000:.1f}s / {clip_len_ms / 1000:.1f}s"
+        )
+
+    def _on_mode_toggled(self, checked: bool) -> None:
+        if not checked or self._selected_hit is None or self._source_path is None:
+            return
+        mode = (
+            _MODE_CONTEXT if self.sender() is self._mode_context_btn else _MODE_PADDED
+        )
+        if mode == self._preview_mode:
+            return
+        self._preview_mode = mode
+        self._audio_player.pause()
+        self._render_preview_label()
+        start_ms, _ = self._preview_windows[mode]
+        self._audio_player.load_paused(self._source_path, start_ms)
+
+    def _on_preview_play_clicked(self) -> None:
+        if self._selected_hit is None or self._source_path is None:
+            return
+        start_ms, end_ms = self._preview_windows[self._preview_mode]
+        if self._audio_player.is_playing:
+            # No separate Stop control (ADR-0052): these clips run a few
+            # seconds, so resuming mid-clip isn't worth a second button
+            # the way it is for a whole book -- ▶/⏸ mid-playback always
+            # halts *and* resets to this clip's own start, same as
+            # letting it finish naturally already does.
+            self._audio_player.pause()
+            self._audio_player.load_paused(self._source_path, start_ms)
+        else:
+            self._audio_player.play_clip(self._source_path, start_ms, end_ms)
+
+    def _on_audio_playback_state_changed(self, playing: bool) -> None:
+        # Single source of truth for this button's icon -- also fires
+        # for play_clip()'s own automatic pause at the clip's end, not
+        # just for clicks on this button itself.
+        self._preview_play_btn.setText("⏸" if playing else "▶")
+
+    def _show_preview_idle(self) -> None:
+        self._preview_idle_label.setVisible(True)
+        self._audio_player.setVisible(False)
+
+    def _show_preview_loaded(self) -> None:
+        self._preview_idle_label.setVisible(False)
+        self._audio_player.setVisible(True)
 
 
 def _format_duration(ms: int) -> str:

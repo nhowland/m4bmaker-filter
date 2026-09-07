@@ -257,6 +257,240 @@ class TestAudioPlayerWidgetDeferredSeek:
         assert not w._seek_timer.isActive()
 
 
+class TestAudioPlayerWidgetShowControls:
+    """ADR-0052: an embedder (Review's hit preview dock) that drives its
+    own Play/Stop/progress can ask this widget to leave all four of its
+    own row widgets out of the visible row -- still constructed (so
+    every other method here has something to update), just never added
+    to the layout. The dock's own progress is clip-relative, not this
+    widget's whole-file slider/time, which barely moves at all over a
+    clip that's a few seconds out of a multi-hour book."""
+
+    def test_default_shows_play_stop_slider_and_time(self, qapp):
+        w = AudioPlayerWidget()
+        row = w.layout().itemAt(0).layout()
+        widgets = [row.itemAt(i).widget() for i in range(row.count())]
+        assert w._play_btn in widgets
+        assert w._stop_btn in widgets
+        assert w._slider in widgets
+        assert w._time_lbl in widgets
+
+    def test_show_controls_false_omits_everything_from_row(self, qapp):
+        w = AudioPlayerWidget(show_controls=False)
+        row = w.layout().itemAt(0).layout()
+        assert row.count() == 0
+        widgets = [row.itemAt(i).widget() for i in range(row.count())]
+        assert w._play_btn not in widgets
+        assert w._stop_btn not in widgets
+        assert w._slider not in widgets
+        assert w._time_lbl not in widgets
+        # Still real objects -- _update_buttons() etc. keep working
+        # unmodified regardless of show_controls.
+        assert w._play_btn is not None
+        assert w._stop_btn is not None
+        assert w._slider is not None
+        assert w._time_lbl is not None
+
+
+class TestAudioPlayerWidgetPositionChangedSignal:
+    """ADR-0052 follow-up: an embedder building its own clip-relative
+    progress display needs live position updates, not just this
+    widget's own (hidden, in that case) slider/time label."""
+
+    def test_fires_with_the_real_position_on_every_update(self, qapp):
+        w = AudioPlayerWidget()
+        received: list[int] = []
+        w.position_changed.connect(received.append)
+        w._on_position_changed(4200)
+        assert received == [4200]
+
+    def test_fires_even_when_show_controls_false(self, qapp):
+        # The signal doesn't depend on the row's own slider/time label
+        # existing in the layout at all.
+        w = AudioPlayerWidget(show_controls=False)
+        received: list[int] = []
+        w.position_changed.connect(received.append)
+        w._on_position_changed(1000)
+        assert received == [1000]
+
+
+class TestAudioPlayerWidgetPlayClip:
+    """ADR-0052: a short bounded preview, not a full-file playthrough."""
+
+    def test_new_source_sets_clip_end_and_plays(self, qapp, tmp_path):
+        p = tmp_path / "t.mp3"
+        p.write_bytes(b"\x00")
+        w = AudioPlayerWidget()
+        with (
+            patch.object(w._player, "setSource") as mock_set_source,
+            patch.object(w._player, "play") as mock_play,
+        ):
+            w.play_clip(p, start_ms=1000, end_ms=3000)
+        mock_set_source.assert_called_once()
+        mock_play.assert_called_once()
+        assert w._clip_end_ms == 3000
+        assert w._pending_seek_ms == 1000
+
+    def test_same_source_seeks_and_plays_without_reload(self, qapp, tmp_path):
+        from PySide6.QtCore import QUrl
+
+        p = tmp_path / "t.mp3"
+        p.write_bytes(b"\x00")
+        w = AudioPlayerWidget()
+        url = QUrl.fromLocalFile(str(p))
+        with (
+            patch.object(w._player, "source", return_value=url),
+            patch.object(w._player, "setPosition") as mock_sp,
+            patch.object(w._player, "play") as mock_play,
+        ):
+            w.play_clip(p, start_ms=1500, end_ms=4000)
+        mock_sp.assert_called_once_with(1500)
+        mock_play.assert_called_once()
+        assert w._clip_end_ms == 4000
+
+    def test_always_restarts_from_start_even_if_already_at_the_end(
+        self, qapp, tmp_path
+    ):
+        """No separate Stop control (ADR-0052) -- pressing Play again
+        after a clip finished must restart from its own start, not
+        resume from wherever playback last was."""
+        from PySide6.QtCore import QUrl
+
+        p = tmp_path / "t.mp3"
+        p.write_bytes(b"\x00")
+        w = AudioPlayerWidget()
+        url = QUrl.fromLocalFile(str(p))
+        with (
+            patch.object(w._player, "source", return_value=url),
+            patch.object(w._player, "setPosition") as mock_sp,
+            patch.object(w._player, "play"),
+        ):
+            w.play_clip(p, start_ms=2000, end_ms=2500)
+        mock_sp.assert_called_once_with(2000)
+
+
+class TestAudioPlayerWidgetPause:
+    def test_pause_calls_player_pause_not_stop(self, qapp):
+        w = AudioPlayerWidget()
+        with (
+            patch.object(w._player, "pause") as mock_pause,
+            patch.object(w._player, "stop") as mock_stop,
+        ):
+            w.pause()
+        mock_pause.assert_called_once()
+        mock_stop.assert_not_called()
+
+
+class TestAudioPlayerWidgetClipAutoStop:
+    """The mechanism play_clip() relies on: _on_position_changed pausing
+    once position reaches the clip's own end (ADR-0052)."""
+
+    def test_reaching_clip_end_while_playing_pauses(self, qapp):
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        w = AudioPlayerWidget()
+        w._clip_end_ms = 3000
+        with (
+            patch.object(
+                w._player,
+                "playbackState",
+                return_value=QMediaPlayer.PlaybackState.PlayingState,
+            ),
+            patch.object(w._player, "pause") as mock_pause,
+            patch.object(w._player, "duration", return_value=10_000),
+        ):
+            w._on_position_changed(3000)
+        mock_pause.assert_called_once()
+
+    def test_before_clip_end_does_not_pause(self, qapp):
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        w = AudioPlayerWidget()
+        w._clip_end_ms = 3000
+        with (
+            patch.object(
+                w._player,
+                "playbackState",
+                return_value=QMediaPlayer.PlaybackState.PlayingState,
+            ),
+            patch.object(w._player, "pause") as mock_pause,
+            patch.object(w._player, "duration", return_value=10_000),
+        ):
+            w._on_position_changed(2999)
+        mock_pause.assert_not_called()
+
+    def test_no_clip_end_set_never_pauses(self, qapp):
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        w = AudioPlayerWidget()
+        assert w._clip_end_ms is None
+        with (
+            patch.object(
+                w._player,
+                "playbackState",
+                return_value=QMediaPlayer.PlaybackState.PlayingState,
+            ),
+            patch.object(w._player, "pause") as mock_pause,
+            patch.object(w._player, "duration", return_value=10_000),
+        ):
+            w._on_position_changed(999_999)
+        mock_pause.assert_not_called()
+
+    def test_manual_slider_release_clears_clip_end(self, qapp):
+        w = AudioPlayerWidget()
+        w._clip_end_ms = 3000
+        w._slider.setMaximum(10_000)
+        w._slider.setValue(500)
+        with patch.object(w._player, "setPosition"):
+            w._on_slider_released()
+        assert w._clip_end_ms is None
+
+    def test_load_clears_a_stale_clip_end(self, qapp, tmp_path):
+        p = tmp_path / "t.mp3"
+        p.write_bytes(b"\x00")
+        w = AudioPlayerWidget()
+        w._clip_end_ms = 3000
+        with patch.object(w._player, "setSource"), patch.object(w._player, "play"):
+            w.load(p, start_ms=0)
+        assert w._clip_end_ms is None
+
+    def test_load_paused_clears_a_stale_clip_end(self, qapp, tmp_path):
+        p = tmp_path / "t.mp3"
+        p.write_bytes(b"\x00")
+        w = AudioPlayerWidget()
+        w._clip_end_ms = 3000
+        with patch.object(w._player, "setSource"):
+            w.load_paused(p, start_ms=0)
+        assert w._clip_end_ms is None
+
+    def test_stop_clears_a_stale_clip_end(self, qapp):
+        w = AudioPlayerWidget()
+        w._clip_end_ms = 3000
+        with patch.object(w._player, "stop"):
+            w.stop()
+        assert w._clip_end_ms is None
+
+
+class TestAudioPlayerWidgetPlaybackStateChangedSignal:
+    def test_fires_true_when_playing_state_reported(self, qapp):
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        w = AudioPlayerWidget()
+        received: list[bool] = []
+        w.playback_state_changed.connect(received.append)
+        w._on_state_changed(QMediaPlayer.PlaybackState.PlayingState)
+        assert received == [True]
+
+    def test_fires_false_when_paused_state_reported(self, qapp):
+        from PySide6.QtMultimedia import QMediaPlayer
+
+        w = AudioPlayerWidget()
+        received: list[bool] = []
+        w.playback_state_changed.connect(received.append)
+        w._on_state_changed(QMediaPlayer.PlaybackState.PausedState)
+        assert received == [False]
+
+
 class TestAudioPlayerWidgetRelease:
     """M6: release() lets an external process rewrite the open file safely."""
 
