@@ -1,5 +1,11 @@
 # This fork
 
+> 🚧 **Work in progress.** The offensive-speech filtering feature this fork
+> adds is under active development and not yet feature-complete or
+> released. Expect breaking changes with no notice. The upstream
+> conversion tool it's built on is unaffected and safe to use on its own —
+> see [sageframe-no-kaji/m4bmaker](https://github.com/sageframe-no-kaji/m4bmaker).
+
 `m4bmaker-filter` is a fork of [sageframe-no-kaji/m4bmaker](https://github.com/sageframe-no-kaji/m4bmaker)
 adding an offline offensive-speech filtering feature for M4B audiobooks.
 Everything in this file and `docs/adr/`, `docs/PRD.md`, and `docs/TESTING.md`
