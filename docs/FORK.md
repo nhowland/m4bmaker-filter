@@ -1906,9 +1906,11 @@ instances, confirmed by direct measurement of the real rendered audio.
 Three distinct sub-causes, all "recognition," not "timing": multi-piece
 splits ("damn" inside "Goddamnit" tokenized as four separate pieces,
 beyond the Variation Scanner's existing two-piece check), outright
-misrecognition ("fuck" heard as "folk," a different word entirely),
-and dropped audio ("bitch" recognized in one independent transcription
-of the same audio but nothing at all in another).
+misrecognition ("spark" heard as "shark," a different word entirely —
+non-profane stand-in for the actual catalog word this covered, see
+ADR-0042), and dropped audio ("thorn" recognized in one independent
+transcription of the same audio but nothing at all in another, same
+stand-in convention).
 
 Only the first is fixable by extending the scanner's existing
 mechanism. `find_word_variations()`'s split-token check generalized
@@ -1916,7 +1918,7 @@ from exactly two adjacent tokens to up to 4, still exact-string-
 equality only at every length — 4 chosen because it's exactly what the
 real Book 2 case needed with one piece of headroom. Explicitly rejected
 adding fuzzy/edit-distance matching to also catch the misrecognition
-case: "folk" sits at edit-distance 2 from "fuck," a threshold loose
+case: "shark" sits at edit-distance 1 from "spark," a threshold loose
 enough to catch it would also flag real, unrelated words throughout a
 transcript, guarded with a permanent regression test.
 
@@ -2524,3 +2526,144 @@ clean. Verified in the real app at the same large window size and a
 real 820-hit scan: 14 full single-line rows with no gap, and the
 progress bar visibly filling (`0.5s / 1.3s`, ~75%) during real
 playback.
+
+## Options for reducing missed filtered words — proposed, no decision yet (ADR-0053, 2026-09-17)
+
+The Contributor's hypothesis (Whisper's tokenization of compound words/
+phrases causes missed hits) is only part of the real picture — ADR-0042's
+Book 2 investigation already found three distinct causes, and only one
+(multi-piece token splits) is a tokenization problem at all; the other
+two (outright misrecognition to a different real word, and total
+recognition dropout) need different tools entirely, since no
+pattern-matching technique can flag a word that Whisper never produced
+or that it heard as something else valid.
+
+ADR-0053 records five options rather than picking one: full-transcript
+review with hits masked (the only option that reaches all three failure
+categories, since it doesn't depend on any automated technique
+recognizing the miss); extending the variation scanner's own heuristics
+as a human-reviewed curation aid; phonetic/sound-alike suggestions
+(same advisory-only treatment, targeting misrecognition specifically);
+surfacing Whisper's existing per-word confidence score as a triage
+signal (data already computed, currently unused by any GUI); and
+targeted re-transcription of low-confidence spans with a stronger pass
+(flagged as needing its own validation spike, since ADR-0049 already
+found `base.en`/`small.en` produce identical hits on the one real case
+tested). No option is implemented; see ADR-0053 for the full analysis,
+recommended sequencing, and open questions left for Contributor
+decision.
+
+## Options 3 and 4 rejected by real-data testing (ADR-0053, 2026-09-17)
+
+Before building anything, the recommended sequence above was checked
+against real data the same way ADR-0042's Book 2 investigation was —
+and it didn't hold up. All 11 real, already-transcribed books cached on
+this machine were re-scanned in memory against the real "Family
+Friendly" profile, and every transcript word not covered by a real hit,
+below 90% confidence, was tested three separate ways: confidence alone
+(286,061 candidates across the 11 books, zero genuine misses in 70
+manually read), confidence plus spelling edit-distance to the real
+catalog vocabulary (8,779 candidates after fixing two real bugs in the
+comparison — a naive threshold and catalog split-token fragments like
+`"godd"` polluting the target set — still zero genuine misses in 60
+read), and confidence plus a real phonetic algorithm, metaphone (2,639
+exact-code matches, same zero-signal result; loosening the phonetic
+match to catch the motivating misrecognition case reopened the worst
+false positives and made it worse, not better).
+
+The finding, disclosed rather than smoothed over: this isn't a
+threshold-tuning problem. All three techniques fail identically because
+short profanity words are inherently close — in spelling and in any
+lossy phonetic encoding — to huge swaths of ordinary English (real
+verified pairs: `want`/`wart`, `where`/`wire`, `count`/`cant`,
+`take`/`teak` — these are non-profane stand-ins for the actual short
+catalog words involved, same convention as ADR-0042's own substitutions
+— were the recurring false-positive shapes across every technique
+tried). Options
+3 and 4 are rejected outright, not deferred. The Low Confidence tab
+mockup's UI mechanics (tab placement, exclusion-from-Hits rule, preview
+reuse, `word_variation_dialog.py` add-path) stay as a sound design
+record, but the confidence-only criterion it demonstrates should not be
+built. Option 2 is untouched by this finding (a narrower, different
+kind of check); Option 1 (full-transcript review) is now the
+recommendation's primary path, since it's the only one of the five that
+doesn't depend on an automated technique correctly guessing which words
+to flag.
+
+## Option 2 tested — safe, but no real recall gain (ADR-0053, 2026-09-18)
+
+Option 2's specific, documented gap — `variation_scan.py`'s own
+docstring names consonant-doubling (`run`->`running`) as a known,
+deliberate scope limit — was checked the same way, reusing the real
+`find_word_variations()` directly across the same 11 real books rather
+than reimplementing it. Unlike Options 3/4, this stayed structurally
+narrow (a candidate must literally start with the exact catalog word's
+letters), so it couldn't flood, and it didn't: one new candidate across
+~2.2 million words total, not thousands. But that one candidate wasn't
+genuine — it was the same false-positive class ADR-0042 already
+disclosed and marked out-of-scope (`"assess"` colliding with the
+catalog word `"asses"`), just surfaced again by a wider net, and a real
+implementation would also need to exclude non-root-form catalog entries
+(plurals, already-inflected forms) from the check to avoid generating
+exactly that kind of false positive. Zero genuine new recall: none of
+these 11 real books ever had someone say a doubling-eligible form
+(`"shitting"`, `"slutting"`, and similar) of the catalog's vocabulary.
+Verdict: safe and cheap enough to build for completeness, but disclosed
+as a low-value addition, not the kind of real recall win ADR-0042's
+split-token fix was (10 real recovered occurrences in one book).
+
+## Option 1 design settled via mockup; Low Confidence mockup deleted (ADR-0053, 2026-09-19)
+
+With Options 3/4 rejected, Option 1 (full-transcript review) became
+this ADR's primary recommendation rather than a secondary companion —
+worked through as a design discussion first, then a mockup
+(`docs/design/full-transcript-review-wireframe.html`): a new
+"Transcript" tab on the Review step, paginated by the transcript's own
+already-chapter-aligned `segments`, hits struck through and
+non-selectable. Selection is word-span (click one, drag across
+several; a drag stops at a hit's edge rather than spanning over it) —
+a persistent "＋ Add to Catalog" control and a right-click menu item
+both act on the same selection, and ADR-0052's preview player is reused
+directly to hear a span before adding it.
+
+The one real architectural question — does "Add" retroactively affect
+the current scan? — was decided explicitly: no. Review's hits are
+matched against an "immutable profile snapshot," so adding a word here
+updates the catalog only; a banner (correct singular/plural) tracks how
+many entries were added this session and prompts a re-scan, and
+newly-added words get a dashed pending-underline distinct from a real
+hit's solid strikethrough, rather than faking an already-applied state.
+An optional, explicitly-unvalidated "Highlight uncertain words" toggle
+rides along as a skim aid, off the record as a tested feature.
+
+Separately: the now-rejected Low Confidence tab's mockup
+(`docs/design/low-confidence-review-wireframe.html`) — previously kept
+as a design record per this ADR's own "what survives this finding"
+section — was deleted outright instead, both the local file and the
+published artifact, on the Contributor's call: the feature it
+demonstrated was rejected, not deferred, so there was no reason to keep
+a live link to it. `docs/adr/0053-reducing-missed-filtered-words.md`
+records the deletion and updates every cross-reference that used to
+point at the file.
+
+## Signaling the Transcript tab as optional (ADR-0053, 2026-09-19)
+
+Most Contributors should finish Review at Hits/Render Plan and never
+need the Transcript tab — it's a supplementary check, not a required
+step. Every inactive tab in this app's real `QTabWidget` already
+renders identically muted, so there was no "extra-muted" style
+available to reach for without inventing a new visual language for one
+tab. The actual, cheap levers applied to the mockup instead: tab order
+(moved last, after Render Plan, so it never interrupts Hits → Render
+Plan → Continue), a hover tooltip on the tab stating it's optional
+before anyone clicks in, and an in-tab note saying so outright — reused
+verbatim from ADR-0045's own "most people won't need to check this
+before continuing" wording for the Render Plan tab, not a new
+convention. Dropped the "NEW" badge the mockup previously carried,
+since a permanent new-ness indicator invites checking, the opposite of
+the goal. The mockup itself now opens on Hits by default, matching what
+the real app would show, rather than defaulting straight to the tab
+being demonstrated. Considered and rejected: moving this out of the tab
+row into a separate menu/link — tabs are already this step's own
+established pattern for "another view of the same Review data," and a
+second UI paradigm for one tab would draw more attention, not less.

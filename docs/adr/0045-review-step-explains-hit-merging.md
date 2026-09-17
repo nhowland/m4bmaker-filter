@@ -5,7 +5,7 @@
 ## Context
 
 The User asked what happens when two hits overlap — e.g. a single word
-("ass") and a phrase containing it ("ass holes") both flagged at the
+("cow") and a phrase containing it ("cow boy") both flagged at the
 same spot. The real answer (confirmed against `interval_planner.
 build_render_plan()` and `scan.build_report()`, not assumed): they're
 separate `ScanHit` records that get merged into one padded

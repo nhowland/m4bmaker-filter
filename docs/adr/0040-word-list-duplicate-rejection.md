@@ -17,7 +17,7 @@ outright rather than warn-and-add.
 
 `CatalogWindow._add_entry()` now checks `find_duplicate_entry()`
 *before* creating anything — the same normalized-phrase matching the
-real Matcher itself uses (so "Shit" and "shit" are correctly treated as
+real Matcher itself uses (so "Darn" and "darn" are correctly treated as
 the same word), scoped to the currently-selected category exactly like
 `find_duplicate_entry()` already does (the same word can legitimately
 exist in more than one category with different intent — unchanged).

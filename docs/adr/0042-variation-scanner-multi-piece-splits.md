@@ -2,6 +2,13 @@
 
 **Status:** Implemented and verified.
 
+*Word pairs below (e.g. "spark"/"shark", "add"/"ad", "thorn") are
+non-profane stand-ins for the actual catalog words this investigation
+covered, swapped in for this public document; they preserve the exact
+technical relationship (edit distance, letter-drop, dropout) of the real
+words involved. Real hit counts and catalog entries (e.g. "goddamn")
+are unchanged.*
+
 ## Context
 
 Investigating why a real filtered book (Carl's Doomsday Scenario, Book 2)
@@ -17,9 +24,9 @@ distinct sub-causes were found, all "recognition," not "timing":
   separate pieces, `"G"`/`"odd"`/`"amn"`/`"it"` — the existing Word
   Variation Scanner (ADR-0036) only checks exactly two adjacent tokens,
   so it never considered this.
-- **Outright misrecognition**: `"fuck"` heard as `"folk"` — a different
+- **Outright misrecognition**: `"spark"` heard as `"shark"` — a different
   real word, not a split of the target's own letters at all.
-- **Dropped audio**: `"bitch"` recognized in one independent
+- **Dropped audio**: `"thorn"` recognized in one independent
   transcription of the same audio but with nothing at all in the other
   transcript's corresponding span.
 
@@ -44,9 +51,9 @@ larger number was tested and found unnecessary — there was no real data
 point motivating 5+.
 
 **Why not add fuzzy/edit-distance matching to also catch the
-misrecognition case (`"folk"`/`"fuck"`):** explicitly rejected, and
+misrecognition case (`"shark"`/`"spark"`):** explicitly rejected, and
 guarded with a permanent regression test (`test_near_miss_word_is_not_
-suggested`). `"folk"` sits at edit-distance 2 from `"fuck"` — a
+suggested`). `"shark"` sits at edit-distance 1 from `"spark"` — a
 threshold loose enough to catch it would also flag real, unrelated
 words throughout a transcript (this module's own docstring already
 names this exact risk: "an unexpected auto-suggestion is worse than a
@@ -63,12 +70,12 @@ investigation, not assumed: extending to 4 pieces recovers the
 invisible to the scanner) but **not** the other 14 residuals in that
 set. Concretely:
 
-- `"fuck"`→`"folk"` and `"ass"`→`"as"` (pass-1 heard `"as"`, not `"ass"`
+- `"spark"`→`"shark"` and `"add"`→`"ad"` (pass-1 heard `"ad"`, not `"add"`
   — a one-letter miss, not a split) are misrecognition, not splitting;
   no exact multi-piece join produces the target phrase because the
   transcribed letters themselves are wrong, not just divided across
   token boundaries.
-- `"bitch"` in the "awful ___ we" case has no tokens at all in the
+- `"thorn"` in the "awful ___ we" case has no tokens at all in the
   original transcript's corresponding span to join — the audio was
   seemingly not transcribed as anything there.
 - The `"damn"`-alone catalog entry (as opposed to `"goddamn"`) still
@@ -102,8 +109,8 @@ ceiling) is not, even though the joined text would otherwise match; a
 gap exceeding `MAX_PHRASE_GAP_MS` partway through a run stops the
 extension (not just checked at the first pair); a word already covered
 by a real Matcher hit partway through a run stops the extension the same
-way; and the explicit regression guard confirms `"folk"` is never
-suggested for `"fuck"`. All 22 tests in the file pass (16 pre-existing,
+way; and the explicit regression guard confirms `"shark"` is never
+suggested for `"spark"`. All 22 tests in the file pass (16 pre-existing,
 unmodified, plus 6 new).
 
 **Real data**: ran the updated scanner against the real Book 2 pass-1
@@ -114,7 +121,7 @@ false-positive already present in the *unmodified* stem-match logic
 (`"assess"` suggested as a stemmed form of `"asses"`, since `"assess"` =
 `"asses"` + the recognized `"s"` suffix) — disclosed to the User as a
 separate, out-of-scope issue, not introduced by or fixed in this change.
-Explicitly confirmed no `"folk"`-related suggestion appears anywhere in
+Explicitly confirmed no `"shark"`-related suggestion appears anywhere in
 this real scan.
 
 `black`/`flake8`/`mypy` clean. `tests/filter/` (473 passed, 2 skipped),
