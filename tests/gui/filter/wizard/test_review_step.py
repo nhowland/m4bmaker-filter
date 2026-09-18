@@ -19,6 +19,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QHideEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
     QLabel,
     QMainWindow,
     QScrollArea,
@@ -47,6 +48,7 @@ from m4bmaker.gui.filter.wizard.review_step import (
     _COL_TIME,
     _MODE_CONTEXT,
     _MODE_PADDED,
+    _AddToCatalogDialog,
     ReviewStep,
     _mask_term,
 )
@@ -824,3 +826,283 @@ class TestHitPreviewPlayback:
         item = _item(step._table, 0, _COL_CONTEXT)
         assert item.toolTip() == item.text()
         assert len(item.toolTip()) > 0
+
+
+class TestTranscriptTabPlacement:
+    def test_transcript_is_the_last_tab(self, step: ReviewStep) -> None:
+        tabs = step.findChild(QTabWidget)
+        assert tabs is not None
+        labels = [tabs.tabText(i) for i in range(tabs.count())]
+        assert labels == ["Hits", "Render Plan", "Transcript"]
+
+    def test_transcript_tab_has_an_optional_tooltip(self, step: ReviewStep) -> None:
+        tabs = step.findChild(QTabWidget)
+        assert tabs is not None
+        tooltip = tabs.tabToolTip(2)
+        assert "optional" in tooltip.lower()
+
+    def test_low_confidence_toggle_is_off_by_default(self, step: ReviewStep) -> None:
+        assert step._lowconf_checkbox.isChecked() is False
+
+
+class TestTranscriptTabChapters:
+    def test_chapter_combo_has_one_entry_for_the_fixtures_single_segment(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        assert step._chapter_combo.count() == 1
+
+    def test_first_chapter_is_loaded_by_default(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        assert step._transcript_view.toPlainText().split() == [
+            w.text for w in fixture.words
+        ]
+
+    def test_set_scan_again_resets_to_the_first_chapter(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        fixture.load(step)  # a second, independent scan/transcript
+        assert step._chapter_combo.currentIndex() == 0
+
+
+class TestTranscriptTabRendering:
+    def test_hit_words_are_flagged_in_the_view(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        hit_texts = {s.word.text for s in step._transcript_view._spans if s.is_hit}
+        assert hit_texts == {"darn", "heck", "badword"}
+
+    def test_plain_words_are_not_flagged(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        plain_texts = {
+            s.word.text for s in step._transcript_view._spans if not s.is_hit
+        }
+        assert plain_texts == {"and", "then", "he", "said", "it", "was", "no", "really"}
+
+
+class TestTranscriptTabPreview:
+    def test_idle_before_any_selection(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        assert step._transcript_idle_label.isHidden() is False
+        assert step._transcript_audio_player.isHidden() is True
+        assert step._transcript_add_btn.isEnabled() is False
+
+    def test_selecting_a_plain_word_loads_the_preview(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._transcript_view._set_selection((0, 0))  # "and", 0-100ms
+        assert step._transcript_preview_window == (0, 2100)
+        assert step._transcript_idle_label.isHidden() is True
+        assert step._transcript_add_btn.isEnabled() is True
+
+    def test_deselecting_returns_to_idle(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._transcript_view._set_selection((0, 0))
+        step._transcript_view._set_selection(None)
+        assert step._transcript_preview_window is None
+        assert step._transcript_idle_label.isHidden() is False
+        assert step._transcript_add_btn.isEnabled() is False
+
+    def test_context_window_clamps_to_zero_at_the_start(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._transcript_view._set_selection((0, 0))  # starts at 0ms
+        start_ms, _ = step._transcript_preview_window
+        assert start_ms == 0
+
+    def test_play_click_starts_play_clip_with_the_context_window(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._transcript_view._set_selection((0, 0))
+        with (
+            patch.object(
+                type(step._transcript_audio_player),
+                "is_playing",
+                new_callable=PropertyMock,
+                return_value=False,
+            ),
+            patch.object(step._transcript_audio_player, "play_clip") as mock_play,
+        ):
+            step._transcript_play_btn.click()
+        mock_play.assert_called_once_with(Path("/books/test.m4b"), 0, 2100)
+
+    def test_play_click_while_playing_pauses_and_resets(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._transcript_view._set_selection((0, 0))
+        with (
+            patch.object(
+                type(step._transcript_audio_player),
+                "is_playing",
+                new_callable=PropertyMock,
+                return_value=True,
+            ),
+            patch.object(step._transcript_audio_player, "pause") as mock_pause,
+            patch.object(step._transcript_audio_player, "load_paused") as mock_load,
+        ):
+            step._transcript_play_btn.click()
+        mock_pause.assert_called_once()
+        mock_load.assert_called_once_with(Path("/books/test.m4b"), 0)
+
+    def test_playback_state_changed_updates_button_icon(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._transcript_view._set_selection((0, 0))
+        step._on_transcript_playback_state_changed(True)
+        assert step._transcript_play_btn.text() == "⏸"
+        step._on_transcript_playback_state_changed(False)
+        assert step._transcript_play_btn.text() == "▶"
+
+    def test_position_changed_updates_progress_relative_to_the_clip(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._transcript_view._set_selection((0, 0))  # window (0, 2100)
+        step._on_transcript_position_changed(1050)
+        assert step._transcript_progress.value() == 500  # halfway
+        assert "1.1s" in step._transcript_time_label.text()
+
+    def test_hide_event_stops_the_transcript_audio_player(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        with patch.object(step._transcript_audio_player, "stop") as mock_stop:
+            step.hideEvent(QHideEvent())
+        mock_stop.assert_called_once()
+
+
+class TestTranscriptTabAddToCatalog:
+    def test_add_button_disabled_with_no_selection_even_after_load(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        assert step._transcript_add_btn.isEnabled() is False
+
+    def test_accepting_the_dialog_marks_the_word_pending(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._transcript_view._set_selection((0, 0))  # "and"
+        with patch.object(
+            ReviewStep, "_run_dialog", return_value=QDialog.DialogCode.Accepted
+        ):
+            step._on_transcript_add_clicked()
+        assert fixture.words[0].start_ms in step._transcript_view._pending_starts_ms
+
+    # Whether accepting the dialog actually *creates* the catalog entry is
+    # the dialog's own responsibility (see TestAddToCatalogDialog below) --
+    # patching _run_dialog here bypasses the dialog entirely, so this
+    # layer only needs to test what ReviewStep itself does once the
+    # dialog reports Accepted (mark pending, bump the count), not
+    # re-verify catalog creation through a mock that never really ran it.
+
+    def test_rejecting_the_dialog_does_not_mark_pending_or_create_anything(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._transcript_view._set_selection((0, 0))
+        with patch.object(
+            ReviewStep, "_run_dialog", return_value=QDialog.DialogCode.Rejected
+        ):
+            step._on_transcript_add_clicked()
+        assert step._transcript_view._pending_starts_ms == set()
+        assert step._transcript_added_count == 0
+
+    def test_rescan_banner_hidden_until_first_addition(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        assert step._rescan_banner.isHidden() is True
+
+    def test_rescan_banner_shows_singular_count_correctly(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._transcript_view._set_selection((0, 0))
+        with patch.object(
+            ReviewStep, "_run_dialog", return_value=QDialog.DialogCode.Accepted
+        ):
+            step._on_transcript_add_clicked()
+        assert step._rescan_banner.isHidden() is False
+        text = step._rescan_banner_label.text()
+        assert "1 new catalog entry " in text
+        assert "entries" not in text
+
+    def test_rescan_banner_shows_plural_count_correctly(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        with patch.object(
+            ReviewStep, "_run_dialog", return_value=QDialog.DialogCode.Accepted
+        ):
+            step._transcript_view._set_selection((0, 0))
+            step._on_transcript_add_clicked()
+            step._transcript_view._set_selection((1, 1))
+            step._on_transcript_add_clicked()
+        assert "2 new catalog entries " in step._rescan_banner_label.text()
+
+    def test_go_to_scan_button_emits_signal(self, step: ReviewStep) -> None:
+        received = []
+        step.go_to_scan_requested.connect(lambda: received.append(1))
+        step._rescan_banner.findChild(type(step._transcript_add_btn))  # sanity: exists
+        go_btn = [
+            w
+            for w in step._rescan_banner.findChildren(type(step._transcript_add_btn))
+            if w.text() == "Go to Scan →"
+        ][0]
+        go_btn.click()
+        assert received == [1]
+
+
+class TestAddToCatalogDialog:
+    # _on_add() calls the real save_catalog(), which defaults to the
+    # real per-user catalog.json path when no path is given -- exactly
+    # the pattern test_word_variation_dialog.py already patches at its
+    # import site for this exact reason (see its own module docstring).
+    # Missing this here once already overwrote a real, hand-curated
+    # production catalog during this session; every test in this class
+    # patches it, including the duplicate-phrase test, which shouldn't
+    # reach save_catalog at all but must never be trusted to prove that
+    # by not blowing up if it does.
+
+    def test_creates_entry_in_the_chosen_category_and_accepts(
+        self, service: CatalogService
+    ) -> None:
+        category = service.create_category("Mild")
+        dialog = _AddToCatalogDialog(service, "darnit")
+        idx = dialog._category_combo.findData(category.id)
+        dialog._category_combo.setCurrentIndex(idx)
+        with patch("m4bmaker.gui.filter.wizard.review_step.save_catalog") as mocked:
+            dialog._on_add()
+        mocked.assert_called_once_with(service)
+        assert dialog.result() == QDialog.DialogCode.Accepted
+        assert service.find_duplicate_entry(category.id, "darnit") is not None
+
+    def test_duplicate_phrase_shows_a_message_and_does_not_accept(
+        self, service: CatalogService
+    ) -> None:
+        category = service.create_category("Mild")
+        service.create_entry(category.id, "darnit")
+        dialog = _AddToCatalogDialog(service, "darnit")
+        idx = dialog._category_combo.findData(category.id)
+        dialog._category_combo.setCurrentIndex(idx)
+        with patch("m4bmaker.gui.filter.wizard.review_step.save_catalog") as mocked:
+            dialog._on_add()
+        mocked.assert_not_called()
+        assert dialog.result() != QDialog.DialogCode.Accepted
+        assert "already in this category" in dialog._status_label.text()

@@ -630,6 +630,29 @@ QFrame#aboutFeatureCard {
     border-radius: 6px;
 }
 
+/* ── Full-transcript review re-scan banner (ADR-0053) ─────────────────── */
+/* Reuses the "ineligible"/warning token pair (see QLabel#eligibleBadge
+   above) rather than inventing a new pending/attention color — the same
+   "added but not yet applied" caution this badge already expresses. */
+QFrame#rescanBanner {
+    background-color: #f7e6dc;
+    border: 1px solid #e0b79c;
+    border-radius: 6px;
+    padding: 4px 4px 4px 10px;
+}
+QPushButton#rescanGoBtn {
+    background-color: transparent;
+    border: 1px solid #e0b79c;
+    border-radius: 5px;
+    color: #9e4719;
+    padding: 5px 12px;
+    font-weight: 600;
+}
+QPushButton#rescanGoBtn:hover {
+    background-color: #e0b79c;
+    color: #faf8f4;
+}
+
 /* ── Review hit preview dock (ADR-0052) ──────────────────────────────── */
 QFrame#reviewPreviewDock {
     background-color: #ebe6dd;
@@ -1290,6 +1313,26 @@ QFrame#aboutFeatureCard {
     background-color: #242424;
     border: 1px solid #333333;
     border-radius: 6px;
+}
+
+/* ── Full-transcript review re-scan banner (ADR-0053) ─────────────────── */
+QFrame#rescanBanner {
+    background-color: #3a2c22;
+    border: 1px solid #5a4130;
+    border-radius: 6px;
+    padding: 4px 4px 4px 10px;
+}
+QPushButton#rescanGoBtn {
+    background-color: transparent;
+    border: 1px solid #5a4130;
+    border-radius: 5px;
+    color: #e08a52;
+    padding: 5px 12px;
+    font-weight: 600;
+}
+QPushButton#rescanGoBtn:hover {
+    background-color: #5a4130;
+    color: #f5f2ed;
 }
 
 /* ── Review hit preview dock (ADR-0052) ──────────────────────────────── */

@@ -255,6 +255,9 @@ class WizardWindow(QMainWindow):
         transcript_step = steps[_TRANSCRIPT_INDEX]
         assert isinstance(transcript_step, TranscriptStep)
         transcript_step.reuse_requested.connect(self._on_transcript_reuse)
+        review_step = steps[_REVIEW_INDEX]
+        assert isinstance(review_step, ReviewStep)
+        review_step.go_to_scan_requested.connect(self._on_go_to_scan)
         return steps
 
     # ── navigation ───────────────────────────────────────────────────────
@@ -263,6 +266,14 @@ class WizardWindow(QMainWindow):
         if index > self._furthest:
             return
         self._active = index
+        self._render()
+
+    def _on_go_to_scan(self) -> None:
+        # ADR-0053: the Transcript tab's "Go to Scan" banner button. Review
+        # is always reached after Scan, so _furthest already covers it —
+        # no guard needed the way _go_to_step's own click-from-the-stepper
+        # path needs one.
+        self._active = _SCAN_INDEX
         self._render()
 
     def _on_back(self) -> None:

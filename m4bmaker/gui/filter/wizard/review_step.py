@@ -50,12 +50,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QHideEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QButtonGroup,
+    QCheckBox,
     QComboBox,
+    QDialog,
     QFrame,
     QGroupBox,
     QHBoxLayout,
@@ -72,6 +74,7 @@ from PySide6.QtWidgets import (
 )
 
 from m4bmaker.filter.catalog import CatalogService
+from m4bmaker.filter.catalog_store import save_catalog
 from m4bmaker.filter.interval_planner import build_render_plan
 from m4bmaker.filter.models import (
     AttenuationSettings,
@@ -84,6 +87,7 @@ from m4bmaker.filter.transcript import Transcript
 from m4bmaker.gui.player import AudioPlayerWidget
 
 from .step_base import WizardStep
+from .transcript_view import TranscriptView
 
 _COL_INCLUDED = 0
 _COL_TIME = 1
@@ -130,6 +134,11 @@ def _ms_to_clock(ms: int) -> str:
 
 
 class ReviewStep(WizardStep):
+    #: ADR-0053: lets the Transcript tab's "Go to Scan" banner button jump
+    #: back to the Scan step to re-run it — the wizard shell (not this
+    #: widget) owns cross-step navigation, so this only asks for it.
+    go_to_scan_requested = Signal()
+
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.step_title = "Review"
@@ -141,10 +150,19 @@ class ReviewStep(WizardStep):
 
         self._scan: Scan | None = None
         self._catalog: CatalogService | None = None
+        self._transcript: Transcript | None = None
         self._word_index: TranscriptWordIndex | None = None
         self._source_duration_ms = 0
         self._attenuation: AttenuationSettings | None = None
         self._source_path: Path | None = None
+
+        # ── full-transcript review (ADR-0053, Option 1) ─────────────────
+        self._transcript_added_count = 0
+        #: (start_ms, end_ms) for whichever selection is currently loaded
+        #: in the Transcript tab's own preview dock -- single fixed
+        #: window, no padded/context toggle (nothing selected here has a
+        #: catalog entry yet, so there's no padding to toggle to).
+        self._transcript_preview_window: tuple[int, int] | None = None
 
         self._filter_category = _FILTER_ALL
         self._filter_term = _FILTER_ALL
@@ -172,6 +190,7 @@ class ReviewStep(WizardStep):
         # QStackedWidget pages already fires real hide events on the
         # outgoing step, so this needs no shell changes.
         self._audio_player.stop()
+        self._transcript_audio_player.stop()
         super().hideEvent(event)
 
     def _effective_attenuation(self) -> AttenuationSettings:
@@ -190,6 +209,19 @@ class ReviewStep(WizardStep):
         tabs = QTabWidget()
         tabs.addTab(self._build_hits_tab(), "Hits")
         tabs.addTab(self._build_plan_tab(), "Render Plan")
+        # Transcript goes last, not between Hits and Render Plan (ADR-0053):
+        # tab order reads as priority order, and this is a supplementary
+        # check most Contributors won't need, not part of the primary
+        # Hits -> Render Plan -> Continue path. A tooltip states that
+        # outright before anyone even clicks in; deliberately no "NEW"-
+        # style badge, which would invite checking -- the opposite of the
+        # goal here.
+        transcript_tab_index = tabs.addTab(self._build_transcript_tab(), "Transcript")
+        tabs.setTabToolTip(
+            transcript_tab_index,
+            "Optional — everything the scan didn't flag, in case something "
+            "slipped through. Most people won't need this.",
+        )
         root.addWidget(tabs, stretch=1)
 
     def _build_hits_tab(self) -> QWidget:
@@ -428,6 +460,160 @@ class ReviewStep(WizardStep):
 
         return pane
 
+    def _build_transcript_tab(self) -> QWidget:
+        """The full-transcript review tab (ADR-0053, Option 1): every word
+        in the current chapter, not just what the scan flagged — hits
+        already struck through, everything else there to actually read.
+        Selecting any other word or phrase lets a Contributor hear it
+        (reusing ADR-0052's own preview mechanism) or add it straight to
+        the catalog, closing the gap no automated technique could (real-
+        data testing rejected both a bare confidence threshold and
+        spelling/phonetic similarity to the catalog, see ADR-0053).
+
+        Signaled as optional, not just described as optional: this tab's
+        own tab-bar entry carries a tooltip and sits last in the row (see
+        ``_build_ui``), and the note below states outright that most
+        people won't need it — the same wording pattern ``_build_plan_tab``
+        already uses for the Render Plan tab's own "most people won't need
+        to check this" note, not a new convention.
+        """
+        pane = QWidget()
+        layout = QVBoxLayout(pane)
+
+        note = QLabel(
+            "Optional — the scan already caught every catalog match on "
+            "the Hits tab; most people won't need to look here before "
+            "continuing. This shows every word in the chapter, not just "
+            "what the scan flagged, in case something slipped through. "
+            "Select any other word or phrase to hear it or add it to the "
+            "catalog. Adding here updates the catalog only, not this "
+            "book's hits — re-scan from the Scan step to apply it."
+        )
+        note.setObjectName("statusLabel")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+
+        self._rescan_banner = QFrame()
+        self._rescan_banner.setObjectName("rescanBanner")
+        self._rescan_banner.setVisible(False)
+        banner_layout = QHBoxLayout(self._rescan_banner)
+        self._rescan_banner_label = QLabel("")
+        self._rescan_banner_label.setWordWrap(True)
+        banner_layout.addWidget(self._rescan_banner_label, stretch=1)
+        rescan_go_btn = QPushButton("Go to Scan →")
+        rescan_go_btn.setObjectName("rescanGoBtn")
+        rescan_go_btn.clicked.connect(self.go_to_scan_requested.emit)
+        banner_layout.addWidget(rescan_go_btn)
+        layout.addWidget(self._rescan_banner)
+
+        nav_row = QHBoxLayout()
+        nav_row.addWidget(QLabel("Chapter:"))
+        self._chapter_combo = QComboBox()
+        self._chapter_combo.currentIndexChanged.connect(self._on_chapter_changed)
+        nav_row.addWidget(self._chapter_combo)
+        prev_btn = QPushButton("‹ Prev")
+        prev_btn.clicked.connect(lambda: self._step_chapter(-1))
+        nav_row.addWidget(prev_btn)
+        next_btn = QPushButton("Next ›")
+        next_btn.clicked.connect(lambda: self._step_chapter(1))
+        nav_row.addWidget(next_btn)
+
+        # Off by default (ADR-0053): this toggle is an explicitly
+        # unvalidated skim aid, not a shipped, tested default — Option 4's
+        # real-data validation rejected confidence as an automated
+        # *filter*, and this is a different, much smaller claim (a visual
+        # hint on top of text that's shown either way), but it's never
+        # actually been tested either.
+        self._lowconf_checkbox = QCheckBox("Highlight uncertain words")
+        self._lowconf_checkbox.setChecked(False)
+        self._lowconf_checkbox.toggled.connect(self._on_lowconf_toggled)
+        nav_row.addWidget(self._lowconf_checkbox)
+
+        nav_row.addStretch(1)
+        jump_btn = QPushButton("Jump to next hit ↓")
+        jump_btn.clicked.connect(self._on_jump_to_next_hit)
+        nav_row.addWidget(jump_btn)
+        layout.addLayout(nav_row)
+
+        self._transcript_view = TranscriptView()
+        self._transcript_view.selection_changed.connect(
+            self._on_transcript_selection_changed
+        )
+        self._transcript_view.play_requested.connect(self._on_transcript_play_clicked)
+        self._transcript_view.add_requested.connect(self._on_transcript_add_clicked)
+        layout.addWidget(self._transcript_view, stretch=1)
+
+        layout.addWidget(self._build_transcript_action_row())
+
+        return pane
+
+    def _build_transcript_action_row(self) -> QFrame:
+        """A second, independent preview dock for the Transcript tab —
+        same placement/enable-disable pattern as ADR-0052's own dock on
+        the Hits tab, but its own ``AudioPlayerWidget`` instance: the two
+        tabs can't share one widget, since only one can actually be
+        embedded in a visible layout at a time."""
+        container = QFrame()
+        container.setObjectName("reviewPreviewDock")
+        container.setFixedHeight(44)
+        root = QHBoxLayout(container)
+        root.setContentsMargins(12, 0, 12, 0)
+
+        self._transcript_idle_label = QLabel(
+            "Click or drag a word above to hear it or add it to the catalog."
+        )
+        self._transcript_idle_label.setObjectName("statusLabel")
+        root.addWidget(self._transcript_idle_label)
+
+        self._transcript_audio_player = AudioPlayerWidget(show_controls=False)
+        root.addWidget(self._transcript_audio_player, stretch=1)
+
+        self._transcript_play_btn = QPushButton("▶")
+        self._transcript_play_btn.setFixedSize(28, 28)
+        self._transcript_play_btn.setObjectName("previewPlayBtn")
+        self._transcript_play_btn.setToolTip("Play / Pause")
+        self._transcript_play_btn.clicked.connect(self._on_transcript_play_clicked)
+
+        self._transcript_sel_label = QLabel("")
+
+        self._transcript_progress = QProgressBar()
+        self._transcript_progress.setObjectName("previewProgress")
+        self._transcript_progress.setRange(0, 1000)
+        self._transcript_progress.setTextVisible(False)
+        self._transcript_progress.setFixedHeight(4)
+
+        self._transcript_time_label = QLabel("0.0s / 0.0s")
+        self._transcript_time_label.setObjectName("statusLabel")
+        self._transcript_time_label.setMinimumWidth(90)
+        self._transcript_time_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        )
+
+        self._transcript_add_btn = QPushButton("＋ Add to Catalog")
+        self._transcript_add_btn.clicked.connect(self._on_transcript_add_clicked)
+
+        outer_layout = self._transcript_audio_player.layout()
+        assert outer_layout is not None
+        row_item = outer_layout.itemAt(0)
+        assert row_item is not None
+        player_row = row_item.layout()
+        assert isinstance(player_row, QHBoxLayout)
+        player_row.insertWidget(0, self._transcript_sel_label)
+        player_row.insertWidget(0, self._transcript_play_btn)
+        player_row.addWidget(self._transcript_progress, 1)
+        player_row.addWidget(self._transcript_time_label)
+        player_row.addWidget(self._transcript_add_btn)
+
+        self._transcript_audio_player.playback_state_changed.connect(
+            self._on_transcript_playback_state_changed
+        )
+        self._transcript_audio_player.position_changed.connect(
+            self._on_transcript_position_changed
+        )
+
+        self._show_transcript_idle()
+        return container
+
     # ── data entry point ─────────────────────────────────────────────────
 
     def set_scan(
@@ -448,6 +634,7 @@ class ReviewStep(WizardStep):
         already reads — needed here only for hit preview playback."""
         self._scan = scan
         self._catalog = catalog
+        self._transcript = transcript
         self._word_index = TranscriptWordIndex(transcript)
         self._source_duration_ms = source_duration_ms
         self._source_path = source_path
@@ -459,6 +646,12 @@ class ReviewStep(WizardStep):
         self._selected_hit = None
         self._audio_player.stop()
         self._show_preview_idle()
+        self._transcript_added_count = 0
+        self._rescan_banner.setVisible(False)
+        self._lowconf_checkbox.setChecked(False)
+        self._transcript_audio_player.stop()
+        self._show_transcript_idle()
+        self._refresh_chapter_options()
         self._refresh()
 
     def current_render_plan(self) -> RenderPlan | None:
@@ -897,6 +1090,212 @@ class ReviewStep(WizardStep):
     def _show_preview_loaded(self) -> None:
         self._preview_idle_label.setVisible(False)
         self._audio_player.setVisible(True)
+
+    # ── full-transcript review (ADR-0053, Option 1) ─────────────────────
+
+    def _refresh_chapter_options(self) -> None:
+        self._chapter_combo.blockSignals(True)
+        self._chapter_combo.clear()
+        if self._transcript is not None:
+            for i, segment in enumerate(self._transcript.segments):
+                label = (
+                    f"{i + 1} — {_ms_to_clock(segment.start_ms)}"
+                    f"–{_ms_to_clock(segment.end_ms)}"
+                )
+                self._chapter_combo.addItem(label)
+        self._chapter_combo.blockSignals(False)
+        self._load_chapter(0)
+
+    def _step_chapter(self, delta: int) -> None:
+        count = self._chapter_combo.count()
+        if count == 0:
+            return
+        new_index = max(0, min(count - 1, self._chapter_combo.currentIndex() + delta))
+        self._chapter_combo.setCurrentIndex(new_index)
+
+    def _on_chapter_changed(self) -> None:
+        self._load_chapter(self._chapter_combo.currentIndex())
+
+    def _load_chapter(self, index: int) -> None:
+        if (
+            self._transcript is None
+            or self._scan is None
+            or not (0 <= index < len(self._transcript.segments))
+        ):
+            self._transcript_view.load_words([], [])
+            return
+        segment = self._transcript.segments[index]
+        self._transcript_view.load_words(list(segment.words), list(self._scan.hits))
+        self._transcript_view.set_low_confidence_hint(
+            self._lowconf_checkbox.isChecked()
+        )
+
+    def _on_lowconf_toggled(self, checked: bool) -> None:
+        self._transcript_view.set_low_confidence_hint(checked)
+
+    def _on_jump_to_next_hit(self) -> None:
+        self._transcript_view.jump_to_next_hit()
+
+    def _on_transcript_selection_changed(self) -> None:
+        words = self._transcript_view.selected_words()
+        if not words:
+            self._transcript_preview_window = None
+            self._transcript_audio_player.stop()
+            self._show_transcript_idle()
+            return
+
+        start_ms = max(0, min(w.start_ms for w in words) - _CONTEXT_MS)
+        end_ms = min(
+            self._source_duration_ms, max(w.end_ms for w in words) + _CONTEXT_MS
+        )
+        self._transcript_preview_window = (start_ms, end_ms)
+
+        full_text = f'Selected: "{self._transcript_view.selection_text()}"'
+        metrics = self._transcript_sel_label.fontMetrics()
+        self._transcript_sel_label.setText(
+            metrics.elidedText(
+                full_text, Qt.TextElideMode.ElideRight, _PREVIEW_LABEL_ELIDE_WIDTH
+            )
+        )
+        self._transcript_sel_label.setToolTip(full_text)
+
+        clip_len_ms = max(1, end_ms - start_ms)
+        self._transcript_progress.setValue(0)
+        self._transcript_time_label.setText(f"0.0s / {clip_len_ms / 1000:.1f}s")
+        self._show_transcript_loaded()
+        if self._source_path is not None:
+            self._transcript_audio_player.load_paused(self._source_path, start_ms)
+
+    def _on_transcript_play_clicked(self) -> None:
+        if self._transcript_preview_window is None or self._source_path is None:
+            return
+        start_ms, end_ms = self._transcript_preview_window
+        if self._transcript_audio_player.is_playing:
+            # No separate Stop control, same reasoning as ADR-0052's Hits
+            # tab dock: these clips run a few seconds, so ▶/⏸ mid-playback
+            # halts and resets to the clip's own start rather than
+            # exposing a true pause/resume.
+            self._transcript_audio_player.pause()
+            self._transcript_audio_player.load_paused(self._source_path, start_ms)
+        else:
+            self._transcript_audio_player.play_clip(self._source_path, start_ms, end_ms)
+
+    def _on_transcript_playback_state_changed(self, playing: bool) -> None:
+        self._transcript_play_btn.setText("⏸" if playing else "▶")
+
+    def _on_transcript_position_changed(self, position_ms: int) -> None:
+        if self._transcript_preview_window is None:
+            return
+        start_ms, end_ms = self._transcript_preview_window
+        clip_len_ms = max(1, end_ms - start_ms)
+        elapsed_ms = max(0, min(clip_len_ms, position_ms - start_ms))
+        self._transcript_progress.setValue(round(elapsed_ms / clip_len_ms * 1000))
+        self._transcript_time_label.setText(
+            f"{elapsed_ms / 1000:.1f}s / {clip_len_ms / 1000:.1f}s"
+        )
+
+    def _on_transcript_add_clicked(self) -> None:
+        words = self._transcript_view.selected_words()
+        if not words or self._catalog is None:
+            return
+        phrase = self._transcript_view.selection_text()
+        dialog = _AddToCatalogDialog(self._catalog, phrase, self)
+        if self._run_dialog(dialog) != QDialog.DialogCode.Accepted:
+            return
+        self._transcript_view.mark_pending(words)
+        self._transcript_audio_player.stop()
+        self._show_transcript_idle()
+        self._transcript_added_count += 1
+        self._update_rescan_banner()
+
+    def _run_dialog(self, dialog: QDialog) -> int:
+        """Trivial wrapper around ``dialog.exec()`` — kept as a plain
+        method on this class, not a bare call to the Qt-wrapped
+        ``QDialog.exec()`` itself, so tests can patch it reliably (the
+        same reasoning as ``TranscriptView._exec_context_menu``: patching
+        a C++-bound method directly via ``unittest.mock.patch.object``
+        does not reliably take effect and can hang a headless test on the
+        real modal call instead)."""
+        return dialog.exec()
+
+    def _update_rescan_banner(self) -> None:
+        count = self._transcript_added_count
+        noun = "new catalog entry" if count == 1 else "new catalog entries"
+        pronoun = "it" if count == 1 else "them"
+        self._rescan_banner_label.setText(
+            f"{count} {noun} added this session — re-scan to apply "
+            f"{pronoun} to this book's hits."
+        )
+        self._rescan_banner.setVisible(count > 0)
+
+    def _show_transcript_idle(self) -> None:
+        self._transcript_idle_label.setVisible(True)
+        self._transcript_audio_player.setVisible(False)
+        self._transcript_add_btn.setEnabled(False)
+
+    def _show_transcript_loaded(self) -> None:
+        self._transcript_idle_label.setVisible(False)
+        self._transcript_audio_player.setVisible(True)
+        self._transcript_add_btn.setEnabled(True)
+
+
+class _AddToCatalogDialog(QDialog):
+    """Add arbitrary selected transcript text to the catalog, picking a
+    category (ADR-0053) — the manual, arbitrary-text sibling of
+    ``WordVariationDialog``'s one-click add, which only ever adds a
+    *suggested* variation that already inherits its category from the
+    catalog word it resembles. There's no such inherited category here
+    (the Contributor is selecting free text from the transcript, not
+    accepting a suggestion), so unlike that dialog, this one needs a real
+    category picker — mirrors ``CatalogWindow``'s own manual "+ Word" flow
+    (create, duplicate-check, save) instead.
+    """
+
+    def __init__(
+        self, catalog: CatalogService, phrase: str, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self._catalog = catalog
+        self._phrase = phrase
+        self.setWindowTitle("Add to Catalog")
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(QLabel(f'Add "{phrase}" to the catalog:'))
+
+        layout.addWidget(QLabel("Category"))
+        self._category_combo = QComboBox()
+        for category in catalog.list_categories():
+            self._category_combo.addItem(category.name, category.id)
+        layout.addWidget(self._category_combo)
+
+        self._status_label = QLabel("")
+        self._status_label.setObjectName("statusLabel")
+        self._status_label.setWordWrap(True)
+        layout.addWidget(self._status_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        add_btn = QPushButton("Add")
+        add_btn.setDefault(True)
+        add_btn.clicked.connect(self._on_add)
+        btn_row.addWidget(add_btn)
+        layout.addLayout(btn_row)
+
+    def _on_add(self) -> None:
+        category_id = self._category_combo.currentData()
+        duplicate = self._catalog.find_duplicate_entry(category_id, self._phrase)
+        if duplicate is not None:
+            self._status_label.setText(
+                f'"{self._phrase}" is already in this category, as '
+                f'"{duplicate.canonical_phrase}" — not added again.'
+            )
+            return
+        self._catalog.create_entry(category_id, self._phrase)
+        save_catalog(self._catalog)
+        self.accept()
 
 
 def _format_duration(ms: int) -> str:
