@@ -867,6 +867,38 @@ class TestTranscriptTabChapters:
         fixture.load(step)  # a second, independent scan/transcript
         assert step._chapter_combo.currentIndex() == 0
 
+    def test_chapter_popup_is_capped_to_a_scrollable_size(
+        self, step: ReviewStep
+    ) -> None:
+        """A long audiobook can have dozens of chapters/segments -- the
+        combo's popup must scroll rather than render one giant menu."""
+        assert step._chapter_combo.maxVisibleItems() <= 15
+
+    def test_loading_a_chapter_skips_the_low_confidence_pass_when_unchecked(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        """Highlighting is off by default -- a fresh load already leaves
+        every word unhighlighted, so re-applying that is pure waste on
+        every chapter switch, which is exactly the bug that made this
+        tab slow to begin with."""
+        assert step._lowconf_checkbox.isChecked() is False
+        with patch.object(
+            step._transcript_view, "set_low_confidence_hint"
+        ) as mock_hint:
+            fixture.load(step)
+        mock_hint.assert_not_called()
+
+    def test_loading_a_chapter_still_applies_the_hint_when_checked(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        step._lowconf_checkbox.setChecked(True)
+        with patch.object(
+            step._transcript_view, "set_low_confidence_hint"
+        ) as mock_hint:
+            step._load_chapter(0)
+        mock_hint.assert_called_once_with(True)
+
 
 class TestTranscriptTabRendering:
     def test_hit_words_are_flagged_in_the_view(

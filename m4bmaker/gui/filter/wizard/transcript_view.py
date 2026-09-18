@@ -124,6 +124,7 @@ class TranscriptView(QTextEdit):
         self.setUndoRedoEnabled(False)
         self.setLineWrapMode(QTextEdit.LineWrapMode.WidgetWidth)
         self._spans: list[_WordSpan] = []
+        self._low_confidence_indices: list[int] = []
         self._selected_range: tuple[int, int] | None = None
         self._show_low_confidence = False
         self._pending_starts_ms: set[int] = set()
@@ -135,32 +136,57 @@ class TranscriptView(QTextEdit):
         self, words: Sequence[TranscriptWord], hits: Sequence[ScanHit]
     ) -> None:
         """Render *words* (one chapter/segment's worth), with the spans
-        *hits* covers struck through and excluded from selection."""
+        *hits* covers struck through and excluded from selection.
+
+        Loads the chapter's text in one ``setPlainText()`` call, with
+        char offsets for each word precomputed in a pure Python pass
+        first, then formats only the (typically few) actual hit spans —
+        not a per-word ``insertText()``/format pair for every word in
+        the chapter. A long chapter can be several thousand words;
+        that per-word Qt document mutation, repeated on every chapter
+        load, was the real cost behind this tab's reported slowness.
+        """
         flags = hit_word_flags(words, hits)
         self._selected_range = None
         self._pending_starts_ms = set()
         self._last_hit_jump_idx = -1
 
-        plain_fmt = QTextCharFormat()
+        pieces: list[str] = []
+        spans: list[_WordSpan] = []
+        pos = 0
+        for w, is_hit in zip(words, flags):
+            pieces.append(w.text)
+            start = pos
+            end = start + len(w.text)
+            pos = end + 1  # +1 for the joining space
+            spans.append(
+                _WordSpan(word=w, char_start=start, char_end=end, is_hit=is_hit)
+            )
+
+        self.setPlainText(" ".join(pieces))
+
         hit_fmt = QTextCharFormat()
         hit_fmt.setForeground(QColor("#c45a2d"))
         hit_fmt.setFontStrikeOut(True)
         hit_fmt.setFontWeight(QFont.Weight.DemiBold)
 
-        self.clear()
         cursor = self.textCursor()
         cursor.beginEditBlock()
-        spans: list[_WordSpan] = []
-        for w, is_hit in zip(words, flags):
-            start = cursor.position()
-            cursor.insertText(w.text, hit_fmt if is_hit else plain_fmt)
-            end = cursor.position()
-            spans.append(
-                _WordSpan(word=w, char_start=start, char_end=end, is_hit=is_hit)
-            )
-            cursor.insertText(" ", plain_fmt)
+        for span in spans:
+            if span.is_hit:
+                cursor.setPosition(span.char_start)
+                cursor.setPosition(span.char_end, QTextCursor.MoveMode.KeepAnchor)
+                cursor.setCharFormat(hit_fmt)
         cursor.endEditBlock()
+
         self._spans = spans
+        self._low_confidence_indices = [
+            i
+            for i, s in enumerate(spans)
+            if not s.is_hit
+            and s.word.confidence is not None
+            and s.word.confidence < _LOW_CONFIDENCE_THRESHOLD
+        ]
 
     # ── selection ────────────────────────────────────────────────────────
 
@@ -276,12 +302,14 @@ class TranscriptView(QTextEdit):
         pending_fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.DashUnderline)
         pending_fmt.setUnderlineColor(QColor("#d8a33d"))
         cursor = self.textCursor()
+        cursor.beginEditBlock()
         targets = {w.start_ms for w in words}
         for span in self._spans:
             if span.word.start_ms in targets:
                 cursor.setPosition(span.char_start)
                 cursor.setPosition(span.char_end, QTextCursor.MoveMode.KeepAnchor)
                 cursor.mergeCharFormat(pending_fmt)
+        cursor.endEditBlock()
         self._set_selection(None)
 
     # ── optional low-confidence skim hint ────────────────────────────────
@@ -291,22 +319,28 @@ class TranscriptView(QTextEdit):
         self._apply_low_confidence_formatting()
 
     def _apply_low_confidence_formatting(self) -> None:
-        plain_fmt = QTextCharFormat()
+        """Only ever touches :attr:`_low_confidence_indices` — the
+        (typically small) subset of words that actually qualify,
+        precomputed once in :meth:`load_words` — rather than every word
+        in the chapter. That subset is also what makes toggling the
+        checkbox on an already-loaded chapter cheap: nothing here
+        re-scans word confidence values on every toggle."""
         lowconf_fmt = QTextCharFormat()
         lowconf_fmt.setFontUnderline(True)
         lowconf_fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.DotLine)
+        plain_fmt = QTextCharFormat()
         cursor = self.textCursor()
-        for span in self._spans:
-            if span.is_hit or span.word.start_ms in self._pending_starts_ms:
+        cursor.beginEditBlock()
+        for i in self._low_confidence_indices:
+            span = self._spans[i]
+            if span.word.start_ms in self._pending_starts_ms:
                 continue
-            is_low = (
-                self._show_low_confidence
-                and span.word.confidence is not None
-                and span.word.confidence < _LOW_CONFIDENCE_THRESHOLD
-            )
             cursor.setPosition(span.char_start)
             cursor.setPosition(span.char_end, QTextCursor.MoveMode.KeepAnchor)
-            cursor.setCharFormat(lowconf_fmt if is_low else plain_fmt)
+            cursor.setCharFormat(
+                lowconf_fmt if self._show_low_confidence else plain_fmt
+            )
+        cursor.endEditBlock()
 
     # ── jump to next hit ─────────────────────────────────────────────────
 

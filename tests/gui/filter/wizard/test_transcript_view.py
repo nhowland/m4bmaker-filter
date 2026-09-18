@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 import pytest
 from PySide6.QtCore import QPoint
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QMenu
 
 from m4bmaker.filter.models import ScanHit
@@ -118,6 +118,13 @@ def view(words: list[TranscriptWord]) -> TranscriptView:
     return v
 
 
+def _format_at(view: TranscriptView, char_pos: int) -> QTextCharFormat:
+    cursor = QTextCursor(view.document())
+    cursor.setPosition(char_pos)
+    cursor.setPosition(char_pos + 1, QTextCursor.MoveMode.KeepAnchor)
+    return cursor.charFormat()
+
+
 class TestLoadWords:
     def test_renders_every_word_in_order(self, view: TranscriptView) -> None:
         assert view.toPlainText().split() == ["The", "Donut", "darn", "gate", "system"]
@@ -218,6 +225,73 @@ class TestLowConfidenceHint:
     def test_toggle_records_state(self, view: TranscriptView) -> None:
         view.set_low_confidence_hint(True)
         assert view._show_low_confidence is True
+
+    def test_indices_exclude_hits_high_confidence_and_missing_confidence(
+        self,
+    ) -> None:
+        """The qualifying set is computed once by load_words() and is
+        what set_low_confidence_hint()/_apply_low_confidence_formatting()
+        touch on every toggle — this is the whole performance fix, so
+        it must contain exactly the right words, not every word."""
+        words = [
+            _word("a", 0, 100, confidence=0.5),  # low confidence
+            _word("b", 100, 200, confidence=0.95),  # high confidence
+            _word("c", 200, 300, confidence=0.5),  # low confidence, but a hit
+            _word("d", 300, 400, confidence=None),  # no confidence data
+        ]
+        v = TranscriptView()
+        v.load_words(words, [_hit(200, 300)])
+        assert v._low_confidence_indices == [0]
+
+    def test_enabling_underlines_only_the_qualifying_word(self) -> None:
+        words = [
+            _word("a", 0, 100, confidence=0.5),
+            _word("b", 100, 200, confidence=0.95),
+        ]
+        v = TranscriptView()
+        v.load_words(words, [])
+
+        v.set_low_confidence_hint(True)
+
+        # fontUnderline() doesn't reliably mirror a style set only via
+        # setUnderlineStyle() in this PySide6 build -- underlineStyle()
+        # is what's actually applied and rendered.
+        assert (
+            _format_at(v, v._spans[0].char_start).underlineStyle()
+            == QTextCharFormat.UnderlineStyle.DotLine
+        )
+        assert (
+            _format_at(v, v._spans[1].char_start).underlineStyle()
+            == QTextCharFormat.UnderlineStyle.NoUnderline
+        )
+
+    def test_disabling_reverts_the_underline(self) -> None:
+        words = [_word("a", 0, 100, confidence=0.5)]
+        v = TranscriptView()
+        v.load_words(words, [])
+        v.set_low_confidence_hint(True)
+
+        v.set_low_confidence_hint(False)
+
+        assert (
+            _format_at(v, v._spans[0].char_start).underlineStyle()
+            == QTextCharFormat.UnderlineStyle.NoUnderline
+        )
+
+    def test_pending_word_is_left_alone_even_when_enabled(self) -> None:
+        """mark_pending()'s own dashed underline must not be overwritten
+        by the dotted low-confidence one — _apply_low_confidence_formatting
+        must keep skipping a pending word, not just skip it before it's
+        pending."""
+        words = [_word("a", 0, 100, confidence=0.5)]
+        v = TranscriptView()
+        v.load_words(words, [])
+        v.mark_pending([words[0]])
+
+        v.set_low_confidence_hint(True)
+
+        fmt = _format_at(v, v._spans[0].char_start)
+        assert fmt.underlineStyle() == QTextCharFormat.UnderlineStyle.DashUnderline
 
 
 class TestJumpToNextHit:

@@ -2878,3 +2878,43 @@ already changed) is left alone; a click anywhere else on the row gets
 toggled once. Either target now toggles exactly once. 1 new test, one
 existing test updated to fire signals in a real click's actual order.
 Full suite: 2162 passed, 2 skipped; `black`/`flake8`/`mypy` clean.
+
+## Transcript tab performance fixes (ADR-0053, 2026-09-18)
+
+The Contributor reported the real, built Transcript tab loading
+slowly on first open, on every chapter switch, and on toggling
+"Highlight uncertain words" — 10-20 seconds sometimes — and asked
+whether transcript loading could be made per-chapter.
+
+It already was: `_load_chapter()` only ever passes the current
+segment's own words to `TranscriptView.load_words()`. The real cost
+was *inside* that per-chapter load: `load_words()` called
+`cursor.insertText()` twice per word (text, then a space), and
+`_apply_low_confidence_formatting()` looped over every word in the
+chapter with three cursor operations each and no edit-block batching
+at all — and ran unconditionally on every chapter load regardless of
+whether the checkbox was even checked. A long chapter can be several
+thousand words.
+
+Fixed: `load_words()` now precomputes char offsets in a pure Python
+pass and loads the whole chapter in one `setPlainText()` call, then
+formats only the actual hit spans. `_apply_low_confidence_formatting()`
+now only touches a `_low_confidence_indices` list computed once by
+`load_words()` — not every word — wrapped in one edit block.
+`mark_pending()` picked up the same batching for consistency.
+`_load_chapter()` skips calling `set_low_confidence_hint()` entirely
+when the checkbox is off, since a fresh load already leaves everything
+unhighlighted. The chapter combo got `setMaxVisibleItems(15)` so a
+long book's popup scrolls instead of rendering one giant menu —
+confirmed this actually takes effect: `styles.py` already applies QSS
+to `QComboBox QAbstractItemView`, which forces Qt's own non-native
+popup, the one this setting affects.
+
+9 new tests (5 in `test_transcript_view.py`, including one confirming
+`underlineStyle()` rather than the legacy `fontUnderline()` is what
+actually reflects an applied `setUnderlineStyle()` in this PySide6
+build; 4 in `test_review_step.py`). Full suite: 2169 passed, 2 skipped
+(up from 2162); `black`/`flake8`/`mypy` clean. Documented as an
+addendum to ADR-0053, which — turned out on inspection — never had its
+own Status line updated to say the Transcript tab it describes was
+actually built; corrected that in passing.

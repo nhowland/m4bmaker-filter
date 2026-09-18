@@ -509,6 +509,9 @@ class ReviewStep(WizardStep):
         nav_row = QHBoxLayout()
         nav_row.addWidget(QLabel("Chapter:"))
         self._chapter_combo = QComboBox()
+        # A long audiobook can have dozens of chapters/segments -- cap
+        # the popup to a scrollable list instead of one giant menu.
+        self._chapter_combo.setMaxVisibleItems(15)
         self._chapter_combo.currentIndexChanged.connect(self._on_chapter_changed)
         nav_row.addWidget(self._chapter_combo)
         prev_btn = QPushButton("‹ Prev")
@@ -1126,9 +1129,12 @@ class ReviewStep(WizardStep):
             return
         segment = self._transcript.segments[index]
         self._transcript_view.load_words(list(segment.words), list(self._scan.hits))
-        self._transcript_view.set_low_confidence_hint(
-            self._lowconf_checkbox.isChecked()
-        )
+        # A fresh load already leaves every word in its default/hit
+        # format, nothing low-confidence-highlighted yet — skip this
+        # entirely rather than re-applying a no-op "plain" format to
+        # every qualifying word when the checkbox is off (its default).
+        if self._lowconf_checkbox.isChecked():
+            self._transcript_view.set_low_confidence_hint(True)
 
     def _on_lowconf_toggled(self, checked: bool) -> None:
         self._transcript_view.set_low_confidence_hint(checked)

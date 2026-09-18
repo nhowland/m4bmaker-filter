@@ -1,13 +1,14 @@
 # ADR-0053: Reducing missed filtered words — options for Contributor decision
 
-**Status:** Proposed — options recorded for Contributor decision. No option
-here is implemented; nothing changes `matcher.py`'s exact-match behavior as
-a result of this ADR alone. **Options 3 and 4, tested against real data
-(2026-09-17), do not work as designed — see "Real-data validation" below.**
-Recommendation revised accordingly: Option 1 first (design settled via
-mockup, 2026-09-19), Option 2 tested and unaffected (safe, low-value —
-see "Real-data validation, part 2"), Options 3/4 rejected rather than
-deferred (their mockup deleted, 2026-09-19).
+**Status:** Proposed — options recorded for Contributor decision; nothing
+here changes `matcher.py`'s own exact-match behavior. **Options 3 and 4,
+tested against real data (2026-09-17), do not work as designed — see
+"Real-data validation" below.** Recommendation revised accordingly: Option 1
+first (design settled via mockup, 2026-09-19, **built and implemented as the
+Transcript tab** — see "Performance fixes" below for a real-app follow-up
+pass), Option 2 tested and unaffected (safe, low-value — see "Real-data
+validation, part 2"), Options 3/4 rejected rather than deferred (their
+mockup deleted, 2026-09-19).
 **Related:** ADR-0036 (word variation scanner), ADR-0042 (multi-piece
 splits, the real-book investigation this ADR builds directly on), ADR-0025 /
 ADR-0049 (DTW word timestamps and per-word confidence), ADR-0052 (hit
@@ -447,6 +448,72 @@ own. That's a real cost (a full-transcript view is the most novel, most
 UI-heavy option of the five, and now has no confidence-based shortcut
 to lean on for keeping the review scope manageable), but it's the
 option the real evidence actually supports.
+
+## Performance fixes to the built Transcript tab (2026-09-18)
+
+The Contributor reported the real, built Transcript tab (Option 1)
+loading slowly on first open, on every chapter switch, and again on
+toggling "Highlight uncertain words" — sometimes 10-20 seconds — and
+asked whether transcript loading could be made per-chapter rather than
+whole-book.
+
+It already was: `ReviewStep._load_chapter()` only ever passes the
+current segment's own `segment.words` to `TranscriptView.load_words()`,
+never the whole transcript. The real cost was inside that per-chapter
+load itself — `TranscriptView.load_words()` called `cursor.insertText()`
+twice per word (the text, then a space), and
+`_apply_low_confidence_formatting()` looped over *every word in the
+chapter* with three cursor operations each and no
+`beginEditBlock()`/`endEditBlock()` batching at all. A chapter can run
+to several thousand words for a long book; both costs applied on *every*
+chapter load, since `_load_chapter()` unconditionally called
+`set_low_confidence_hint()` right after `load_words()` regardless of
+whether the checkbox was even checked.
+
+Fixed in `transcript_view.py`:
+
+- **`load_words()`** now precomputes each word's char offset in a pure
+  Python pass, loads the whole chapter's text in one `setPlainText()`
+  call, and formats only the actual hit spans afterward — typically a
+  handful of words, not every word in the chapter.
+- **`_apply_low_confidence_formatting()`** now only ever touches a
+  `_low_confidence_indices` list precomputed once by `load_words()`
+  (words that qualify: not a hit, confidence below the threshold) —
+  not every word — and wraps its cursor operations in one edit block.
+  This is also what makes toggling the checkbox on an already-loaded
+  chapter cheap: nothing re-scans word confidence values per toggle.
+- **`mark_pending()`** picked up the same edit-block batching for
+  consistency, though it was never the reported bottleneck (it only
+  ever touches the handful of words just added to the catalog).
+
+Fixed in `review_step.py`:
+
+- **`_load_chapter()`** now skips calling `set_low_confidence_hint()`
+  entirely when the checkbox is unchecked (its default) — a fresh
+  `load_words()` call already leaves every word in its default/hit
+  format, so re-applying a no-op "plain" format to every qualifying
+  word on every chapter load when the feature is off was pure waste.
+- **The chapter combo** (`_chapter_combo`) now calls
+  `setMaxVisibleItems(15)` — a long audiobook's popup was one giant,
+  unscrollable native-style menu; this caps it to a scrollable list.
+  Confirmed this actually takes effect rather than being silently
+  ignored by native combo-box rendering: `styles.py` already applies
+  QSS to `QComboBox QAbstractItemView`, which forces Qt's own
+  (non-native) popup view — the one `setMaxVisibleItems()` affects.
+
+**Verification:** 9 new tests — 5 in `test_transcript_view.py`
+(`_low_confidence_indices` excludes hits/high-confidence/no-confidence
+words correctly; enabling the hint underlines only the qualifying word,
+confirmed via `underlineStyle()` rather than the legacy
+`fontUnderline()` property, which doesn't reliably mirror a style set
+only through `setUnderlineStyle()` in this PySide6 build; disabling
+reverts it; a pending word's dashed underline survives the hint being
+turned on rather than being overwritten by the dotted one) and 4 in
+`test_review_step.py` (the chapter popup's `maxVisibleItems()`; loading
+a chapter with the checkbox off never calls `set_low_confidence_hint()`
+at all; loading with it checked still does, with the right argument).
+Full suite: 2169 passed, 2 skipped (up from 2162 before this pass);
+`black`/`flake8`/`mypy` clean on every file touched.
 
 ## Open questions for Contributor decision
 
