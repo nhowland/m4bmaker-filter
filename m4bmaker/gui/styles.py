@@ -240,9 +240,12 @@ QCheckBox::indicator:checked {
     border-color: #c45a2d;
 }
 
-/* ── Checkable tree/table items (Word Catalog, Profile editor, Review) ── */
+/* ── Checkable tree/table/list items (Word Catalog, Profile editor,
+   Review, Export scope checklists) — one shared convention: a plain
+   outlined box that fills solid on check, not a checkmark glyph. ──── */
 QTreeWidget::indicator,
-QTableWidget::indicator {
+QTableWidget::indicator,
+QListWidget::indicator {
     width: 14px;
     height: 14px;
     border: 1px solid #d0c9be;
@@ -251,13 +254,15 @@ QTableWidget::indicator {
 }
 
 QTreeWidget::indicator:checked,
-QTableWidget::indicator:checked {
+QTableWidget::indicator:checked,
+QListWidget::indicator:checked {
     background-color: #c45a2d;
     border-color: #c45a2d;
 }
 
 QTreeWidget::indicator:indeterminate,
-QTableWidget::indicator:indeterminate {
+QTableWidget::indicator:indeterminate,
+QListWidget::indicator:indeterminate {
     background-color: #ddd7cc;
     border-color: #b5ae9e;
 }
@@ -341,6 +346,29 @@ QTableWidget::item {
 }
 
 QTableWidget::item:selected {
+    background-color: #d9cfc0;
+    color: #1a1a1a;
+}
+
+/* ── List/tree (Export scope checklists, Import preview, Profile
+   editor's word picker) — same surface/border convention as the table
+   above, so a checklist reads as the same kind of control. ─────────── */
+QListWidget,
+QTreeWidget {
+    background-color: #faf8f4;
+    border: 1px solid #d0c9be;
+    border-radius: 3px;
+    color: #1a1a1a;
+    outline: none;
+}
+
+QListWidget::item,
+QTreeWidget::item {
+    padding: 4px 6px;
+}
+
+QListWidget::item:selected,
+QTreeWidget::item:selected {
     background-color: #d9cfc0;
     color: #1a1a1a;
 }
@@ -925,9 +953,12 @@ QCheckBox::indicator:checked {
     border-color: #c45a2d;
 }
 
-/* ── Checkable tree/table items (Word Catalog, Profile editor, Review) ── */
+/* ── Checkable tree/table/list items (Word Catalog, Profile editor,
+   Review, Export scope checklists) — one shared convention: a plain
+   outlined box that fills solid on check, not a checkmark glyph. ──── */
 QTreeWidget::indicator,
-QTableWidget::indicator {
+QTableWidget::indicator,
+QListWidget::indicator {
     width: 14px;
     height: 14px;
     border: 1px solid #555555;
@@ -936,13 +967,15 @@ QTableWidget::indicator {
 }
 
 QTreeWidget::indicator:checked,
-QTableWidget::indicator:checked {
+QTableWidget::indicator:checked,
+QListWidget::indicator:checked {
     background-color: #c45a2d;
     border-color: #c45a2d;
 }
 
 QTreeWidget::indicator:indeterminate,
-QTableWidget::indicator:indeterminate {
+QTableWidget::indicator:indeterminate,
+QListWidget::indicator:indeterminate {
     background-color: #444444;
     border-color: #555555;
 }
@@ -1025,6 +1058,29 @@ QTableWidget::item {
 }
 
 QTableWidget::item:selected {
+    background-color: #3a342c;
+    color: #c8c2b8;
+}
+
+/* ── List/tree (Export scope checklists, Import preview, Profile
+   editor's word picker) — same surface/border convention as the table
+   above, so a checklist reads as the same kind of control. ─────────── */
+QListWidget,
+QTreeWidget {
+    background-color: #1e1e1e;
+    border: 1px solid #333333;
+    border-radius: 3px;
+    color: #c8c2b8;
+    outline: none;
+}
+
+QListWidget::item,
+QTreeWidget::item {
+    padding: 4px 6px;
+}
+
+QListWidget::item:selected,
+QTreeWidget::item:selected {
     background-color: #3a342c;
     color: #c8c2b8;
 }

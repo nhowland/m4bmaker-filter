@@ -2801,3 +2801,80 @@ own-backup no-op verified again at the full window level). Full suite:
 mtime/size check ADR-0054 introduced — unchanged, confirming this
 feature's own two new write paths (`backup_before_import`,
 `apply_import` → `save_catalog`) don't reach the real file under test.
+
+## Two real bugs in the export dialog, caught live (ADR-0055 addendum, 2026-09-18)
+
+The Contributor drove the real app and reported two problems with
+`_ExportDialog`'s "Selected categories" scope: every control crammed to
+the bottom of the window with a large blank gap above it, and clicking
+a category row highlighted it blue without checking it — only the tiny
+checkbox glyph itself did that.
+
+Root causes: (1) `_category_list`/`_profile_list` are `QListWidget`s
+with Qt's default Expanding vertical size policy, so whichever one is
+visible correctly absorbs the dialog's leftover height — but the
+"Everything" scope hides both, leaving nothing to claim that space, so
+it collected as one blank region pushing every other control down
+instead of the window packing tightly at the top. (2) `QListWidget`'s
+own default behavior only toggles a checkable item's state when the
+click lands precisely on the indicator rect; clicking elsewhere on the
+row just changes selection, a separate and here-meaningless state.
+
+Fixed by adding a third widget, `_all_spacer`, visible only when neither
+checklist is (exactly one of the three always claims the leftover space,
+each with `stretch=1`), and by wiring `itemClicked` to toggle check
+state regardless of click position while turning off row selection
+entirely (`NoSelection`) so the checkmark is the only thing that ever
+signals "included." 3 new tests. Full suite: 2161 passed, 2 skipped
+(up from 2158); `black`/`flake8`/`mypy` clean.
+
+Same pass: moved Export…/Import… from the top of `CatalogWindow`
+(beside the status label) to a right-aligned footer row at the bottom,
+per the Contributor's own placement preference. No test changes needed
+— both buttons are found by `findChildren` regardless of position, and
+the flow itself is exercised by calling `_on_export`/`_on_import`
+directly. Full suite still 2161 passed, 2 skipped; `black`/`flake8`/
+`mypy` clean.
+
+## Acceptance testing, round 2: styling gap plus one more placement fix (ADR-0055, 2026-09-18)
+
+Four more issues from a full walkthrough of both dialogs in both
+themes. Three traced to one root cause: `m4bmaker/gui/styles.py` had
+*no* `QListWidget` rules at all — `_ExportDialog`'s checklists were the
+first `QListWidget` this app has ever shown; every other checkable
+list in the app is a `QTableWidget`/`QTreeWidget`, which already had
+their own convention. Symptoms: the checkbox indicator was invisible
+in dark mode and used a native checkmark glyph instead of the app's
+own solid-fill-square convention, and the checklist's own border was
+barely visible in dark mode. Fixed by folding `QListWidget` into the
+existing `QTreeWidget`/`QTableWidget` indicator selectors and adding a
+`QListWidget`/`QTreeWidget` container block using the same colors the
+table already validated. `QTreeWidget` got the same fix even though
+only the list was reported broken — `_ImportPreviewDialog`'s own tree
+had the identical gap and would have failed the same way the moment
+that screen got equal scrutiny.
+
+Fourth: the status label stayed at the top of the window after
+Export/Import moved to the bottom in the previous round — a
+Contributor reading a result should find it next to the buttons that
+caused it. Moved into the same footer row, left of the buttons.
+
+No unit tests apply to QSS color output (no existing coverage for
+that anywhere in this app) or to a plain widget re-parent; full suite
+still 2161 passed, 2 skipped; `black`/`flake8`/`mypy` clean.
+
+## The click-toggle fix was itself incomplete (ADR-0055 addendum, 2026-09-18)
+
+The previous round's fix (toggle unconditionally in `itemClicked`) had
+an unnoticed flaw: Qt's item views already toggle a checkable item's
+state natively when a click lands precisely on the indicator glyph, so
+that fix's own unconditional toggle applied a *second* time on exactly
+that click, canceling it back out — clicking the checkbox itself
+stopped doing anything, the mirror image of the original complaint.
+Fixed by snapshotting check state on `itemPressed` (always before Qt's
+own release-time native toggle) and only toggling in `itemClicked` when
+the state still matches that snapshot — an indicator click (state
+already changed) is left alone; a click anywhere else on the row gets
+toggled once. Either target now toggles exactly once. 1 new test, one
+existing test updated to fire signals in a real click's actual order.
+Full suite: 2162 passed, 2 skipped; `black`/`flake8`/`mypy` clean.

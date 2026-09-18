@@ -25,6 +25,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QDialog,
     QMessageBox,
     QPushButton,
@@ -791,6 +792,81 @@ class TestExportDialog:
         _, entries, _ = dialog.resolve_records()
 
         assert len(entries) == 1
+
+    def test_placeholder_spacer_visible_only_for_everything_scope(
+        self, dialog_service: CatalogService
+    ) -> None:
+        """Regression guard: with neither checklist visible, something
+        must still claim the dialog's leftover vertical space, or every
+        control gets crammed to the bottom with a large blank gap above
+        it instead of packing tightly at the top."""
+        dialog = _ExportDialog(dialog_service)
+        assert dialog._all_spacer.isHidden() is False
+
+        dialog._categories_radio.setChecked(True)
+        assert dialog._all_spacer.isHidden() is True
+
+        dialog._profiles_radio.setChecked(True)
+        assert dialog._all_spacer.isHidden() is True
+
+        dialog._all_radio.setChecked(True)
+        assert dialog._all_spacer.isHidden() is False
+
+    def test_clicking_the_row_toggles_its_checkbox(
+        self, dialog_service: CatalogService
+    ) -> None:
+        """Qt's own default only toggles a checkable list item's state
+        when the click lands precisely on the tiny checkbox glyph —
+        clicking the rest of the row just selects it. Every row here
+        must act as one click target, the same as the mockup's own
+        <label> rows. A real click fires itemPressed then itemClicked;
+        with no native indicator-click toggle in between (this click
+        landed on the row, not the glyph), the check state at press
+        time still matches at click time, so the handler applies the
+        toggle itself."""
+        dialog = _ExportDialog(dialog_service)
+        item = dialog._category_list.item(0)
+        assert item is not None
+        assert item.checkState() == Qt.CheckState.Unchecked
+
+        dialog._category_list.itemPressed.emit(item)
+        dialog._category_list.itemClicked.emit(item)
+        assert item.checkState() == Qt.CheckState.Checked
+
+        dialog._category_list.itemPressed.emit(item)
+        dialog._category_list.itemClicked.emit(item)
+        assert item.checkState() == Qt.CheckState.Unchecked
+
+    def test_clicking_the_indicator_itself_still_toggles_exactly_once(
+        self, dialog_service: CatalogService
+    ) -> None:
+        """A click landing precisely on the checkbox glyph makes Qt
+        toggle the state natively between press and click — simulated
+        here by flipping it directly after itemPressed, before
+        itemClicked fires. The handler must recognize that toggle
+        already happened and leave it alone, rather than canceling it
+        back out."""
+        dialog = _ExportDialog(dialog_service)
+        item = dialog._category_list.item(0)
+        assert item is not None
+        assert item.checkState() == Qt.CheckState.Unchecked
+
+        dialog._category_list.itemPressed.emit(item)
+        item.setCheckState(Qt.CheckState.Checked)  # Qt's own native toggle
+        dialog._category_list.itemClicked.emit(item)
+
+        assert item.checkState() == Qt.CheckState.Checked
+
+    def test_category_list_has_no_row_selection(
+        self, dialog_service: CatalogService
+    ) -> None:
+        """A blue "selected" row that isn't checked reads as chosen when
+        it isn't -- only the checkmark should ever say that."""
+        dialog = _ExportDialog(dialog_service)
+        assert (
+            dialog._category_list.selectionMode()
+            == QAbstractItemView.SelectionMode.NoSelection
+        )
 
     def test_excludes_archived_by_default(self, dialog_service: CatalogService) -> None:
         entry = dialog_service.list_entries()[0]

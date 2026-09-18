@@ -31,6 +31,7 @@ Mask still applies even if its category isn't masked
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCloseEvent
@@ -201,21 +202,6 @@ class CatalogWindow(QMainWindow):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
-        top_row = QHBoxLayout()
-        self._status_label = QLabel("")
-        self._status_label.setObjectName("catalogStatusLabel")
-        top_row.addWidget(self._status_label, stretch=1)
-
-        export_btn = QPushButton("Export…")
-        export_btn.clicked.connect(self._on_export)
-        top_row.addWidget(export_btn)
-
-        import_btn = QPushButton("Import…")
-        import_btn.clicked.connect(self._on_import)
-        top_row.addWidget(import_btn)
-
-        root.addLayout(top_row)
-
         splitter = QSplitter(Qt.Orientation.Horizontal)
         root.addWidget(splitter, stretch=1)
 
@@ -223,6 +209,27 @@ class CatalogWindow(QMainWindow):
         splitter.addWidget(self._build_entries_pane())
         splitter.setStretchFactor(0, 1)
         splitter.setStretchFactor(1, 2)
+
+        # Export/Import act on the whole catalog (or a scope picked
+        # inside their own dialog), not one pane's own item-management
+        # row — a footer row of their own, with the status label
+        # (Export/Import's own result text) directly to their left
+        # rather than up at the top of the window, away from the
+        # buttons that caused it.
+        footer_row = QHBoxLayout()
+        self._status_label = QLabel("")
+        self._status_label.setObjectName("catalogStatusLabel")
+        footer_row.addWidget(self._status_label, stretch=1)
+
+        export_btn = QPushButton("Export…")
+        export_btn.clicked.connect(self._on_export)
+        footer_row.addWidget(export_btn)
+
+        import_btn = QPushButton("Import…")
+        import_btn.clicked.connect(self._on_import)
+        footer_row.addWidget(import_btn)
+
+        root.addLayout(footer_row)
 
     def _build_categories_pane(self) -> QWidget:
         pane = QWidget()
@@ -695,6 +702,7 @@ class _ExportDialog(QDialog):
     def __init__(self, service: CatalogService, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._service = service
+        self._pressed_check_state = Qt.CheckState.Unchecked
         self.setWindowTitle("Export Word List")
         self.setMinimumSize(360, 420)
         self._build_ui()
@@ -702,6 +710,7 @@ class _ExportDialog(QDialog):
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
+        root.setSpacing(10)
         root.addWidget(QLabel("Choose what to include, then save it as a JSON file."))
 
         self._all_radio = QRadioButton("Everything")
@@ -714,23 +723,24 @@ class _ExportDialog(QDialog):
             radio.toggled.connect(self._on_scope_changed)
             root.addWidget(radio)
 
-        self._category_list = QListWidget()
-        for category in self._service.list_categories(include_archived=False):
-            item = QListWidgetItem(category.name)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Unchecked)
-            item.setData(_ID_ROLE, category.id)
-            self._category_list.addItem(item)
-        root.addWidget(self._category_list)
+        self._category_list = self._build_checklist(
+            self._service.list_categories(include_archived=False)
+        )
+        root.addWidget(self._category_list, stretch=1)
 
-        self._profile_list = QListWidget()
-        for profile in self._service.list_profiles(include_archived=False):
-            item = QListWidgetItem(profile.name)
-            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            item.setCheckState(Qt.CheckState.Unchecked)
-            item.setData(_ID_ROLE, profile.id)
-            self._profile_list.addItem(item)
-        root.addWidget(self._profile_list)
+        self._profile_list = self._build_checklist(
+            self._service.list_profiles(include_archived=False)
+        )
+        root.addWidget(self._profile_list, stretch=1)
+
+        # Exactly one of _category_list/_profile_list/_all_spacer is
+        # visible at a time (see _on_scope_changed), each with stretch=1
+        # — without this, the "Everything" scope leaves no widget to
+        # absorb the dialog's leftover height, and Qt's layout crams
+        # every control down at the bottom with a large blank gap above
+        # it instead of packing them tightly at the top.
+        self._all_spacer = QWidget()
+        root.addWidget(self._all_spacer, stretch=1)
 
         self._archived_cb = QCheckBox("Include archived items")
         self._archived_cb.setToolTip(
@@ -749,9 +759,57 @@ class _ExportDialog(QDialog):
         btn_row.addWidget(export_btn)
         root.addLayout(btn_row)
 
+    def _build_checklist(self, items: list[Any]) -> QListWidget:
+        """A checkbox list where clicking anywhere on a row — the glyph
+        or the rest of the row — toggles it, matching the mockup's own
+        one-click-target `<label>` rows. Selection highlighting is
+        turned off entirely: a blue "selected" row that isn't also
+        checked reads as "chosen" when it isn't, so only the checkmark
+        should ever say that.
+
+        Qt's item views already toggle a checkable item's state
+        natively, but only for a click landing precisely on the tiny
+        indicator rect — a plain click anywhere else on the row just
+        selects it and leaves the checkbox alone, the opposite of what
+        this dialog needs. ``itemPressed``/``itemClicked`` bracket
+        that native toggle (it applies on release, so a press-time
+        snapshot always predates it): if the state changed between
+        press and click, the native toggle already handled an
+        indicator click and nothing more should happen here; if it
+        didn't, the click landed elsewhere on the row and this method
+        applies the toggle itself. Toggling unconditionally in
+        ``itemClicked`` would double-apply on an indicator click
+        (native toggle, then this one canceling it back out)."""
+        list_widget = QListWidget()
+        list_widget.setSelectionMode(QAbstractItemView.SelectionMode.NoSelection)
+        list_widget.itemPressed.connect(self._remember_pressed_check_state)
+        list_widget.itemClicked.connect(self._toggle_item_check_state)
+        for entity in items:
+            item = QListWidgetItem(entity.name)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            item.setData(_ID_ROLE, entity.id)
+            list_widget.addItem(item)
+        return list_widget
+
+    def _remember_pressed_check_state(self, item: QListWidgetItem) -> None:
+        self._pressed_check_state = item.checkState()
+
+    def _toggle_item_check_state(self, item: QListWidgetItem) -> None:
+        if item.checkState() != self._pressed_check_state:
+            return  # the indicator's own native click toggle already fired
+        item.setCheckState(
+            Qt.CheckState.Unchecked
+            if item.checkState() == Qt.CheckState.Checked
+            else Qt.CheckState.Checked
+        )
+
     def _on_scope_changed(self) -> None:
-        self._category_list.setVisible(self._categories_radio.isChecked())
-        self._profile_list.setVisible(self._profiles_radio.isChecked())
+        is_categories = self._categories_radio.isChecked()
+        is_profiles = self._profiles_radio.isChecked()
+        self._category_list.setVisible(is_categories)
+        self._profile_list.setVisible(is_profiles)
+        self._all_spacer.setVisible(not is_categories and not is_profiles)
         self._archived_cb.setEnabled(self._all_radio.isChecked())
 
     @staticmethod
