@@ -2954,3 +2954,99 @@ the checkbox alone doesn't help someone who hasn't hovered it, and
 this app already prefers a visible caption over a tooltip for exactly
 that reason. 1 new test. Full suite: 2170 passed, 2 skipped;
 `black`/`flake8`/`mypy` clean.
+
+## Chapter popup, take three; legend moved (ADR-0053, 2026-09-18)
+
+Live testing again: the previous popup fix (capping the popup view's
+own `maximumHeight`) shrank the visible list but left large blank
+white space around it — worse than before, since macOS's native popup
+*frame* sizes itself independently of the view widget inside it.
+Fixed by forcing `_chapter_combo` onto Qt's own Fusion style instead
+of trying to constrain the native popup further — Fusion's popup is a
+plain list view that just honors `maxVisibleItems()`. Two native-
+popup-shaped fixes in a row failed for the same reason: the native
+style doesn't behave like an ordinary list popup no matter what gets
+adjusted on it. The created `QStyle` is kept as an instance attribute,
+not a throwaway local — `setStyle()` doesn't take ownership, and a
+GC'd style while the widget still references it is a real crash risk.
+
+Also moved the legend line from under the chapter/highlight controls
+to above them, next to the tab's other informational text, matching
+where a Contributor actually reads it relative to what it explains.
+
+Rewrote the chapter-popup test to check the combo's effective style is
+the Fusion instance actually created (the take-two version would have
+passed while visibly failing live — same weak-test gap flagged last
+round). One new test walks the tab's real layout to confirm the
+legend's item index precedes the chapter-selector row. Full suite:
+2171 passed, 2 skipped; `black`/`flake8`/`mypy` clean.
+
+## Chapter picker rebuilt from scratch as a dialog, not a combo box (ADR-0053, 2026-09-18)
+
+Live testing a third time: forcing the combo box onto Qt's own Fusion
+style had no visible effect at all — same long unscrollable list,
+completely unchanged. Three attempts, three different failure modes,
+all against the same native macOS combo-box popup. The Contributor
+asked to stop guessing at it and think through an approach with an
+actual chance of working before touching it a fourth time.
+
+Diagnosis: none of the three failures were really about a property on
+the combo box — the native popup mechanism itself resisted every
+lever. Fix: stopped using `QComboBox`'s popup at all. `_chapter_combo`
+is gone; `_chapter_button` (a plain `QPushButton` showing the current
+chapter) opens `_ChapterPickerDialog`, an ordinary `QDialog` with a
+`QListWidget` of every chapter — the exact widget shape already
+proven working (sized, scrolled, styled correctly) for the Export
+dialog's checklists earlier this same session, not a fourth assumption
+about combo-box internals. `ReviewStep` now tracks chapter state
+itself (`_chapter_labels`, `_chapter_index`) instead of reading it
+back off a combo box.
+
+`_ChapterPickerDialog` tested directly (lists every label, pre-selects
+the current one, double-click/Go/Cancel all behave correctly);
+`ReviewStep`'s wiring tested separately (button opens the dialog,
+accept jumps to the chosen chapter, reject/no-chapters are no-ops).
+Full suite: 2180 passed, 2 skipped; `black`/`flake8`/`mypy` clean on
+the source file (the test file carries a few pre-existing, unrelated
+`mypy` warnings from earlier rounds this session, not touched here).
+
+## Low-confidence highlight noise: a length floor (ADR-0053, 2026-09-18)
+
+The chapter picker worked; next real-app report was about the
+highlight toggle itself. A real screenshot showed "Highlight uncertain
+words" flagging mostly ordinary short words — "juice", "box", "is",
+"not", "do", "yes", "he", "their", "the" — drowning out any real
+signal. This is the same finding ADR-0053's own real-data validation
+already reached for Option 4 (a bare confidence threshold doesn't
+produce a usable signal), just surfacing again here: whisper's
+per-word confidence tracks acoustic distinctness, not correctness, and
+short/fast/unstressed words score low regardless of whether they were
+transcribed right.
+
+Fixed with a length floor — a word under 4 characters never qualifies
+for the highlight, whatever its confidence. Reuses the exact len≥4
+threshold this ADR's own earlier real-data pass (Option 3) already
+validated as separating real content words from short function words,
+rather than picking a new number blind. Explicitly not a full fix —
+still an unvalidated skim aid, just with its single biggest, most-
+reported noise source removed. One new test, one existing test's
+fixture words widened from single letters (which the new floor would
+now exclude, for an unrelated reason). Full suite: 2181 passed, 2
+skipped; `black`/`flake8`/`mypy` clean.
+
+## "Highlight uncertain words" marked experimental, not removed (ADR-0053, 2026-09-18)
+
+Even with the length floor, real-app testing found the toggle still
+mostly flags ordinary, correctly-transcribed words — the same wall
+Option 4's own real-data validation already hit, reached a second,
+independent way. Offered the Contributor two real directions (drop the
+toggle like Options 3/4, or swap the underlying signal for something
+genuinely different like an out-of-vocabulary check); the answer was
+neither — keep it, but stop implying it's reliable.
+
+Labeled "(experimental)" directly in the checkbox's own text, not
+just the legend paragraph above it, added a tooltip explaining why
+(per-word confidence doesn't reliably separate real errors from
+ordinary words), and updated the legend to say the same. No behavior
+changed, only how honestly the feature represents itself. 3 new tests.
+Full suite: 2184 passed, 2 skipped; `black`/`flake8`/`mypy` clean.

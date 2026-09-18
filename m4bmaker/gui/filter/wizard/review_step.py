@@ -63,6 +63,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -157,6 +159,8 @@ class ReviewStep(WizardStep):
         self._source_path: Path | None = None
 
         # ── full-transcript review (ADR-0053, Option 1) ─────────────────
+        self._chapter_labels: list[str] = []
+        self._chapter_index = 0
         self._transcript_added_count = 0
         #: (start_ms, end_ms) for whichever selection is currently loaded
         #: in the Transcript tab's own preview dock -- single fixed
@@ -506,22 +510,40 @@ class ReviewStep(WizardStep):
         banner_layout.addWidget(rescan_go_btn)
         layout.addWidget(self._rescan_banner)
 
+        # A persistently visible legend, directly under the note above
+        # rather than a tooltip on the checkbox alone (this app's own
+        # established preference, e.g. ProfileEditorDialog's per-field
+        # descriptions) -- otherwise the two visual treatments below
+        # (strikethrough for a real hit, highlight for the toggle in
+        # the row beneath this) have no explanation anywhere a
+        # Contributor would actually see it.
+        self._transcript_legend_label = QLabel(
+            "Bold, struck-through words are already tagged as catalog "
+            "hits. “Highlight uncertain words” is experimental — it's "
+            "not reliable yet, and will likely also shade plenty of "
+            "ordinary, correctly-transcribed words."
+        )
+        self._transcript_legend_label.setObjectName("statusLabel")
+        self._transcript_legend_label.setWordWrap(True)
+        layout.addWidget(self._transcript_legend_label)
+
         nav_row = QHBoxLayout()
         nav_row.addWidget(QLabel("Chapter:"))
-        self._chapter_combo = QComboBox()
-        # A long audiobook can have dozens of chapters/segments -- cap
-        # the popup to a scrollable list instead of one giant menu.
-        # setMaxVisibleItems() alone doesn't do this: Qt documents it as
-        # ignored for a non-editable combo box under styles that report
-        # true for QStyle::SH_ComboBox_Popup, which includes macOS's
-        # native style -- confirmed live, the popup still showed every
-        # item. Capping the popup view's own height directly works
-        # regardless of that style hint, since it's a hard constraint
-        # on the real widget Qt lays the popup out from.
-        self._chapter_combo.setMaxVisibleItems(15)
-        self._chapter_combo.view().setMaximumHeight(360)
-        self._chapter_combo.currentIndexChanged.connect(self._on_chapter_changed)
-        nav_row.addWidget(self._chapter_combo)
+        # Not a QComboBox: its native macOS popup resisted three
+        # separate attempts to make it scroll instead of rendering
+        # every chapter at once (setMaxVisibleItems() is documented as
+        # ignored under macOS's native combo-box style; capping the
+        # popup view's own height left blank native-frame space around
+        # the now-too-small list instead of shrinking the frame to
+        # match; forcing the combo box onto Qt's own Fusion style had
+        # no visible effect on the popup at all, confirmed live). A
+        # button opening a plain QListWidget in an ordinary QDialog
+        # sidesteps all of that — the same widget this app's own Export
+        # dialog already uses for its checklists, scrolling exactly as
+        # asked with no native-popup involvement whatsoever.
+        self._chapter_button = QPushButton()
+        self._chapter_button.clicked.connect(self._on_chapter_button_clicked)
+        nav_row.addWidget(self._chapter_button)
         prev_btn = QPushButton("‹ Prev")
         prev_btn.clicked.connect(lambda: self._step_chapter(-1))
         nav_row.addWidget(prev_btn)
@@ -533,9 +555,19 @@ class ReviewStep(WizardStep):
         # unvalidated skim aid, not a shipped, tested default — Option 4's
         # real-data validation rejected confidence as an automated
         # *filter*, and this is a different, much smaller claim (a visual
-        # hint on top of text that's shown either way), but it's never
-        # actually been tested either.
-        self._lowconf_checkbox = QCheckBox("Highlight uncertain words")
+        # hint on top of text that's shown either way), but real-app
+        # testing (2026-09-18) found it still flags mostly ordinary,
+        # correctly-transcribed words even after excluding short function
+        # words -- labeled "(experimental)" in its own label, not just in
+        # the legend above, since a Contributor scanning the row itself
+        # (not reading the paragraph above it) should still see the same
+        # caveat right where they'd act on it.
+        self._lowconf_checkbox = QCheckBox("Highlight uncertain words (experimental)")
+        self._lowconf_checkbox.setToolTip(
+            "Experimental: based on the transcript engine's own per-word "
+            "confidence, which doesn't reliably separate real errors from "
+            "ordinary words. Expect false positives."
+        )
         self._lowconf_checkbox.setChecked(False)
         self._lowconf_checkbox.toggled.connect(self._on_lowconf_toggled)
         nav_row.addWidget(self._lowconf_checkbox)
@@ -545,22 +577,6 @@ class ReviewStep(WizardStep):
         jump_btn.clicked.connect(self._on_jump_to_next_hit)
         nav_row.addWidget(jump_btn)
         layout.addLayout(nav_row)
-
-        # A persistently visible legend, not a tooltip on the checkbox
-        # alone (this app's own established preference, e.g.
-        # ProfileEditorDialog's per-field descriptions) -- otherwise the
-        # two visual treatments below (strikethrough for a real hit,
-        # highlight for this toggle) have no explanation anywhere a
-        # Contributor would actually see it.
-        self._transcript_legend_label = QLabel(
-            "Bold, struck-through words are already tagged as catalog "
-            "hits. When checked, “Highlight uncertain words” also "
-            "shades any other word the transcript is less sure about, "
-            "so it's easy to spot."
-        )
-        self._transcript_legend_label.setObjectName("statusLabel")
-        self._transcript_legend_label.setWordWrap(True)
-        layout.addWidget(self._transcript_legend_label)
 
         self._transcript_view = TranscriptView()
         self._transcript_view.selection_changed.connect(
@@ -1121,27 +1137,50 @@ class ReviewStep(WizardStep):
     # ── full-transcript review (ADR-0053, Option 1) ─────────────────────
 
     def _refresh_chapter_options(self) -> None:
-        self._chapter_combo.blockSignals(True)
-        self._chapter_combo.clear()
+        self._chapter_labels = []
         if self._transcript is not None:
             for i, segment in enumerate(self._transcript.segments):
-                label = (
+                self._chapter_labels.append(
                     f"{i + 1} — {_ms_to_clock(segment.start_ms)}"
                     f"–{_ms_to_clock(segment.end_ms)}"
                 )
-                self._chapter_combo.addItem(label)
-        self._chapter_combo.blockSignals(False)
+        self._chapter_index = 0
+        self._update_chapter_button_text()
         self._load_chapter(0)
 
+    def _update_chapter_button_text(self) -> None:
+        if 0 <= self._chapter_index < len(self._chapter_labels):
+            self._chapter_button.setText(
+                f"{self._chapter_labels[self._chapter_index]}  ▾"
+            )
+        else:
+            self._chapter_button.setText("—")
+
     def _step_chapter(self, delta: int) -> None:
-        count = self._chapter_combo.count()
+        count = len(self._chapter_labels)
         if count == 0:
             return
-        new_index = max(0, min(count - 1, self._chapter_combo.currentIndex() + delta))
-        self._chapter_combo.setCurrentIndex(new_index)
+        new_index = max(0, min(count - 1, self._chapter_index + delta))
+        if new_index == self._chapter_index:
+            return
+        self._chapter_index = new_index
+        self._update_chapter_button_text()
+        self._load_chapter(new_index)
 
-    def _on_chapter_changed(self) -> None:
-        self._load_chapter(self._chapter_combo.currentIndex())
+    def _on_chapter_button_clicked(self) -> None:
+        if not self._chapter_labels:
+            return
+        dialog = _ChapterPickerDialog(self._chapter_labels, self._chapter_index, self)
+        if self._run_dialog(dialog) != QDialog.DialogCode.Accepted:
+            return
+        if (
+            dialog.selected_index is None
+            or dialog.selected_index == self._chapter_index
+        ):
+            return
+        self._chapter_index = dialog.selected_index
+        self._update_chapter_button_text()
+        self._load_chapter(self._chapter_index)
 
     def _load_chapter(self, index: int) -> None:
         if (
@@ -1267,6 +1306,60 @@ class ReviewStep(WizardStep):
         self._transcript_idle_label.setVisible(False)
         self._transcript_audio_player.setVisible(True)
         self._transcript_add_btn.setEnabled(True)
+
+
+class _ChapterPickerDialog(QDialog):
+    """Pick a chapter/segment from a plain, self-sized ``QListWidget`` —
+    not ``QComboBox``'s own native popup (ADR-0053). A long audiobook
+    can have 50+ chapters; the native popup resisted three separate
+    attempts to make it scroll instead of rendering all of them, on
+    macOS specifically. This is the same widget shape this app's own
+    Export dialog (``catalog_window.py``) already uses for its
+    category/profile checklists, scrolling exactly as expected with no
+    native-popup involvement at all.
+    """
+
+    def __init__(
+        self,
+        labels: list[str],
+        current_index: int,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.selected_index: int | None = None
+        self.setWindowTitle("Go to Chapter")
+        self.setMinimumSize(360, 420)
+
+        layout = QVBoxLayout(self)
+        self._list = QListWidget()
+        for label in labels:
+            self._list.addItem(label)
+        if 0 <= current_index < self._list.count():
+            self._list.setCurrentRow(current_index)
+        self._list.itemActivated.connect(self._on_item_activated)
+        layout.addWidget(self._list, stretch=1)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        go_btn = QPushButton("Go")
+        go_btn.setDefault(True)
+        go_btn.clicked.connect(self._on_go)
+        btn_row.addWidget(go_btn)
+        layout.addLayout(btn_row)
+
+    def _on_item_activated(self, item: QListWidgetItem) -> None:
+        self.selected_index = self._list.row(item)
+        self.accept()
+
+    def _on_go(self) -> None:
+        row = self._list.currentRow()
+        if row < 0:
+            return
+        self.selected_index = row
+        self.accept()
 
 
 class _AddToCatalogDialog(QDialog):

@@ -234,22 +234,38 @@ class TestLowConfidenceHint:
         touch on every toggle — this is the whole performance fix, so
         it must contain exactly the right words, not every word."""
         words = [
-            _word("a", 0, 100, confidence=0.5),  # low confidence
-            _word("b", 100, 200, confidence=0.95),  # high confidence
-            _word("c", 200, 300, confidence=0.5),  # low confidence, but a hit
-            _word("d", 300, 400, confidence=None),  # no confidence data
+            _word("darn", 0, 100, confidence=0.5),  # low confidence
+            _word("gate", 100, 200, confidence=0.95),  # high confidence
+            _word("crap", 200, 300, confidence=0.5),  # low confidence, but a hit
+            _word("okay", 300, 400, confidence=None),  # no confidence data
         ]
         v = TranscriptView()
         v.load_words(words, [_hit(200, 300)])
         assert v._low_confidence_indices == [0]
+
+    def test_indices_exclude_short_words_regardless_of_confidence(self) -> None:
+        """Whisper's per-word confidence tracks how acoustically distinct
+        a word's pronunciation was, not whether it was transcribed
+        correctly -- short, fast, unstressed words ("is", "he", "do")
+        score low regardless of correctness, which flooded this toggle
+        with noise in real use. A word shorter than the length floor
+        never qualifies, no matter how low its confidence is."""
+        words = [
+            _word("is", 0, 100, confidence=0.1),
+            _word("he", 100, 200, confidence=0.1),
+            _word("darn", 200, 300, confidence=0.1),
+        ]
+        v = TranscriptView()
+        v.load_words(words, [])
+        assert v._low_confidence_indices == [2]
 
     def test_enabling_highlights_only_the_qualifying_word(self) -> None:
         """A background wash, not a subtle underline -- a dotted
         underline read as too hard to spot while scanning real running
         text."""
         words = [
-            _word("a", 0, 100, confidence=0.5),
-            _word("b", 100, 200, confidence=0.95),
+            _word("darn", 0, 100, confidence=0.5),
+            _word("gate", 100, 200, confidence=0.95),
         ]
         v = TranscriptView()
         v.load_words(words, [])
@@ -264,7 +280,7 @@ class TestLowConfidenceHint:
         )
 
     def test_disabling_reverts_the_highlight(self) -> None:
-        words = [_word("a", 0, 100, confidence=0.5)]
+        words = [_word("darn", 0, 100, confidence=0.5)]
         v = TranscriptView()
         v.load_words(words, [])
         v.set_low_confidence_hint(True)
@@ -281,7 +297,7 @@ class TestLowConfidenceHint:
         by the low-confidence highlight — _apply_low_confidence_formatting
         must keep skipping a pending word, not just skip it before it's
         pending."""
-        words = [_word("a", 0, 100, confidence=0.5)]
+        words = [_word("darn", 0, 100, confidence=0.5)]
         v = TranscriptView()
         v.load_words(words, [])
         v.mark_pending([words[0]])

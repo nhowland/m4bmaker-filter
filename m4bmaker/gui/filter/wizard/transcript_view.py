@@ -43,6 +43,17 @@ from m4bmaker.filter.transcript import TranscriptWord
 #: default.
 _LOW_CONFIDENCE_THRESHOLD = 0.75
 
+#: Whisper's per-word confidence tracks how acoustically distinct a
+#: word's pronunciation was, not whether it was transcribed correctly --
+#: short, fast, unstressed words ("is", "he", "do", "not", "the") score
+#: low regardless of correctness, which flooded this toggle with noise
+#: in real use (real-app report, 2026-09-18). Excluding anything shorter
+#: than this reuses the exact len>=4 "real fuzzy target" floor ADR-0053's
+#: own earlier real-data validation pass (Option 3) already established
+#: as a working way to separate real content words from short function
+#: words in this same codebase, rather than picking a new number blind.
+_LOW_CONFIDENCE_MIN_WORD_LENGTH = 4
+
 
 def hit_word_flags(
     words: Sequence[TranscriptWord], hits: Sequence[ScanHit]
@@ -186,6 +197,7 @@ class TranscriptView(QTextEdit):
             if not s.is_hit
             and s.word.confidence is not None
             and s.word.confidence < _LOW_CONFIDENCE_THRESHOLD
+            and len(s.word.text.strip()) >= _LOW_CONFIDENCE_MIN_WORD_LENGTH
         ]
 
     # ── selection ────────────────────────────────────────────────────────

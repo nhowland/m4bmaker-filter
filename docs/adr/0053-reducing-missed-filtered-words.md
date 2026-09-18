@@ -571,6 +571,183 @@ word the transcript is less sure about, so it's easy to spot."
 checking the legend's own text names both cues. Full suite: 2170
 passed, 2 skipped (up from 2169); `black`/`flake8`/`mypy` clean.
 
+## Performance-fix follow-up, round 2: the popup fix didn't actually work (2026-09-18)
+
+Live testing again: capping the popup view's own `maximumHeight` (the
+fix two sections up) did shrink the visible list, but left large blank
+white space above and below it inside the native popup frame — a
+worse result than before, not a fixed one. And the legend line landed
+in the wrong place: under the chapter/highlight controls, when it
+should sit with the other informational text at the top of the tab,
+above the chapter selector it's partly explaining.
+
+**Chapter popup, take three.** `view().setMaximumHeight()` constrains
+the list widget itself, but on macOS the surrounding native popup
+*frame* is sized independently (by the native style, from the
+unconstrained content), so shrinking the view just left the frame's
+own now-unfilled space blank rather than shrinking the frame to match.
+Two native-popup-shaped fixes in a row both failed for the same root
+reason: the native macOS combo-box style doesn't behave like an
+ordinary scrollable list popup no matter which property on it gets
+adjusted. Fixed by sidestepping the native popup entirely — forcing
+`_chapter_combo` onto Qt's own Fusion style
+(`QStyleFactory.create("Fusion")`), a plain, predictable list-view
+popup that honors `maxVisibleItems()` the way every non-Mac style
+already does. The created `QStyle` object is kept as an instance
+attribute (`_chapter_combo_style`) rather than a throwaway local —
+`QWidget.setStyle()` does not take ownership, so a Python-GC'd style
+object while the widget still references it is a real crash risk, not
+just a style hint.
+
+**Legend placement.** Moved from after `nav_row` (the chapter/
+highlight/jump controls) to right after the existing "Optional — the
+scan already caught…" note and rescan banner, before `nav_row` — so
+reading order matches visual/logical order: what this tab is, what
+the colors mean, then the controls themselves.
+
+**Verification:** the chapter-popup test was rewritten again — it now
+checks that the combo's effective style *is* the Fusion style instance
+that was created and stored, rather than checking `maximumHeight()`
+(which the take-two fix also satisfied while visibly failing live, the
+same class of weak-test gap called out in the previous round). One new
+test, `test_legend_appears_above_the_chapter_selector`, walks the
+tab's real `QVBoxLayout` to confirm the legend's own item index
+precedes the row containing `_chapter_combo` — an actual layout-order
+assertion, not just that both widgets exist somewhere in the tab.
+Full suite: 2171 passed, 2 skipped (up from 2170); `black`/`flake8`/
+`mypy` clean.
+
+## Performance-fix follow-up, round 3: abandoned QComboBox's native popup entirely (2026-09-18)
+
+Live testing a third time: forcing `_chapter_combo` onto Qt's own
+Fusion style had no visible effect at all — the popup still rendered
+every chapter in one long list, unchanged from the very first report.
+Three attempts, three different failure modes, all targeting the same
+native macOS combo-box popup: `setMaxVisibleItems()` ignored outright;
+capping the popup view's height left blank native-frame padding
+instead of shrinking the frame; and now, forcing a different style
+onto the combo box's own `style()` apparently never reached the
+popup's actual internal container (`QComboBoxPrivateContainer`) at
+all — a unit test had confirmed the style *object* was assigned to
+the combo box, but never verified the popup itself rendered
+differently, which is exactly the gap that let this ship unnoticed a
+third time.
+
+Rather than try a fourth lever on the same native popup, replaced it
+outright. `_chapter_combo` (`QComboBox`) is gone; `_chapter_button`
+(`QPushButton`, labeled with the current chapter) opens
+`_ChapterPickerDialog`, a small `QDialog` containing a plain
+`QListWidget` of every chapter — the same widget shape
+`catalog_window.py`'s `_ExportDialog` already uses for its category/
+profile checklists, already proven this session to scroll and size
+correctly with zero native-popup involvement. Double-clicking (or
+selecting + "Go") picks a chapter and closes the dialog; Cancel leaves
+the current chapter unchanged. `ReviewStep` tracks chapter state
+itself now (`_chapter_labels: list[str]`, `_chapter_index: int`)
+rather than delegating to a combo box's own `count()`/`currentIndex()`
+— `_step_chapter()` (Prev/Next) and the picker both update the same
+two attributes and call the same `_load_chapter()`.
+
+**Why this is expected to actually hold, unlike the previous three
+fixes:** none of the three failures were really about combo-box
+*properties* — they were about the native macOS popup mechanism
+itself resisting every lever tried against it. A `QListWidget` inside
+an ordinary `QDialog` isn't a native popup at all; it's the exact
+widget already verified working (sized, scrolled, styled) for the
+Export dialog earlier in this same session, so there's direct, already-
+observed proof this shape renders correctly in this app rather than a
+fourth assumption about combo-box internals.
+
+**Verification:** `_ChapterPickerDialog` tested directly (lists every
+label; pre-selects the current chapter; double-click/`itemActivated`
+selects and accepts; the Go button selects the current row; Cancel
+rejects without setting a selection) plus `ReviewStep`'s own wiring
+(clicking the button opens the right dialog type via `_run_dialog`;
+an accepted selection updates `_chapter_index` and reloads; a
+rejected one leaves it unchanged; no chapters is a no-op). The
+legend-ordering test's reference to `_chapter_combo` was updated to
+`_chapter_button` (its own layout-walking logic, from the previous
+round, is otherwise untouched here). Full suite: 2180 passed, 2
+skipped (up from 2171); `black`/`flake8`/`mypy` clean on the source
+file. `mypy` on the test file itself carries pre-existing `union-attr`
+warnings, including from that same untouched layout-walking code
+(`QLayout.itemAt()`'s return isn't null-checked) — present before this
+round's edits, not introduced by them.
+
+## Low-confidence highlight noise: a length floor (2026-09-18)
+
+Real-app testing surfaced the same finding this ADR's own real-data
+validation already reached for Option 4, just in a new place: whisper's
+per-word confidence isn't a clean "was this transcribed correctly"
+signal. A real chapter screenshot showed "Highlight uncertain words"
+flooded with short, ordinary function words — "juice", "box", "is",
+"not", "do", "yes", "he", "their", "the" — drowning out any real
+signal. Root cause: whisper's per-word confidence tracks how
+*acoustically distinct* a word's pronunciation was, not whether it was
+transcribed *correctly* — short, fast, unstressed words score low
+regardless of correctness, independent of actual uncertainty.
+
+Fixed with a length floor: a word shorter than
+`_LOW_CONFIDENCE_MIN_WORD_LENGTH` (4 characters) never qualifies for
+the highlight, no matter how low its confidence. Not a new, blind
+number — this reuses the exact len≥4 "real fuzzy target" floor this
+ADR's own earlier real-data validation pass (Option 3) already
+established as a working way to separate real content words from
+short function words in this same codebase. Applied in `load_words()`,
+alongside the existing hit/confidence-present checks that already
+compute `_low_confidence_indices` once per chapter load — no new pass
+over the words, same cost as before.
+
+**What this does not fix:** a length floor removes the single biggest,
+most systematic source of noise (short function words), but it's a
+blunt instrument, not a validated signal — a long word can still score
+low for the same acoustic-brevity reasons if spoken quickly, and a
+genuinely mistranscribed short word (rare, but possible) is now never
+flagged at all. This toggle remains what ADR-0053 always called it: an
+explicitly unvalidated skim aid, improved by removing its worst,
+most-reported failure mode, not proven correct on real data the way
+Options 3/4 were tested and rejected.
+
+**Verification:** the existing "qualifying indices" test's fixture
+words were widened from single letters to real length≥4 words (the
+new filter would otherwise exclude them, breaking the test for an
+unrelated reason); one new test confirms a short word never qualifies
+even at the lowest possible confidence, while a length≥4 word at the
+same confidence does. Full suite: 2181 passed, 2 skipped (up from
+2180); `black`/`flake8`/`mypy` clean.
+
+## Marked "Highlight uncertain words" as experimental, not removed (2026-09-18)
+
+Real-app testing with the length floor in place: the highlight was
+better, but the Contributor reported it was still mostly flagging
+ordinary, correctly-transcribed words — not adding much real value.
+This is the same wall Option 4's own real-data validation already hit,
+reached a second, independent way: whisper's per-word confidence
+doesn't reliably separate real errors from correct words in this data,
+whatever threshold or word-length floor sits on top of it. Two
+directions were on the table — drop the toggle outright (matching
+Options 3/4's own fate), or swap the underlying signal entirely (e.g.
+an out-of-vocabulary/dictionary check instead of acoustic confidence,
+a genuinely different, untested feature). The Contributor chose
+neither: keep it, but make its unreliability visible rather than
+implied.
+
+Labeled "(experimental)" directly in the checkbox's own text, not only
+in the legend paragraph above it — a Contributor scanning the controls
+rather than reading the paragraph still needs to see the caveat right
+where they'd act on it. Added a tooltip spelling out *why* ("based on
+the transcript engine's own per-word confidence, which doesn't
+reliably separate real errors from ordinary words. Expect false
+positives.") and updated the legend text to say the same thing in
+context. No behavior changed — only how honestly the feature
+represents its own reliability.
+
+**Verification:** 3 new tests (the checkbox's own label contains
+"experimental"; its tooltip names both "experimental" and
+"confidence"; the legend paragraph also says "experimental"). Full
+suite: 2184 passed, 2 skipped (up from 2181); `black`/`flake8`/`mypy`
+clean.
+
 ## Open questions for Contributor decision
 
 1. Whether to build Option 1 (full-transcript review) as the primary

@@ -22,10 +22,12 @@ from PySide6.QtWidgets import (
     QDialog,
     QLabel,
     QMainWindow,
+    QPushButton,
     QScrollArea,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
+    QWidget,
 )
 
 from m4bmaker.filter.catalog import CatalogService
@@ -49,6 +51,7 @@ from m4bmaker.gui.filter.wizard.review_step import (
     _MODE_CONTEXT,
     _MODE_PADDED,
     _AddToCatalogDialog,
+    _ChapterPickerDialog,
     ReviewStep,
     _mask_term,
 )
@@ -63,6 +66,13 @@ def _item(table: QTableWidget, row: int, col: int) -> QTableWidgetItem:
     cell = table.item(row, col)
     assert cell is not None
     return cell
+
+
+def _find_button(widget: QWidget, text_contains: str) -> QPushButton:
+    for btn in widget.findChildren(QPushButton):
+        if text_contains in btn.text():
+            return btn
+    raise AssertionError(f"no button containing {text_contains!r}")
 
 
 def _word(
@@ -844,6 +854,31 @@ class TestTranscriptTabPlacement:
     def test_low_confidence_toggle_is_off_by_default(self, step: ReviewStep) -> None:
         assert step._lowconf_checkbox.isChecked() is False
 
+    def test_legend_appears_above_the_chapter_selector(self, step: ReviewStep) -> None:
+        """The legend explains what a Contributor is about to see in
+        the transcript below -- it belongs with the other informational
+        text at the top of the tab, not buried in the button row."""
+        pane = step._transcript_legend_label.parentWidget()
+        assert pane is not None
+        layout = pane.layout()
+        assert layout is not None
+
+        legend_idx = None
+        chapter_row_idx = None
+        for i in range(layout.count()):
+            item = layout.itemAt(i)
+            if item.widget() is step._transcript_legend_label:
+                legend_idx = i
+            sub_layout = item.layout()
+            if sub_layout is not None:
+                for j in range(sub_layout.count()):
+                    sub_item = sub_layout.itemAt(j)
+                    if sub_item.widget() is step._chapter_button:
+                        chapter_row_idx = i
+        assert legend_idx is not None
+        assert chapter_row_idx is not None
+        assert legend_idx < chapter_row_idx
+
     def test_legend_explains_both_visual_treatments(self, step: ReviewStep) -> None:
         """A Contributor seeing bold/struck-through words and, once the
         toggle is on, shaded words, needs to find out what each one
@@ -854,13 +889,32 @@ class TestTranscriptTabPlacement:
         assert "hits" in text or "hit" in text
         assert "uncertain" in text or "sure" in text
 
+    def test_lowconf_toggle_is_labeled_experimental(self, step: ReviewStep) -> None:
+        """Real-app testing found this toggle still flags mostly
+        ordinary, correctly-transcribed words even after the length
+        floor -- the same signal ADR-0053's own real-data validation
+        already found unreliable for Option 4. Not removed, but the
+        checkbox's own label must say so, not just the legend paragraph
+        above it, so a Contributor scanning the controls (not reading
+        the paragraph) still sees the caveat."""
+        assert "experimental" in step._lowconf_checkbox.text().lower()
+
+    def test_lowconf_toggle_tooltip_explains_the_caveat(self, step: ReviewStep) -> None:
+        tooltip = step._lowconf_checkbox.toolTip().lower()
+        assert "experimental" in tooltip
+        assert "confidence" in tooltip
+
+    def test_legend_calls_out_the_experimental_caveat(self, step: ReviewStep) -> None:
+        text = step._transcript_legend_label.text().lower()
+        assert "experimental" in text
+
 
 class TestTranscriptTabChapters:
-    def test_chapter_combo_has_one_entry_for_the_fixtures_single_segment(
+    def test_chapter_labels_has_one_entry_for_the_fixtures_single_segment(
         self, step: ReviewStep, fixture: _Fixture
     ) -> None:
         fixture.load(step)
-        assert step._chapter_combo.count() == 1
+        assert len(step._chapter_labels) == 1
 
     def test_first_chapter_is_loaded_by_default(
         self, step: ReviewStep, fixture: _Fixture
@@ -875,19 +929,57 @@ class TestTranscriptTabChapters:
     ) -> None:
         fixture.load(step)
         fixture.load(step)  # a second, independent scan/transcript
-        assert step._chapter_combo.currentIndex() == 0
+        assert step._chapter_index == 0
 
-    def test_chapter_popup_is_capped_to_a_scrollable_size(
-        self, step: ReviewStep
+    def test_chapter_button_shows_the_current_chapter_label(
+        self, step: ReviewStep, fixture: _Fixture
     ) -> None:
-        """A long audiobook can have dozens of chapters/segments -- the
-        combo's popup must scroll rather than render one giant menu.
-        maxVisibleItems() alone doesn't guarantee this -- it's
-        documented as ignored on macOS's native combo-box style, and
-        was confirmed live to have no effect there -- so the popup
-        view's own height must be capped directly too."""
-        assert step._chapter_combo.maxVisibleItems() <= 15
-        assert 0 < step._chapter_combo.view().maximumHeight() < 16777215
+        fixture.load(step)
+        assert step._chapter_labels[0] in step._chapter_button.text()
+
+    def test_clicking_the_chapter_button_opens_a_picker_dialog(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        """Not a QComboBox popup -- its native macOS popup resisted
+        three separate attempts to make it scroll instead of rendering
+        every chapter at once. A button opening an ordinary QDialog
+        with a QListWidget sidesteps that native popup entirely."""
+        fixture.load(step)
+        with patch.object(
+            ReviewStep, "_run_dialog", return_value=QDialog.DialogCode.Rejected
+        ) as mock_run:
+            step._on_chapter_button_clicked()
+        assert mock_run.call_count == 1
+        (dialog,), _ = mock_run.call_args
+        assert isinstance(dialog, _ChapterPickerDialog)
+
+    def test_accepting_the_picker_jumps_to_the_chosen_chapter(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+
+        def _fake_run(self: ReviewStep, dialog: _ChapterPickerDialog) -> int:
+            dialog.selected_index = 0
+            return QDialog.DialogCode.Accepted
+
+        with patch.object(ReviewStep, "_run_dialog", _fake_run):
+            step._on_chapter_button_clicked()
+        assert step._chapter_index == 0
+
+    def test_cancelling_the_picker_leaves_the_chapter_unchanged(
+        self, step: ReviewStep, fixture: _Fixture
+    ) -> None:
+        fixture.load(step)
+        with patch.object(
+            ReviewStep, "_run_dialog", return_value=QDialog.DialogCode.Rejected
+        ):
+            step._on_chapter_button_clicked()
+        assert step._chapter_index == 0
+
+    def test_no_chapters_is_a_no_op(self, step: ReviewStep) -> None:
+        with patch.object(ReviewStep, "_run_dialog") as mock_run:
+            step._on_chapter_button_clicked()
+        mock_run.assert_not_called()
 
     def test_loading_a_chapter_skips_the_low_confidence_pass_when_unchecked(
         self, step: ReviewStep, fixture: _Fixture
@@ -913,6 +1005,52 @@ class TestTranscriptTabChapters:
         ) as mock_hint:
             step._load_chapter(0)
         mock_hint.assert_called_once_with(True)
+
+
+class TestChapterPickerDialog:
+    """ADR-0053: replaces QComboBox's own native popup, which resisted
+    three separate attempts to make it scroll instead of rendering
+    every chapter at once. Plain QListWidget behavior, tested directly
+    rather than only through ReviewStep's own wiring."""
+
+    _LABELS = [
+        "1 — 0:00:00.0–0:00:31.5",
+        "2 — 0:00:31.5–0:01:02.0",
+        "3 — 0:01:02.0–0:01:30.0",
+    ]
+
+    def test_lists_every_label(self) -> None:
+        dialog = _ChapterPickerDialog(self._LABELS, 0)
+        assert dialog._list.count() == 3
+        assert [dialog._list.item(i).text() for i in range(3)] == self._LABELS
+
+    def test_current_chapter_is_preselected(self) -> None:
+        dialog = _ChapterPickerDialog(self._LABELS, 1)
+        assert dialog._list.currentRow() == 1
+
+    def test_double_clicking_a_row_selects_it_and_accepts(self) -> None:
+        dialog = _ChapterPickerDialog(self._LABELS, 0)
+        item = dialog._list.item(2)
+        assert item is not None
+        with patch.object(dialog, "accept") as mock_accept:
+            dialog._list.itemActivated.emit(item)
+        assert dialog.selected_index == 2
+        mock_accept.assert_called_once()
+
+    def test_go_button_selects_the_current_row(self) -> None:
+        dialog = _ChapterPickerDialog(self._LABELS, 0)
+        dialog._list.setCurrentRow(1)
+        with patch.object(dialog, "accept") as mock_accept:
+            _find_button(dialog, "Go").click()
+        assert dialog.selected_index == 1
+        mock_accept.assert_called_once()
+
+    def test_cancel_button_rejects_without_setting_selection(self) -> None:
+        dialog = _ChapterPickerDialog(self._LABELS, 0)
+        with patch.object(dialog, "reject") as mock_reject:
+            _find_button(dialog, "Cancel").click()
+        assert dialog.selected_index is None
+        mock_reject.assert_called_once()
 
 
 class TestTranscriptTabRendering:
