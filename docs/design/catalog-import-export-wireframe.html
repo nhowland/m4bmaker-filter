@@ -1,0 +1,784 @@
+<title>Word List Import/Export</title>
+<meta name="description" content="A working prototype of the proposed Word List backup/share flow (ADR-0055): export scope, and the import preview that shows what would happen before anything is written.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400;0,6..72,500;0,6..72,600;1,6..72,500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --page-bg: #f4f1ea;
+    --page-surface: #ffffff;
+    --page-ink: #23201b;
+    --page-prose: #5b564c;
+    --page-muted: #8a8375;
+    --page-line: #ded7c8;
+    --page-accent: #c45a2d;
+    --page-accent-ink: #ffffff;
+    --page-shadow: rgba(35, 32, 27, 0.14);
+    --code-bg: #ece6d8;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --page-bg: #17140f;
+      --page-surface: #211d17;
+      --page-ink: #ece6d8;
+      --page-prose: #b8b0a0;
+      --page-muted: #8a8375;
+      --page-line: #3a352b;
+      --page-accent: #e07a4c;
+      --page-accent-ink: #1a1208;
+      --page-shadow: rgba(0, 0, 0, 0.45);
+      --code-bg: #29241c;
+    }
+  }
+  :root[data-theme="dark"] {
+    --page-bg: #17140f;
+    --page-surface: #211d17;
+    --page-ink: #ece6d8;
+    --page-prose: #b8b0a0;
+    --page-muted: #8a8375;
+    --page-line: #3a352b;
+    --page-accent: #e07a4c;
+    --page-accent-ink: #1a1208;
+    --page-shadow: rgba(0, 0, 0, 0.45);
+    --code-bg: #29241c;
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--page-bg);
+    color: var(--page-ink);
+    font-family: "IBM Plex Sans", -apple-system, "Segoe UI", sans-serif;
+    line-height: 1.55;
+  }
+  ::selection { background: var(--page-accent); color: var(--page-accent-ink); }
+
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 56px 24px 96px; }
+
+  .eyebrow {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 12px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--page-accent);
+    margin: 0 0 10px;
+  }
+  h1 {
+    font-family: "Newsreader", Georgia, serif;
+    font-weight: 600;
+    font-size: clamp(28px, 4vw, 38px);
+    letter-spacing: -0.01em;
+    text-wrap: balance;
+    margin: 0 0 14px;
+  }
+  .lede {
+    font-size: 16px;
+    color: var(--page-prose);
+    max-width: 68ch;
+    margin: 0 0 28px;
+  }
+  .lede code, p code, li code, dd code {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 0.92em;
+    background: var(--code-bg);
+    padding: 0.1em 0.35em;
+    border-radius: 4px;
+  }
+
+  .spec {
+    background: var(--page-surface);
+    border: 1px solid var(--page-line);
+    border-radius: 10px;
+    padding: 22px 26px;
+    margin: 0 0 40px;
+  }
+  .spec h2 {
+    font-family: "IBM Plex Mono", monospace;
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--page-muted);
+    margin: 0 0 16px;
+    font-weight: 500;
+  }
+  .spec dl { display: grid; grid-template-columns: 180px 1fr; gap: 12px 20px; margin: 0; }
+  .spec dt { font-size: 13px; color: var(--page-muted); font-weight: 500; }
+  .spec dd { margin: 0; font-size: 14.5px; }
+  .spec dl + p {
+    margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--page-line);
+    font-size: 13.5px; color: var(--page-prose);
+  }
+
+  .stage-caption {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; margin: 0 0 14px; flex-wrap: wrap;
+  }
+  .stage-caption h2 { font-family: "Newsreader", Georgia, serif; font-size: 19px; font-weight: 600; margin: 0; }
+  .stage-hint { font-size: 12.5px; color: var(--page-muted); font-family: "IBM Plex Mono", monospace; }
+
+  .stage { display: flex; justify-content: center; padding: 28px 0 8px; }
+
+  .app-window {
+    width: 100%; max-width: 1040px; border-radius: 10px; overflow: hidden;
+    box-shadow: 0 24px 60px -20px var(--page-shadow), 0 2px 10px var(--page-shadow);
+    font-family: -apple-system, "Segoe UI", sans-serif;
+    transition: background-color 0.15s ease, color 0.15s ease, border-color 0.15s ease;
+    position: relative;
+  }
+  .app-window[data-app-theme="dark"] {
+    --a-bg: #1a1a1a; --a-card: #242424; --a-input: #2e2e2e;
+    --a-text: #c8c2b8; --a-prose: #b0a99e; --a-muted: #888888;
+    --a-line: #333333; --a-accent: #c45a2d; --a-success: #7cb88a; --a-warn: #d9a441;
+    --a-selection: #3a342c; --a-accent-ink: #f5f2ed; --a-overlay: rgba(0,0,0,0.58);
+  }
+  .app-window[data-app-theme="light"] {
+    --a-bg: #f5f2ed; --a-card: #ebe6dd; --a-input: #faf8f4;
+    --a-text: #1a1a1a; --a-prose: #4a4a4a; --a-muted: #7a7a7a;
+    --a-line: #d0c9be; --a-accent: #c45a2d; --a-success: #4b7a52; --a-warn: #93650f;
+    --a-selection: #d9cfc0; --a-accent-ink: #ffffff; --a-overlay: rgba(30,26,20,0.5);
+  }
+  .app-window { background: var(--a-bg); color: var(--a-text); }
+
+  .titlebar {
+    background: var(--a-card); border-bottom: 1px solid var(--a-line);
+    padding: 10px 14px; display: flex; align-items: center; gap: 10px;
+  }
+  .dots { display: flex; gap: 6px; }
+  .dots span { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .dots span:nth-child(1) { background: #ec6a5e; }
+  .dots span:nth-child(2) { background: #f4bf4f; }
+  .dots span:nth-child(3) { background: #61c454; }
+  .titlebar-label { font-size: 12.5px; font-weight: 600; color: var(--a-prose); }
+  .theme-toggle {
+    margin-left: auto; font-family: "IBM Plex Mono", monospace; font-size: 11px;
+    background: var(--a-input); border: 1px solid var(--a-line); color: var(--a-prose);
+    border-radius: 5px; padding: 4px 9px; cursor: pointer;
+  }
+  .theme-toggle:hover { border-color: var(--a-accent); color: var(--a-accent); }
+
+  .top-row {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-bottom: 1px solid var(--a-line);
+  }
+  .status-label { font-size: 12px; color: var(--a-muted); flex: 1; min-width: 0; }
+  .btn {
+    font-size: 12.5px; padding: 6px 13px; border-radius: 5px;
+    border: 1px solid var(--a-line); background: var(--a-input); color: var(--a-text);
+    cursor: pointer; white-space: nowrap;
+  }
+  .btn:hover { border-color: var(--a-accent); color: var(--a-accent); }
+  .btn.primary { background: var(--a-accent); border-color: var(--a-accent); color: var(--a-accent-ink); font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.06); color: var(--a-accent-ink); }
+  .btn.small { font-size: 11.5px; padding: 4px 10px; }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn:disabled:hover { border-color: var(--a-line); color: var(--a-text); }
+
+  .panes { display: flex; min-height: 420px; }
+  .pane { padding: 14px; display: flex; flex-direction: column; }
+  .pane-cats { width: 34%; border-right: 1px solid var(--a-line); }
+  .pane-entries { width: 66%; }
+  .pane-label { font-size: 12.5px; font-weight: 600; margin: 0 0 8px; color: var(--a-text); }
+
+  table.mini { width: 100%; border-collapse: collapse; font-size: 12.5px; flex: 1; color: var(--a-text); }
+  table.mini thead th {
+    text-align: left; font-weight: 600; font-size: 10.5px; letter-spacing: 0.04em; text-transform: uppercase;
+    color: var(--a-muted); border-bottom: 1px solid var(--a-line); padding: 0 6px 7px;
+  }
+  table.mini tbody td { padding: 6px; border-bottom: 1px solid var(--a-line); }
+  table.mini tbody tr { cursor: default; }
+  table.mini tbody tr.row-selected td { background: var(--a-selection); }
+  table.mini tbody tr.clickable { cursor: pointer; }
+  input[type="checkbox"] { accent-color: var(--a-accent); width: 14px; height: 14px; vertical-align: middle; }
+  .notes-cell input[type="text"] {
+    width: 100%; background: transparent; border: none; color: var(--a-text); font-size: 12.5px; font-family: inherit;
+  }
+
+  .btn-row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+  .archived-cb { font-size: 12px; color: var(--a-muted); margin-top: 10px; display: flex; align-items: center; gap: 6px; }
+
+  .add-row { display: flex; gap: 6px; margin-bottom: 8px; }
+  .add-row input[type="text"] {
+    flex: 1; background: var(--a-input); border: 1px solid var(--a-line); color: var(--a-text);
+    border-radius: 4px; padding: 6px 8px; font-size: 12.5px; font-family: inherit;
+  }
+
+  /* ── modal overlay (Export / Import Preview / errors) ─────────────── */
+  .overlay {
+    position: absolute; inset: 0; background: var(--a-overlay);
+    display: none; align-items: center; justify-content: center; padding: 24px; z-index: 5;
+  }
+  .overlay.open { display: flex; }
+  .modal {
+    background: var(--a-card); border: 1px solid var(--a-line); border-radius: 10px;
+    width: 100%; max-width: 480px; max-height: 90%; overflow: auto;
+    box-shadow: 0 20px 50px -10px rgba(0,0,0,0.4);
+  }
+  .modal.wide { max-width: 560px; }
+  .modal-head { padding: 16px 20px 12px; border-bottom: 1px solid var(--a-line); }
+  .modal-head h3 { margin: 0 0 3px; font-size: 15px; font-weight: 600; }
+  .modal-head p { margin: 0; font-size: 12px; color: var(--a-muted); }
+  .modal-body { padding: 16px 20px; }
+  .modal-foot { padding: 12px 20px 16px; display: flex; justify-content: flex-end; gap: 8px; border-top: 1px solid var(--a-line); }
+
+  .radio-opt { display: flex; align-items: flex-start; gap: 9px; padding: 8px 0; cursor: pointer; }
+  .radio-opt input { margin-top: 2px; accent-color: var(--a-accent); }
+  .radio-opt .ro-label { font-size: 13px; font-weight: 500; }
+  .radio-opt .ro-sub { font-size: 11.5px; color: var(--a-muted); margin-top: 1px; }
+
+  .checklist { border: 1px solid var(--a-line); border-radius: 6px; margin: 8px 0 4px; max-height: 160px; overflow: auto; }
+  .checklist label {
+    display: flex; align-items: center; gap: 8px; padding: 7px 10px; font-size: 12.5px;
+    border-bottom: 1px solid var(--a-line); cursor: pointer;
+  }
+  .checklist label:last-child { border-bottom: none; }
+  .checklist label:hover { background: var(--a-selection); }
+
+  .inline-cb { display: flex; align-items: center; gap: 8px; font-size: 12.5px; margin-top: 12px; }
+  .inline-cb .cb-sub { color: var(--a-muted); font-size: 11.5px; margin-left: 22px; margin-top: 2px; }
+
+  .count-strip {
+    display: flex; gap: 16px; flex-wrap: wrap; padding: 10px 12px; margin-bottom: 12px;
+    background: var(--a-input); border-radius: 6px; font-size: 11.5px;
+  }
+  .count-strip .c-num { font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 13.5px; }
+  .count-strip .c-item { display: flex; flex-direction: column; gap: 2px; }
+  .count-strip .c-label { color: var(--a-muted); }
+  .count-strip .c-dup .c-num { color: var(--a-warn); }
+
+  .detail-group { margin-bottom: 10px; }
+  .detail-group-head {
+    font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em;
+    color: var(--a-muted); padding: 4px 2px; display: flex; align-items: center; gap: 6px;
+  }
+  .cat-badge {
+    font-size: 9.5px; text-transform: none; letter-spacing: 0; font-weight: 600;
+    padding: 1px 6px; border-radius: 20px; border: 1px solid var(--a-line); color: var(--a-muted);
+  }
+  .cat-badge.new-cat { color: var(--a-success); border-color: var(--a-success); }
+  .detail-row {
+    display: flex; align-items: center; gap: 8px; padding: 5px 6px; font-size: 12.5px;
+    border-radius: 4px;
+  }
+  .detail-row .d-phrase { flex: 1; }
+  .pill {
+    font-size: 9.5px; font-weight: 600; padding: 2px 7px; border-radius: 20px; white-space: nowrap;
+  }
+  .pill.new { color: var(--a-success); border: 1px solid var(--a-success); }
+  .pill.dup { color: var(--a-warn); border: 1px solid var(--a-warn); }
+  .detail-row.is-dup .d-phrase { color: var(--a-muted); }
+
+  .file-pick-list { display: grid; gap: 8px; margin-top: 4px; }
+  .file-pick {
+    display: flex; align-items: center; gap: 10px; padding: 10px 12px;
+    border: 1px solid var(--a-line); border-radius: 6px; background: var(--a-input);
+    cursor: pointer; text-align: left; width: 100%; font-family: inherit; color: var(--a-text);
+  }
+  .file-pick:hover { border-color: var(--a-accent); }
+  .file-pick .fp-icon { font-size: 16px; flex: none; }
+  .fp-name { font-size: 12.5px; font-weight: 600; }
+  .fp-sub { font-size: 11px; color: var(--a-muted); margin-top: 1px; }
+  .fine-print { font-size: 11px; color: var(--a-muted); margin: 10px 0 0; }
+
+  .toast {
+    position: absolute; left: 50%; bottom: 18px; transform: translateX(-50%) translateY(8px);
+    background: var(--a-card); border: 1px solid var(--a-success); color: var(--a-text);
+    padding: 9px 16px; border-radius: 7px; font-size: 12px; box-shadow: 0 10px 30px -8px rgba(0,0,0,0.4);
+    opacity: 0; pointer-events: none; transition: opacity 0.2s ease, transform 0.2s ease; z-index: 8;
+    max-width: 88%;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast strong { color: var(--a-success); }
+
+  .notes { margin-top: 34px; display: grid; gap: 10px; }
+  .notes h2 {
+    font-family: "IBM Plex Mono", monospace; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+    color: var(--page-muted); margin: 0 0 4px; font-weight: 500;
+  }
+  .notes ul { margin: 0; padding-left: 20px; }
+  .notes li { margin-bottom: 8px; font-size: 14px; color: var(--page-prose); }
+  .notes li strong { color: var(--page-ink); }
+
+  @media (max-width: 720px) {
+    .panes { flex-direction: column; }
+    .pane-cats, .pane-entries { width: 100%; }
+    .pane-cats { border-right: none; border-bottom: 1px solid var(--a-line); }
+  }
+</style>
+
+<div class="wrap">
+  <p class="eyebrow">Filter feature · mockup for ADR-0055 (Proposed)</p>
+  <h1>Backing up and sharing your Word List</h1>
+  <p class="lede">
+    A working prototype of the Export/Import flow proposed in
+    <code>docs/adr/0055-catalog-import-export.md</code>: choose what to export,
+    and — the screen with the real information density — see exactly what an
+    import would do before anything is written, with duplicates safely
+    skipped by default.
+  </p>
+
+  <div class="spec">
+    <h2>Plan at a glance</h2>
+    <dl>
+      <dt>Export scope</dt>
+      <dd>Everything, selected categories, or selected profiles — chosen in the dialog, not three separate buttons. Archived items only travel with "Everything," and only if opted in.</dd>
+      <dt>Category matching</dt>
+      <dd>Case-insensitive name match merges into an existing category; no match creates a new one. Restoring your own backup merges back into place; someone else's "Profanity" list joins yours instead of forking.</dd>
+      <dt>Duplicate policy</dt>
+      <dd>Skip by default — never silently overwritten. An explicit "Overwrite duplicates" checkbox opts in, off by default, per ADR-0054's lesson that this catalog is real manual effort, not disposable fixture data.</dd>
+      <dt>Before you commit</dt>
+      <dd>A preview shows exact counts and the full detail list — new categories, new words, duplicates (and what happens to them) — before the one explicit Import button.</dd>
+      <dt>Safety net</dt>
+      <dd>A timestamped backup of <code>catalog.json</code> is written just before the import's merged result is saved — same pattern as ADR-0054's unreadable-file backup, generalized to any risky bulk write.</dd>
+    </dl>
+    <p>Try it below — click <strong>Export…</strong> to see the scope picker, or <strong>Import…</strong> to try one of three demo files (a clean share, your own backup, and a corrupted one).</p>
+  </div>
+
+  <div class="stage-caption">
+    <h2>Interactive mockup</h2>
+    <span class="stage-hint">click Export… or Import…</span>
+  </div>
+
+  <div class="stage">
+    <div class="app-window" data-app-theme="dark" id="appWindow">
+      <div class="titlebar">
+        <div class="dots"><span></span><span></span><span></span></div>
+        <span class="titlebar-label">Word List</span>
+        <button class="theme-toggle" id="themeToggle">☾ Dark</button>
+      </div>
+
+      <div class="top-row">
+        <span class="status-label" id="statusLabel">Ready.</span>
+        <button class="btn" id="exportOpenBtn">Export…</button>
+        <button class="btn" id="importOpenBtn">Import…</button>
+      </div>
+
+      <div class="panes">
+        <div class="pane pane-cats">
+          <p class="pane-label">Categories</p>
+          <table class="mini">
+            <thead><tr><th>Name</th><th style="width:40px;">Mask</th></tr></thead>
+            <tbody id="catBody"></tbody>
+          </table>
+          <div class="btn-row">
+            <button class="btn small">+ Category</button>
+            <button class="btn small">Rename</button>
+            <button class="btn small">Delete</button>
+          </div>
+          <label class="archived-cb"><input type="checkbox">Show archived</label>
+        </div>
+
+        <div class="pane pane-entries">
+          <p class="pane-label" id="entriesLabel">Words in "Profanity"</p>
+          <table class="mini">
+            <thead><tr><th>Phrase</th><th style="width:52px;">Enabled</th><th style="width:40px;">Mask</th><th>Notes</th></tr></thead>
+            <tbody id="entryBody"></tbody>
+          </table>
+          <div class="add-row" style="margin-top:8px;">
+            <input type="text" placeholder="Add a word or phrase…">
+            <button class="btn small">+ Word</button>
+          </div>
+          <div class="btn-row">
+            <button class="btn small">Delete</button>
+            <button class="btn small">Move to Category…</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Export dialog ──────────────────────────────────────────── -->
+      <div class="overlay" id="exportOverlay">
+        <div class="modal wide">
+          <div class="modal-head">
+            <h3>Export Word List</h3>
+            <p>Choose what to include, then save it as a JSON file.</p>
+          </div>
+          <div class="modal-body">
+            <label class="radio-opt">
+              <input type="radio" name="exportScope" value="all" checked>
+              <span><span class="ro-label">Everything</span><br><span class="ro-sub">Every category and word, plus every saved profile.</span></span>
+            </label>
+            <label class="radio-opt">
+              <input type="radio" name="exportScope" value="categories">
+              <span><span class="ro-label">Selected categories</span><br><span class="ro-sub">Just the categories you pick, with their words.</span></span>
+            </label>
+            <div class="checklist" id="exportCatList" style="display:none;"></div>
+            <label class="radio-opt">
+              <input type="radio" name="exportScope" value="profiles">
+              <span><span class="ro-label">Selected profiles</span><br><span class="ro-sub">A profile's words, resolved into their categories, plus its padding settings.</span></span>
+            </label>
+            <div class="checklist" id="exportProfileList" style="display:none;"></div>
+
+            <label class="inline-cb" id="archivedCbRow">
+              <input type="checkbox" id="archivedCb">
+              Include archived items
+            </label>
+            <div class="cb-sub">Only applies to "Everything" — a true backup, not a share.</div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn" id="exportCancelBtn">Cancel</button>
+            <button class="btn primary" id="exportConfirmBtn">Export…</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Import: pick a file (demo stand-in for the native picker) ── -->
+      <div class="overlay" id="importPickOverlay">
+        <div class="modal">
+          <div class="modal-head">
+            <h3>Import Word List</h3>
+            <p>In the real app this opens your OS's own file picker. Pick a demo file below to see the three outcomes.</p>
+          </div>
+          <div class="modal-body">
+            <div class="file-pick-list">
+              <button class="file-pick" data-file="shared">
+                <span class="fp-icon">📄</span>
+                <span><span class="fp-name">shared-list.json</span><br><span class="fp-sub">A friend's word list — some overlap with yours</span></span>
+              </button>
+              <button class="file-pick" data-file="selfbackup">
+                <span class="fp-icon">📄</span>
+                <span><span class="fp-name">my-backup.json</span><br><span class="fp-sub">Your own catalog, exported last month</span></span>
+              </button>
+              <button class="file-pick" data-file="bad">
+                <span class="fp-icon">📄</span>
+                <span><span class="fp-name">old-notes.txt</span><br><span class="fp-sub">Not a Word List export at all</span></span>
+              </button>
+            </div>
+            <p class="fine-print">File is validated (schema, version, size) before anything else happens — PRD §12.5.</p>
+          </div>
+          <div class="modal-foot">
+            <button class="btn" id="importPickCancelBtn">Cancel</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Import: validation error ───────────────────────────────── -->
+      <div class="overlay" id="importErrorOverlay">
+        <div class="modal">
+          <div class="modal-head">
+            <h3>Can't Import This File</h3>
+          </div>
+          <div class="modal-body">
+            <p style="margin:0; font-size:13px; color:var(--a-text);">
+              "old-notes.txt" isn't a recognized Word List export — no
+              <code style="font-family:'IBM Plex Mono',monospace; background:var(--a-input); padding:1px 5px; border-radius:4px;">exportSchemaVersion</code>
+              field was found. Nothing was changed.
+            </p>
+          </div>
+          <div class="modal-foot">
+            <button class="btn primary" id="importErrorOkBtn">OK</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Import: preview before commit ──────────────────────────── -->
+      <div class="overlay" id="importPreviewOverlay">
+        <div class="modal wide">
+          <div class="modal-head">
+            <h3 id="previewTitle">Import Preview — shared-list.json</h3>
+            <p>Nothing is written until you press Import.</p>
+          </div>
+          <div class="modal-body">
+            <div class="count-strip" id="countStrip"></div>
+            <div id="detailGroups"></div>
+
+            <label class="inline-cb">
+              <input type="checkbox" id="overwriteCb">
+              Overwrite duplicates
+            </label>
+            <div class="cb-sub">Off by default — a duplicate keeps your existing notes and mask setting unless you check this.</div>
+          </div>
+          <div class="modal-foot">
+            <button class="btn" id="previewCancelBtn">Cancel</button>
+            <button class="btn primary" id="previewConfirmBtn">Import</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="toast" id="toast"></div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <h2>Trade-offs worth flagging</h2>
+    <ul>
+      <li><strong>Skip-by-default breaks from ADR-0040's precedent on purpose.</strong> The Word List's manual "+ Word" flow rejects a duplicate outright; import instead skips it silently-but-visibly (shown in the preview, not hidden). Rejecting the whole import over one duplicate word would defeat the point of merging two lists; overwriting by default risks losing a real local edit exactly the way ADR-0054 happened. Skip-and-show is the only option that's both safe and still useful.</li>
+      <li><strong>Re-importing your own backup should be a safe no-op.</strong> Try "my-backup.json" — every category matches by name, every word is a duplicate, the profile name matches. With nothing checked, pressing Import does functionally nothing (and says so) rather than silently duplicating everything or erroring out. This is the same shape of mistake that caused ADR-0054, deliberately re-created here against the fix to confirm the default is actually safe.</li>
+      <li><strong>The preview groups by category, not one flat list.</strong> "shared-list.json" creates a new "Slang" category, merges words into your existing "Profanity" and "Religious," and brings one profile — grouping makes it legible at a glance which of those three things is actually happening to each word, instead of a Contributor having to infer it from a flat table.</li>
+      <li><strong>The "Overwrite duplicates" checkbox is live, not just a flag read at Import time.</strong> Toggling it in the mockup relabels every duplicate pill and the count strip immediately — a Contributor should see exactly what they're opting into before pressing Import, not discover it afterward.</li>
+      <li><strong>Not shown here: the real native pickers.</strong> <code>QFileDialog.getOpenFileName</code>/<code>getSaveFileName</code> (the same calls <code>source_step.py</code> and <code>render_step.py</code> already use) replace the "pick a demo file" list and the "Export…" button's save step — those are the OS's own dialogs, not something to mock.</li>
+      <li><strong>Where the buttons live.</strong> Considered a menu bar (<code>CatalogWindow</code> has never had one) — rejected for two buttons; a top row next to the status label costs one row of height and needs no new chrome pattern the rest of the window doesn't already have.</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+(function () {
+  var LOCAL_CATS = [
+    { name: "Profanity", mask: false, words: [
+      { phrase: "damn", enabled: true, mask: false, notes: "" },
+      { phrase: "hell", enabled: true, mask: false, notes: "" },
+      { phrase: "crap", enabled: true, mask: false, notes: "" },
+      { phrase: "shoot", enabled: true, mask: false, notes: "" },
+      { phrase: "dang", enabled: true, mask: false, notes: "" },
+      { phrase: "blast", enabled: true, mask: false, notes: "" },
+      { phrase: "heck", enabled: true, mask: false, notes: "" },
+      { phrase: "bloody", enabled: true, mask: false, notes: "" }
+    ]},
+    { name: "Religious", mask: false, words: [
+      { phrase: "jesus", enabled: true, mask: true, notes: "" },
+      { phrase: "christ", enabled: true, mask: true, notes: "" },
+      { phrase: "goddamn", enabled: true, mask: true, notes: "" }
+    ]},
+    { name: "Crude Language", mask: false, words: [
+      { phrase: "jerk", enabled: true, mask: false, notes: "" },
+      { phrase: "idiot", enabled: false, mask: false, notes: "mild, usually fine" },
+      { phrase: "stupid", enabled: true, mask: false, notes: "" },
+      { phrase: "dumb", enabled: true, mask: false, notes: "" }
+    ]}
+  ];
+  var LOCAL_PROFILES = ["Family Friendly", "Crude Only"];
+
+  // Demo import files -- deliberately hand-authored to exercise the
+  // decision surface, not generated from LOCAL_CATS: "shared" covers a
+  // new category (Slang) + merges into two existing ones with a mix of
+  // new/duplicate words; "selfbackup" is LOCAL_CATS re-exported verbatim,
+  // to prove re-importing your own backup is a safe no-op by default.
+  var IMPORT_FILES = {
+    shared: {
+      label: "shared-list.json",
+      groups: [
+        { category: "Profanity", isNewCategory: false, words: [
+          { phrase: "damn", dup: true }, { phrase: "hell", dup: true },
+          { phrase: "crud", dup: false }, { phrase: "friggin", dup: false },
+          { phrase: "screwed", dup: false }, { phrase: "dang it", dup: false }
+        ]},
+        { category: "Religious", isNewCategory: false, words: [
+          { phrase: "jesus", dup: true },
+          { phrase: "lord", dup: false }, { phrase: "heavens", dup: false }
+        ]},
+        { category: "Slang", isNewCategory: true, words: [
+          { phrase: "bonkers", dup: false }, { phrase: "wack", dup: false },
+          { phrase: "cringe", dup: false }, { phrase: "sus", dup: false },
+          { phrase: "mid", dup: false }
+        ]}
+      ],
+      profiles: [{ name: "Strict Filter", dup: false }]
+    },
+    selfbackup: {
+      label: "my-backup.json",
+      groups: [
+        { category: "Profanity", isNewCategory: false, words: LOCAL_CATS[0].words.map(function (w) { return { phrase: w.phrase, dup: true }; }) },
+        { category: "Religious", isNewCategory: false, words: LOCAL_CATS[1].words.map(function (w) { return { phrase: w.phrase, dup: true }; }) },
+        { category: "Crude Language", isNewCategory: false, words: LOCAL_CATS[2].words.map(function (w) { return { phrase: w.phrase, dup: true }; }) }
+      ],
+      profiles: [{ name: "Family Friendly", dup: true }]
+    }
+  };
+
+  var catBody = document.getElementById("catBody");
+  var entryBody = document.getElementById("entryBody");
+  var entriesLabel = document.getElementById("entriesLabel");
+  var statusLabel = document.getElementById("statusLabel");
+  var selectedCatIndex = 0;
+
+  function renderCats() {
+    catBody.innerHTML = "";
+    LOCAL_CATS.forEach(function (cat, i) {
+      var tr = document.createElement("tr");
+      tr.className = "clickable" + (i === selectedCatIndex ? " row-selected" : "");
+      tr.innerHTML = "<td>" + cat.name + "</td><td><input type='checkbox' " + (cat.mask ? "checked" : "") + " disabled></td>";
+      tr.addEventListener("click", function () { selectedCatIndex = i; renderCats(); renderEntries(); });
+      catBody.appendChild(tr);
+    });
+  }
+
+  function renderEntries() {
+    var cat = LOCAL_CATS[selectedCatIndex];
+    entriesLabel.textContent = 'Words in "' + cat.name + '"';
+    entryBody.innerHTML = "";
+    cat.words.forEach(function (w) {
+      var tr = document.createElement("tr");
+      tr.innerHTML =
+        "<td>" + w.phrase + "</td>" +
+        "<td><input type='checkbox' " + (w.enabled ? "checked" : "") + " disabled></td>" +
+        "<td><input type='checkbox' " + (w.mask ? "checked" : "") + " disabled></td>" +
+        "<td class='notes-cell'><input type='text' value='" + w.notes + "' readonly></td>";
+      entryBody.appendChild(tr);
+    });
+  }
+
+  renderCats();
+  renderEntries();
+
+  function setStatus(msg) { statusLabel.textContent = msg; }
+
+  function showToast(html) {
+    var toast = document.getElementById("toast");
+    toast.innerHTML = html;
+    toast.classList.add("show");
+    clearTimeout(showToast._t);
+    showToast._t = setTimeout(function () { toast.classList.remove("show"); }, 4200);
+  }
+
+  function openOverlay(id) { document.getElementById(id).classList.add("open"); }
+  function closeOverlay(id) { document.getElementById(id).classList.remove("open"); }
+  function closeAllOverlays() {
+    ["exportOverlay", "importPickOverlay", "importErrorOverlay", "importPreviewOverlay"].forEach(closeOverlay);
+  }
+
+  // ── Export dialog ──────────────────────────────────────────────────
+  var exportCatList = document.getElementById("exportCatList");
+  var exportProfileList = document.getElementById("exportProfileList");
+  var archivedCbRow = document.getElementById("archivedCbRow");
+
+  LOCAL_CATS.forEach(function (cat, i) {
+    var label = document.createElement("label");
+    label.innerHTML = "<input type='checkbox' " + (i === 0 ? "checked" : "") + "> " + cat.name + " (" + cat.words.length + " words)";
+    exportCatList.appendChild(label);
+  });
+  LOCAL_PROFILES.forEach(function (name, i) {
+    var label = document.createElement("label");
+    label.innerHTML = "<input type='checkbox' " + (i === 0 ? "checked" : "") + "> " + name;
+    exportProfileList.appendChild(label);
+  });
+
+  function updateExportScope() {
+    var scope = document.querySelector("input[name='exportScope']:checked").value;
+    exportCatList.style.display = scope === "categories" ? "block" : "none";
+    exportProfileList.style.display = scope === "profiles" ? "block" : "none";
+    archivedCbRow.style.opacity = scope === "all" ? "1" : "0.45";
+    document.getElementById("archivedCb").disabled = scope !== "all";
+  }
+  document.querySelectorAll("input[name='exportScope']").forEach(function (r) {
+    r.addEventListener("change", updateExportScope);
+  });
+  updateExportScope();
+
+  document.getElementById("exportOpenBtn").addEventListener("click", function () { openOverlay("exportOverlay"); });
+  document.getElementById("exportCancelBtn").addEventListener("click", function () { closeOverlay("exportOverlay"); });
+  document.getElementById("exportConfirmBtn").addEventListener("click", function () {
+    var scope = document.querySelector("input[name='exportScope']:checked").value;
+    var scopeLabel = scope === "all" ? "Everything" : scope === "categories" ? "selected categories" : "selected profiles";
+    closeOverlay("exportOverlay");
+    setStatus("Exported (" + scopeLabel + ") to family-word-list-2026-09-18.json.");
+    showToast("<strong>Exported.</strong> Saved as family-word-list-2026-09-18.json.");
+  });
+
+  // ── Import: pick file ───────────────────────────────────────────────
+  document.getElementById("importOpenBtn").addEventListener("click", function () { openOverlay("importPickOverlay"); });
+  document.getElementById("importPickCancelBtn").addEventListener("click", function () { closeOverlay("importPickOverlay"); });
+
+  document.querySelectorAll(".file-pick").forEach(function (btn) {
+    btn.addEventListener("click", function () {
+      var key = btn.dataset.file;
+      closeOverlay("importPickOverlay");
+      if (key === "bad") {
+        openOverlay("importErrorOverlay");
+        return;
+      }
+      openPreview(key);
+    });
+  });
+  document.getElementById("importErrorOkBtn").addEventListener("click", function () { closeOverlay("importErrorOverlay"); });
+
+  // ── Import: preview ─────────────────────────────────────────────────
+  var currentFile = null;
+  var previewTitle = document.getElementById("previewTitle");
+  var countStrip = document.getElementById("countStrip");
+  var detailGroups = document.getElementById("detailGroups");
+  var overwriteCb = document.getElementById("overwriteCb");
+
+  function openPreview(key) {
+    currentFile = IMPORT_FILES[key];
+    overwriteCb.checked = false;
+    previewTitle.textContent = "Import Preview — " + currentFile.label;
+    renderPreview();
+    openOverlay("importPreviewOverlay");
+  }
+
+  function renderPreview() {
+    var overwrite = overwriteCb.checked;
+    var newCats = 0, newWords = 0, dupWords = 0, newProfiles = 0, dupProfiles = 0;
+
+    detailGroups.innerHTML = "";
+    currentFile.groups.forEach(function (group) {
+      if (group.isNewCategory) newCats++;
+      var g = document.createElement("div");
+      g.className = "detail-group";
+      var head = document.createElement("div");
+      head.className = "detail-group-head";
+      head.innerHTML = group.category + " <span class='cat-badge" + (group.isNewCategory ? " new-cat" : "") + "'>" +
+        (group.isNewCategory ? "new category" : "merges into existing") + "</span>";
+      g.appendChild(head);
+      group.words.forEach(function (w) {
+        if (w.dup) { dupWords++; } else { newWords++; }
+        var row = document.createElement("div");
+        row.className = "detail-row" + (w.dup ? " is-dup" : "");
+        var pill = w.dup
+          ? "<span class='pill dup'>" + (overwrite ? "duplicate — will overwrite" : "duplicate — skipped") + "</span>"
+          : "<span class='pill new'>new</span>";
+        row.innerHTML = "<span class='d-phrase'>" + w.phrase + "</span>" + pill;
+        g.appendChild(row);
+      });
+      detailGroups.appendChild(g);
+    });
+
+    if (currentFile.profiles && currentFile.profiles.length) {
+      var g2 = document.createElement("div");
+      g2.className = "detail-group";
+      var head2 = document.createElement("div");
+      head2.className = "detail-group-head";
+      head2.textContent = "Profiles";
+      g2.appendChild(head2);
+      currentFile.profiles.forEach(function (p) {
+        if (p.dup) { dupProfiles++; } else { newProfiles++; }
+        var row = document.createElement("div");
+        row.className = "detail-row" + (p.dup ? " is-dup" : "");
+        var pill = p.dup
+          ? "<span class='pill dup'>" + (overwrite ? "duplicate — will overwrite" : "duplicate — skipped") + "</span>"
+          : "<span class='pill new'>new</span>";
+        row.innerHTML = "<span class='d-phrase'>" + p.name + "</span>" + pill;
+        g2.appendChild(row);
+      });
+      detailGroups.appendChild(g2);
+    }
+
+    var dupVerb = overwrite ? "will be overwritten" : "will be skipped";
+    countStrip.innerHTML =
+      "<div class='c-item'><span class='c-num'>" + newCats + "</span><span class='c-label'>new categories</span></div>" +
+      "<div class='c-item'><span class='c-num'>" + newWords + "</span><span class='c-label'>new words</span></div>" +
+      "<div class='c-item c-dup'><span class='c-num'>" + (dupWords + dupProfiles) + "</span><span class='c-label'>duplicates found (" + dupVerb + ")</span></div>" +
+      "<div class='c-item'><span class='c-num'>" + newProfiles + "</span><span class='c-label'>new profiles</span></div>";
+  }
+
+  overwriteCb.addEventListener("change", renderPreview);
+  document.getElementById("previewCancelBtn").addEventListener("click", function () { closeOverlay("importPreviewOverlay"); });
+  document.getElementById("previewConfirmBtn").addEventListener("click", function () {
+    var overwrite = overwriteCb.checked;
+    var totalNew = currentFile.groups.reduce(function (n, g) { return n + g.words.filter(function (w) { return !w.dup; }).length; }, 0);
+    var totalDup = currentFile.groups.reduce(function (n, g) { return n + g.words.filter(function (w) { return w.dup; }).length; }, 0);
+    closeOverlay("importPreviewOverlay");
+    if (totalNew === 0 && totalDup > 0 && !overwrite) {
+      setStatus("Import complete — everything already matched, nothing changed.");
+      showToast("<strong>Nothing to do.</strong> Every word and profile already existed — 0 changes made.");
+    } else {
+      setStatus("Imported " + totalNew + " new word(s) from " + currentFile.label + ".");
+      showToast("<strong>Imported.</strong> Backup saved as catalog.json.pre-import-20260918T193000Z.bak first.");
+    }
+  });
+
+  // ── theme toggle + overlay dismiss ──────────────────────────────────
+  var themeToggle = document.getElementById("themeToggle");
+  var appWindow = document.getElementById("appWindow");
+  themeToggle.addEventListener("click", function () {
+    var isDark = appWindow.dataset.appTheme === "dark";
+    appWindow.dataset.appTheme = isDark ? "light" : "dark";
+    themeToggle.textContent = isDark ? "☀ Light" : "☾ Dark";
+  });
+
+  document.querySelectorAll(".overlay").forEach(function (ov) {
+    ov.addEventListener("click", function (ev) {
+      if (ev.target === ov) closeAllOverlays();
+    });
+  });
+})();
+</script>

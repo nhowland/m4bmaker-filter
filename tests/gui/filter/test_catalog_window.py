@@ -19,13 +19,22 @@ immediately, exactly as a user's dialog interaction would.
 from __future__ import annotations
 
 from collections.abc import Iterator
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QMessageBox, QTableWidget, QTableWidgetItem
+from PySide6.QtWidgets import (
+    QDialog,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QWidget,
+)
 
 from m4bmaker.filter.catalog import CatalogService
+from m4bmaker.filter.models import CatalogEntry, Category
 from m4bmaker.gui.filter.catalog_window import (
     _COL_CATEGORY_MASK,
     _COL_ENTRY_ENABLED,
@@ -34,6 +43,8 @@ from m4bmaker.gui.filter.catalog_window import (
     _COL_ENTRY_PHRASE,
     _ID_ROLE,
     CatalogWindow,
+    _ExportDialog,
+    _ImportPreviewDialog,
 )
 
 pytestmark = pytest.mark.usefixtures("qapp")
@@ -63,6 +74,13 @@ def _item(table: QTableWidget, row: int, col: int) -> QTableWidgetItem:
     cell = table.item(row, col)
     assert cell is not None
     return cell
+
+
+def _find_button(widget: QWidget, text_contains: str) -> QPushButton:
+    for btn in widget.findChildren(QPushButton):
+        if text_contains in btn.text():
+            return btn
+    raise AssertionError(f"no button containing {text_contains!r}")
 
 
 class TestConstruction:
@@ -672,3 +690,359 @@ class TestEntrySorting:
             entry = service.get_entry(phrase_item.data(_ID_ROLE))
             assert entry.canonical_phrase == phrase_item.text()
             assert entry.notes == notes_item.text()
+
+
+class TestExportDialog:
+    """ADR-0055's export scope picker."""
+
+    @pytest.fixture()
+    def dialog_service(self) -> CatalogService:
+        service = CatalogService()
+        cat = service.create_category("Profanity")
+        service.create_entry(cat.id, "darn")
+        service.create_profile("Family Friendly")
+        return service
+
+    def test_everything_is_the_default_scope(
+        self, dialog_service: CatalogService
+    ) -> None:
+        dialog = _ExportDialog(dialog_service)
+        categories, entries, profiles = dialog.resolve_records()
+        assert [c.name for c in categories] == ["Profanity"]
+        assert [p.name for p in profiles] == ["Family Friendly"]
+
+    def test_category_checklist_lists_local_categories(
+        self, dialog_service: CatalogService
+    ) -> None:
+        dialog = _ExportDialog(dialog_service)
+        assert dialog._category_list.count() == 1
+        item = dialog._category_list.item(0)
+        assert item is not None
+        assert item.text() == "Profanity"
+
+    def test_category_list_hidden_until_that_scope_is_chosen(
+        self, dialog_service: CatalogService
+    ) -> None:
+        dialog = _ExportDialog(dialog_service)
+        assert dialog._category_list.isHidden() is True
+        dialog._categories_radio.setChecked(True)
+        assert dialog._category_list.isHidden() is False
+
+    def test_profile_list_hidden_until_that_scope_is_chosen(
+        self, dialog_service: CatalogService
+    ) -> None:
+        dialog = _ExportDialog(dialog_service)
+        assert dialog._profile_list.isHidden() is True
+        dialog._profiles_radio.setChecked(True)
+        assert dialog._profile_list.isHidden() is False
+
+    def test_archived_checkbox_disabled_outside_everything_scope(
+        self, dialog_service: CatalogService
+    ) -> None:
+        dialog = _ExportDialog(dialog_service)
+        assert dialog._archived_cb.isEnabled() is True
+        dialog._categories_radio.setChecked(True)
+        assert dialog._archived_cb.isEnabled() is False
+
+    def test_checking_a_category_resolves_only_that_scope(
+        self, dialog_service: CatalogService
+    ) -> None:
+        dialog = _ExportDialog(dialog_service)
+        dialog._categories_radio.setChecked(True)
+        item = dialog._category_list.item(0)
+        assert item is not None
+        item.setCheckState(Qt.CheckState.Checked)
+
+        categories, entries, profiles = dialog.resolve_records()
+
+        assert [c.name for c in categories] == ["Profanity"]
+        assert profiles == []
+
+    def test_categories_scope_with_nothing_checked_warns_and_does_not_accept(
+        self, dialog_service: CatalogService
+    ) -> None:
+        dialog = _ExportDialog(dialog_service)
+        dialog._categories_radio.setChecked(True)
+        with patch(
+            "m4bmaker.gui.filter.catalog_window.QMessageBox.warning"
+        ) as mock_warn:
+            _find_button(dialog, "Export…").click()
+        mock_warn.assert_called_once()
+
+    def test_profiles_scope_with_nothing_checked_warns_and_does_not_accept(
+        self, dialog_service: CatalogService
+    ) -> None:
+        dialog = _ExportDialog(dialog_service)
+        dialog._profiles_radio.setChecked(True)
+        with patch(
+            "m4bmaker.gui.filter.catalog_window.QMessageBox.warning"
+        ) as mock_warn:
+            _find_button(dialog, "Export…").click()
+        mock_warn.assert_called_once()
+
+    def test_include_archived_is_passed_through(
+        self, dialog_service: CatalogService
+    ) -> None:
+        entry = dialog_service.list_entries()[0]
+        dialog_service.archive_entry(entry.id)
+        dialog = _ExportDialog(dialog_service)
+
+        dialog._archived_cb.setChecked(True)
+        _, entries, _ = dialog.resolve_records()
+
+        assert len(entries) == 1
+
+    def test_excludes_archived_by_default(self, dialog_service: CatalogService) -> None:
+        entry = dialog_service.list_entries()[0]
+        dialog_service.archive_entry(entry.id)
+        dialog = _ExportDialog(dialog_service)
+
+        _, entries, _ = dialog.resolve_records()
+
+        assert entries == []
+
+
+class TestImportPreviewDialog:
+    """ADR-0055's import preview — must show exactly what apply_import()
+    will do before anything is written."""
+
+    @pytest.fixture()
+    def preview_service(self) -> CatalogService:
+        service = CatalogService()
+        cat = service.create_category("Profanity")
+        service.create_entry(cat.id, "damn")
+        return service
+
+    def test_new_category_and_word_are_labeled_new(
+        self, preview_service: CatalogService
+    ) -> None:
+        imported_cat = Category(id="c1", name="Slang")
+        imported_entry = CatalogEntry(
+            id="e1", category_id="c1", canonical_phrase="bonkers"
+        )
+        plan = preview_service.plan_import([imported_cat], [imported_entry], [])
+
+        dialog = _ImportPreviewDialog(plan, "shared.json")
+
+        assert dialog._tree.topLevelItemCount() == 1
+        cat_item = dialog._tree.topLevelItem(0)
+        assert cat_item is not None
+        assert "new category" in cat_item.text(0)
+        word_item = cat_item.child(0)
+        assert word_item is not None
+        assert "bonkers" in word_item.text(0)
+        assert "new" in word_item.text(0)
+        assert "1 new categor" in dialog._summary_label.text()
+
+    def test_duplicate_word_is_labeled_skipped_by_default(
+        self, preview_service: CatalogService
+    ) -> None:
+        imported_cat = Category(id="c1", name="Profanity")
+        imported_entry = CatalogEntry(
+            id="e1", category_id="c1", canonical_phrase="damn"
+        )
+        plan = preview_service.plan_import([imported_cat], [imported_entry], [])
+
+        dialog = _ImportPreviewDialog(plan, "shared.json")
+
+        cat_item = dialog._tree.topLevelItem(0)
+        assert cat_item is not None
+        word_item = cat_item.child(0)
+        assert word_item is not None
+        assert "duplicate — skipped" in word_item.text(0)
+        assert dialog.overwrite_duplicates is False
+
+    def test_toggling_overwrite_relabels_duplicates_live(
+        self, preview_service: CatalogService
+    ) -> None:
+        imported_cat = Category(id="c1", name="Profanity")
+        imported_entry = CatalogEntry(
+            id="e1", category_id="c1", canonical_phrase="damn"
+        )
+        plan = preview_service.plan_import([imported_cat], [imported_entry], [])
+        dialog = _ImportPreviewDialog(plan, "shared.json")
+
+        dialog._overwrite_cb.setChecked(True)
+
+        assert dialog.overwrite_duplicates is True
+        cat_item = dialog._tree.topLevelItem(0)
+        assert cat_item is not None
+        word_item = cat_item.child(0)
+        assert word_item is not None
+        assert "will overwrite" in word_item.text(0)
+        assert "will be overwritten" in dialog._summary_label.text()
+
+    def test_profiles_group_only_appears_when_the_plan_has_profiles(
+        self, preview_service: CatalogService
+    ) -> None:
+        plan = preview_service.plan_import([], [], [])
+        dialog = _ImportPreviewDialog(plan, "empty.json")
+        assert dialog._tree.topLevelItemCount() == 0
+
+    def test_import_button_accepts(self, preview_service: CatalogService) -> None:
+        plan = preview_service.plan_import([], [], [])
+        dialog = _ImportPreviewDialog(plan, "empty.json")
+        with patch.object(dialog, "accept") as mock_accept:
+            _find_button(dialog, "Import").click()
+        mock_accept.assert_called_once()
+
+    def test_cancel_button_rejects(self, preview_service: CatalogService) -> None:
+        plan = preview_service.plan_import([], [], [])
+        dialog = _ImportPreviewDialog(plan, "empty.json")
+        with patch.object(dialog, "reject") as mock_reject:
+            _find_button(dialog, "Cancel").click()
+        mock_reject.assert_called_once()
+
+
+class TestCatalogWindowExportWiring:
+    def test_cancelling_the_scope_dialog_does_not_open_a_save_dialog(
+        self, win: CatalogWindow
+    ) -> None:
+        with (
+            patch.object(win, "_run_dialog", return_value=QDialog.DialogCode.Rejected),
+            patch(
+                "m4bmaker.gui.filter.catalog_window.QFileDialog.getSaveFileName"
+            ) as mock_save,
+        ):
+            win._on_export()
+        mock_save.assert_not_called()
+
+    def test_cancelling_the_save_dialog_writes_nothing(
+        self, win: CatalogWindow, tmp_path: Path
+    ) -> None:
+        with (
+            patch.object(win, "_run_dialog", return_value=QDialog.DialogCode.Accepted),
+            patch(
+                "m4bmaker.gui.filter.catalog_window.QFileDialog.getSaveFileName",
+                return_value=("", ""),
+            ),
+        ):
+            win._on_export()
+        assert list(tmp_path.glob("*.json")) == []
+
+    def test_accepted_scope_and_save_path_writes_the_export_file(
+        self, win: CatalogWindow, service: CatalogService, tmp_path: Path
+    ) -> None:
+        cat = service.create_category("Profanity")
+        service.create_entry(cat.id, "darn")
+        out_path = tmp_path / "export.json"
+
+        with (
+            patch.object(win, "_run_dialog", return_value=QDialog.DialogCode.Accepted),
+            patch(
+                "m4bmaker.gui.filter.catalog_window.QFileDialog.getSaveFileName",
+                return_value=(str(out_path), ""),
+            ),
+        ):
+            win._on_export()
+
+        assert out_path.exists()
+        assert "Exported" in win._status_label.text()
+
+
+class TestCatalogWindowImportWiring:
+    def test_cancelling_the_open_dialog_does_nothing(self, win: CatalogWindow) -> None:
+        with patch(
+            "m4bmaker.gui.filter.catalog_window.QFileDialog.getOpenFileName",
+            return_value=("", ""),
+        ):
+            win._on_import()
+        assert win._status_label.text() == ""
+
+    def test_invalid_file_shows_a_warning_and_writes_nothing(
+        self, win: CatalogWindow, tmp_path: Path
+    ) -> None:
+        bad_path = tmp_path / "notes.txt"
+        bad_path.write_text("not an export", encoding="utf-8")
+
+        with (
+            patch(
+                "m4bmaker.gui.filter.catalog_window.QFileDialog.getOpenFileName",
+                return_value=(str(bad_path), ""),
+            ),
+            patch(
+                "m4bmaker.gui.filter.catalog_window.QMessageBox.warning"
+            ) as mock_warn,
+        ):
+            win._on_import()
+
+        mock_warn.assert_called_once()
+        assert win._service.list_categories() == []
+
+    def test_cancelling_the_preview_dialog_writes_nothing(
+        self, win: CatalogWindow, service: CatalogService, tmp_path: Path
+    ) -> None:
+        other = CatalogService()
+        cat = other.create_category("Slang")
+        other.create_entry(cat.id, "bonkers")
+        categories, entries, profiles = other.export_everything()
+        from m4bmaker.filter.catalog_store import write_export_file
+
+        export_path = tmp_path / "shared.json"
+        write_export_file(categories, entries, profiles, export_path)
+
+        with (
+            patch(
+                "m4bmaker.gui.filter.catalog_window.QFileDialog.getOpenFileName",
+                return_value=(str(export_path), ""),
+            ),
+            patch.object(win, "_run_dialog", return_value=QDialog.DialogCode.Rejected),
+        ):
+            win._on_import()
+
+        assert service.list_categories() == []
+
+    def test_accepted_preview_applies_the_import_and_saves(
+        self,
+        win: CatalogWindow,
+        service: CatalogService,
+        mock_save: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        other = CatalogService()
+        cat = other.create_category("Slang")
+        other.create_entry(cat.id, "bonkers")
+        categories, entries, profiles = other.export_everything()
+        from m4bmaker.filter.catalog_store import write_export_file
+
+        export_path = tmp_path / "shared.json"
+        write_export_file(categories, entries, profiles, export_path)
+
+        with (
+            patch(
+                "m4bmaker.gui.filter.catalog_window.QFileDialog.getOpenFileName",
+                return_value=(str(export_path), ""),
+            ),
+            patch.object(win, "_run_dialog", return_value=QDialog.DialogCode.Accepted),
+        ):
+            win._on_import()
+
+        assert [c.name for c in service.list_categories()] == ["Slang"]
+        assert "Imported 1 new word" in win._status_label.text()
+        mock_save.assert_called()
+
+    def test_reimporting_your_own_backup_reports_nothing_changed(
+        self,
+        win: CatalogWindow,
+        service: CatalogService,
+        tmp_path: Path,
+    ) -> None:
+        cat = service.create_category("Profanity")
+        service.create_entry(cat.id, "damn")
+        categories, entries, profiles = service.export_everything()
+        from m4bmaker.filter.catalog_store import write_export_file
+
+        export_path = tmp_path / "my-backup.json"
+        write_export_file(categories, entries, profiles, export_path)
+
+        with (
+            patch(
+                "m4bmaker.gui.filter.catalog_window.QFileDialog.getOpenFileName",
+                return_value=(str(export_path), ""),
+            ),
+            patch.object(win, "_run_dialog", return_value=QDialog.DialogCode.Accepted),
+        ):
+            win._on_import()
+
+        assert "nothing changed" in win._status_label.text()
+        assert len(service.list_entries(category_id=cat.id)) == 1

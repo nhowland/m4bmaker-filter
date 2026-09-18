@@ -6,9 +6,20 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from m4bmaker.filter import storage
 from m4bmaker.filter.catalog import CatalogService
-from m4bmaker.filter.catalog_store import load_catalog, save_catalog
+from m4bmaker.filter.catalog_store import (
+    CatalogImportError,
+    EXPORT_SCHEMA_VERSION,
+    backup_before_import,
+    catalog_path,
+    load_catalog,
+    read_export_file,
+    save_catalog,
+    write_export_file,
+)
 
 
 class TestSaveAndLoadRoundTrip:
@@ -315,3 +326,118 @@ class TestDefaultPathIsAlwaysIsolatedInTests:
         save_catalog(service)  # no explicit path, no local patch either
         restored = load_catalog()
         assert len(restored.list_categories()) == 1
+
+
+class TestWriteAndReadExportFile:
+    def test_categories_entries_and_profiles_round_trip(self, tmp_path: Path) -> None:
+        service = CatalogService()
+        cat = service.create_category("Profanity")
+        entry, _ = service.create_entry(cat.id, "darn", notes="mild")
+        service.create_profile("Family Friendly", entry_ids=[entry.id])
+        categories, entries, profiles = service.export_everything()
+
+        path = tmp_path / "export.json"
+        write_export_file(categories, entries, profiles, path)
+        restored_categories, restored_entries, restored_profiles = read_export_file(
+            path
+        )
+
+        assert [c.name for c in restored_categories] == ["Profanity"]
+        assert [e.canonical_phrase for e in restored_entries] == ["darn"]
+        assert [e.notes for e in restored_entries] == ["mild"]
+        assert [p.name for p in restored_profiles] == ["Family Friendly"]
+
+    def test_export_schema_version_is_written(self, tmp_path: Path) -> None:
+        path = tmp_path / "export.json"
+        write_export_file([], [], [], path)
+        data = storage.read_json(path)
+        assert data["exportSchemaVersion"] == EXPORT_SCHEMA_VERSION
+
+
+class TestReadExportFileValidation:
+    def test_missing_export_schema_version_is_rejected(self, tmp_path: Path) -> None:
+        path = tmp_path / "export.json"
+        storage.write_json_atomic(
+            path, {"categories": [], "entries": [], "profiles": []}
+        )
+        with pytest.raises(CatalogImportError, match="exportSchemaVersion"):
+            read_export_file(path)
+
+    def test_unrecognized_export_schema_version_is_rejected(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "export.json"
+        storage.write_json_atomic(
+            path,
+            {
+                "exportSchemaVersion": 999,
+                "categories": [],
+                "entries": [],
+                "profiles": [],
+            },
+        )
+        with pytest.raises(CatalogImportError, match="999"):
+            read_export_file(path)
+
+    def test_invalid_json_is_rejected(self, tmp_path: Path) -> None:
+        path = tmp_path / "export.json"
+        path.write_text("{not valid json", encoding="utf-8")
+        with pytest.raises(CatalogImportError, match="valid JSON"):
+            read_export_file(path)
+
+    def test_non_dict_json_is_rejected(self, tmp_path: Path) -> None:
+        path = tmp_path / "export.json"
+        path.write_text("[1, 2, 3]", encoding="utf-8")
+        with pytest.raises(CatalogImportError):
+            read_export_file(path)
+
+    def test_oversized_file_is_rejected(self, tmp_path: Path) -> None:
+        path = tmp_path / "export.json"
+        path.write_text("x" * 1000, encoding="utf-8")
+        with patch("m4bmaker.filter.catalog_store._MAX_IMPORT_SIZE_BYTES", 10):
+            with pytest.raises(CatalogImportError, match="larger than"):
+                read_export_file(path)
+
+    def test_wrong_shape_is_rejected(self, tmp_path: Path) -> None:
+        path = tmp_path / "export.json"
+        storage.write_json_atomic(
+            path,
+            {
+                "exportSchemaVersion": EXPORT_SCHEMA_VERSION,
+                "categories": [{"not": "a category"}],
+                "entries": [],
+                "profiles": [],
+            },
+        )
+        with pytest.raises(CatalogImportError, match="export shape"):
+            read_export_file(path)
+
+    def test_missing_file_is_rejected(self, tmp_path: Path) -> None:
+        with pytest.raises(CatalogImportError):
+            read_export_file(tmp_path / "does-not-exist.json")
+
+
+class TestBackupBeforeImport:
+    def test_backs_up_the_existing_catalog_file(self, tmp_path: Path) -> None:
+        path = tmp_path / "catalog.json"
+        save_catalog(CatalogService(), path)
+
+        backup_path = backup_before_import(path)
+
+        assert backup_path is not None
+        assert backup_path.name.startswith("catalog.json.pre-import-")
+        assert backup_path.exists()
+        assert path.exists()  # original left in place, not moved
+
+    def test_returns_none_when_no_catalog_exists_yet(self, tmp_path: Path) -> None:
+        assert backup_before_import(tmp_path / "does-not-exist.json") is None
+
+    def test_default_path_uses_the_standard_catalog_location(self) -> None:
+        # No local patch of the default path -- the global
+        # _isolated_filter_data_root fixture (tests/conftest.py) already
+        # redirects it, same proof-of-isolation style as
+        # TestDefaultPathIsAlwaysIsolatedInTests above.
+        save_catalog(CatalogService())
+        backup_path = backup_before_import()
+        assert backup_path is not None
+        assert backup_path.parent == catalog_path().parent

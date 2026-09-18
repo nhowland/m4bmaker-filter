@@ -16,9 +16,9 @@ signatures without touching this file's logic. This mirrors how
 from __future__ import annotations
 
 import uuid
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Iterable
 
 from .models import (
     AttenuationSettings,
@@ -37,6 +37,79 @@ def _new_id() -> str:
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+# ── import planning (ADR-0055) ───────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ImportEntryPlan:
+    """One imported word's resolved fate, computed by
+    :meth:`CatalogService.plan_import` and carried out unchanged by
+    :meth:`CatalogService.apply_import` — the id fields exist only to
+    resolve a profile's ``entry_ids`` after creation, never reused as a
+    real local id (ADR-0055: an imported id is opaque outside its own
+    export file)."""
+
+    imported_entry_id: str
+    canonical_phrase: str
+    notes: str
+    mask: bool
+    is_duplicate: bool
+    existing_entry_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ImportCategoryPlan:
+    """One imported category's resolved fate — matched by case-insensitive
+    name against a non-archived local category, or new."""
+
+    imported_category_id: str
+    name: str
+    mask_all_terms: bool
+    is_new_category: bool
+    existing_category_id: str | None
+    entries: tuple[ImportEntryPlan, ...]
+
+
+@dataclass(frozen=True)
+class ImportProfilePlan:
+    """One imported profile's resolved fate — matched by case-insensitive
+    name against a non-archived local profile, or new."""
+
+    imported_profile_id: str
+    name: str
+    is_duplicate: bool
+    existing_profile_id: str | None
+    entry_count: int
+    attenuation: AttenuationSettings
+
+
+@dataclass(frozen=True)
+class ImportPlan:
+    """A dry-run computed by :meth:`CatalogService.plan_import` — a
+    preview UI renders this directly, and :meth:`CatalogService.
+    apply_import` performs exactly what it describes, so the two can
+    never drift apart (ADR-0055). Carries the raw imported records too
+    (not just the plan summary) since ``apply_import`` needs each entry's
+    full notes/mask and each profile's own ``entry_ids``/attenuation to
+    actually create/update anything."""
+
+    categories: tuple[ImportCategoryPlan, ...]
+    profiles: tuple[ImportProfilePlan, ...]
+    imported_entries: tuple[CatalogEntry, ...]
+    imported_profiles: tuple[FilterProfile, ...]
+
+
+@dataclass(frozen=True)
+class ImportSummary:
+    """What :meth:`CatalogService.apply_import` actually did."""
+
+    new_categories: int
+    new_words: int
+    duplicate_words: int
+    new_profiles: int
+    duplicate_profiles: int
 
 
 class CatalogService:
@@ -314,3 +387,245 @@ class CatalogService:
         service._entries = {e.id: e for e in entries}
         service._profiles = {p.id: p for p in profiles}
         return service
+
+    # ── scoped export (ADR-0055) ────────────────────────────────────────────
+
+    def export_everything(
+        self, *, include_archived: bool = False
+    ) -> tuple[list[Category], list[CatalogEntry], list[FilterProfile]]:
+        """The "Everything" export scope: every category/entry/profile,
+        archived ones only if *include_archived* — a true backup, not a
+        share, per ADR-0055 (archived items never travel with the other
+        two scopes at all)."""
+        categories, entries, profiles = self.export_all()
+        if include_archived:
+            return categories, entries, profiles
+        return (
+            [c for c in categories if not c.archived],
+            [e for e in entries if not e.archived],
+            [p for p in profiles if not p.archived],
+        )
+
+    def export_categories(
+        self, category_ids: Iterable[str]
+    ) -> tuple[list[Category], list[CatalogEntry], list[FilterProfile]]:
+        """The "Selected categories" export scope: the chosen (non-archived)
+        categories and their (non-archived) entries. No profiles — a
+        category-scoped export is about words, not the profiles built on
+        top of them."""
+        ids = set(category_ids)
+        categories = [
+            c for c in self.list_categories(include_archived=False) if c.id in ids
+        ]
+        category_id_set = {c.id for c in categories}
+        entries = [
+            e
+            for e in self.list_entries(include_archived=False)
+            if e.category_id in category_id_set
+        ]
+        return categories, entries, []
+
+    def export_profiles(
+        self, profile_ids: Iterable[str]
+    ) -> tuple[list[Category], list[CatalogEntry], list[FilterProfile]]:
+        """The "Selected profiles" export scope: the chosen (non-archived)
+        profiles, plus the (non-archived) categories/entries their
+        ``entry_ids`` resolve to, transitively — what a profile actually
+        needs to be reconstructed on the far end. An archived entry a
+        profile still references (kept for historical snapshots,
+        :meth:`create_snapshot`) is deliberately dropped here rather than
+        given its own "include archived" option — ADR-0055 reserves that
+        option for the "Everything" scope alone."""
+        ids = set(profile_ids)
+        profiles = [
+            p for p in self.list_profiles(include_archived=False) if p.id in ids
+        ]
+        referenced_entry_ids = {eid for p in profiles for eid in p.entry_ids}
+        entries = [
+            e
+            for e in self.list_entries(include_archived=False)
+            if e.id in referenced_entry_ids
+        ]
+        category_id_set = {e.category_id for e in entries}
+        categories = [
+            c
+            for c in self.list_categories(include_archived=False)
+            if c.id in category_id_set
+        ]
+        return categories, entries, profiles
+
+    # ── import (ADR-0055) ───────────────────────────────────────────────────
+
+    def plan_import(
+        self,
+        categories: list[Category],
+        entries: list[CatalogEntry],
+        profiles: list[FilterProfile],
+    ) -> ImportPlan:
+        """Dry-run an import of previously-exported records against this
+        service's *current* state — computes what would happen (new vs.
+        duplicate word, matched vs. new category) without changing
+        anything. A preview UI renders this plan directly, and
+        :meth:`apply_import` performs exactly what it describes, so the
+        two can never drift apart.
+
+        Archived records in the imported file (only possible from an
+        "Everything, include archived" export) are dropped — an import
+        never resurrects archived state, matching ADR-0055's decision not
+        to give import its own archived-handling option either.
+        """
+        local_categories_by_name = {
+            c.name.casefold(): c for c in self.list_categories(include_archived=False)
+        }
+        local_profiles_by_name = {
+            p.name.casefold(): p for p in self.list_profiles(include_archived=False)
+        }
+
+        category_plans = []
+        for cat in categories:
+            if cat.archived:
+                continue
+            match = local_categories_by_name.get(cat.name.casefold())
+            cat_entries = [
+                e for e in entries if e.category_id == cat.id and not e.archived
+            ]
+            entry_plans = []
+            for entry in cat_entries:
+                duplicate = (
+                    self.find_duplicate_entry(match.id, entry.canonical_phrase)
+                    if match is not None
+                    else None
+                )
+                entry_plans.append(
+                    ImportEntryPlan(
+                        imported_entry_id=entry.id,
+                        canonical_phrase=entry.canonical_phrase,
+                        notes=entry.notes,
+                        mask=entry.mask,
+                        is_duplicate=duplicate is not None,
+                        existing_entry_id=duplicate.id if duplicate else None,
+                    )
+                )
+            category_plans.append(
+                ImportCategoryPlan(
+                    imported_category_id=cat.id,
+                    name=cat.name,
+                    mask_all_terms=cat.mask_all_terms,
+                    is_new_category=match is None,
+                    existing_category_id=match.id if match else None,
+                    entries=tuple(entry_plans),
+                )
+            )
+
+        profile_plans = []
+        for profile in profiles:
+            if profile.archived:
+                continue
+            profile_match = local_profiles_by_name.get(profile.name.casefold())
+            profile_plans.append(
+                ImportProfilePlan(
+                    imported_profile_id=profile.id,
+                    name=profile.name,
+                    is_duplicate=profile_match is not None,
+                    existing_profile_id=profile_match.id if profile_match else None,
+                    entry_count=len(profile.entry_ids),
+                    attenuation=profile.attenuation,
+                )
+            )
+
+        return ImportPlan(
+            categories=tuple(category_plans),
+            profiles=tuple(profile_plans),
+            imported_entries=tuple(entries),
+            imported_profiles=tuple(profiles),
+        )
+
+    def apply_import(
+        self, plan: ImportPlan, *, overwrite_duplicates: bool = False
+    ) -> ImportSummary:
+        """Carry out *plan* exactly as :meth:`plan_import` computed it.
+
+        A duplicate word/profile is skipped by default — never silently
+        overwritten (ADR-0055, ADR-0054's own lesson) — unless
+        *overwrite_duplicates* is explicitly set, in which case a
+        duplicate word's ``notes``/``mask`` and a duplicate profile's
+        ``entry_ids``/``attenuation`` are replaced with the imported
+        version's.
+        """
+        new_categories = 0
+        new_words = 0
+        duplicate_words = 0
+        new_profiles = 0
+        duplicate_profiles = 0
+
+        entry_id_map: dict[str, str] = {}
+
+        for cat_plan in plan.categories:
+            if cat_plan.is_new_category:
+                local_category = self.create_category(
+                    cat_plan.name, mask_all_terms=cat_plan.mask_all_terms
+                )
+                new_categories += 1
+            else:
+                assert cat_plan.existing_category_id is not None
+                local_category = self.get_category(cat_plan.existing_category_id)
+
+            for entry_plan in cat_plan.entries:
+                if entry_plan.is_duplicate:
+                    duplicate_words += 1
+                    assert entry_plan.existing_entry_id is not None
+                    entry_id_map[entry_plan.imported_entry_id] = (
+                        entry_plan.existing_entry_id
+                    )
+                    if overwrite_duplicates:
+                        self.update_entry(
+                            entry_plan.existing_entry_id,
+                            notes=entry_plan.notes,
+                            mask=entry_plan.mask,
+                        )
+                else:
+                    new_words += 1
+                    created, _ = self.create_entry(
+                        local_category.id,
+                        entry_plan.canonical_phrase,
+                        notes=entry_plan.notes,
+                        mask=entry_plan.mask,
+                    )
+                    entry_id_map[entry_plan.imported_entry_id] = created.id
+
+        imported_profiles_by_id = {p.id: p for p in plan.imported_profiles}
+        for profile_plan in plan.profiles:
+            imported_profile = imported_profiles_by_id[profile_plan.imported_profile_id]
+            # An id the profile references that this import didn't bring
+            # along (e.g. it pointed at an archived entry plan_import()
+            # dropped) is skipped rather than raised — the same handling
+            # create_snapshot() already gives a stale/missing entry_id.
+            remapped_ids = [
+                entry_id_map[eid]
+                for eid in imported_profile.entry_ids
+                if eid in entry_id_map
+            ]
+            if profile_plan.is_duplicate:
+                duplicate_profiles += 1
+                if overwrite_duplicates:
+                    assert profile_plan.existing_profile_id is not None
+                    self.update_profile(
+                        profile_plan.existing_profile_id,
+                        entry_ids=remapped_ids,
+                        attenuation=imported_profile.attenuation,
+                    )
+            else:
+                new_profiles += 1
+                self.create_profile(
+                    profile_plan.name,
+                    entry_ids=remapped_ids,
+                    attenuation=imported_profile.attenuation,
+                )
+
+        return ImportSummary(
+            new_categories=new_categories,
+            new_words=new_words,
+            duplicate_words=duplicate_words,
+            new_profiles=new_profiles,
+            duplicate_profiles=duplicate_profiles,
+        )

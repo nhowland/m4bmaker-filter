@@ -30,29 +30,50 @@ Mask still applies even if its category isn't masked
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
     QCheckBox,
+    QDialog,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QInputDialog,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from m4bmaker.filter.catalog import CatalogService
-from m4bmaker.filter.catalog_store import save_catalog
-from m4bmaker.filter.models import SchemaValidationError
+from m4bmaker.filter.catalog import CatalogService, ImportPlan
+from m4bmaker.filter.catalog_store import (
+    CatalogImportError,
+    backup_before_import,
+    read_export_file,
+    save_catalog,
+    write_export_file,
+)
+from m4bmaker.filter.models import (
+    CatalogEntry,
+    Category,
+    FilterProfile,
+    SchemaValidationError,
+)
 
 _COL_CATEGORY_NAME = 0
 _COL_CATEGORY_MASK = 1
@@ -97,6 +118,80 @@ class CatalogWindow(QMainWindow):
     def _save(self) -> None:
         save_catalog(self._service)
 
+    def _run_dialog(self, dialog: QDialog) -> int:
+        """Trivial wrapper around ``dialog.exec()`` — kept as a plain
+        method on this class, not a bare call to the Qt-wrapped
+        ``QDialog.exec()`` itself, so tests can patch it reliably
+        (``unittest.mock.patch.object`` does not reliably take effect on
+        a C++-bound method like this and can hang a headless test on the
+        real modal call instead — same fix ``ReviewStep._run_dialog``
+        already established)."""
+        return dialog.exec()
+
+    # ── export / import (ADR-0055) ──────────────────────────────────────────
+
+    def _on_export(self) -> None:
+        dialog = _ExportDialog(self._service, self)
+        if self._run_dialog(dialog) != QDialog.DialogCode.Accepted:
+            return
+        categories, entries, profiles = dialog.resolve_records()
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Word List", "word-list-export.json", "JSON Files (*.json)"
+        )
+        if not path:
+            return
+        write_export_file(categories, entries, profiles, Path(path))
+        self._set_status(f"Exported to {Path(path).name}.")
+
+    def _on_import(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Word List", "", "JSON Files (*.json);;All Files (*)"
+        )
+        if not path:
+            return
+        import_path = Path(path)
+
+        try:
+            categories, entries, profiles = read_export_file(import_path)
+        except CatalogImportError as exc:
+            QMessageBox.warning(self, "Can't Import This File", str(exc))
+            return
+
+        plan = self._service.plan_import(categories, entries, profiles)
+        dialog = _ImportPreviewDialog(plan, import_path.name, self)
+        if self._run_dialog(dialog) != QDialog.DialogCode.Accepted:
+            return
+
+        backup_path = backup_before_import()
+        summary = self._service.apply_import(
+            plan, overwrite_duplicates=dialog.overwrite_duplicates
+        )
+        self._save()
+        self._refresh_categories()
+
+        changed = summary.new_categories + summary.new_words + summary.new_profiles
+        if dialog.overwrite_duplicates:
+            changed += summary.duplicate_words + summary.duplicate_profiles
+        if changed == 0:
+            self._set_status(
+                f"Import complete — everything in {import_path.name} already "
+                "matched your Word List, nothing changed."
+            )
+        else:
+            backup_note = (
+                f" Backed up your existing Word List to {backup_path.name} first."
+                if backup_path is not None
+                else ""
+            )
+            self._set_status(
+                f"Imported {summary.new_words} new word(s), "
+                f"{summary.new_categories} new categor"
+                f"{'y' if summary.new_categories == 1 else 'ies'}, "
+                f"{summary.new_profiles} new profile(s) from "
+                f"{import_path.name}.{backup_note}"
+            )
+
     # ── UI construction ────────────────────────────────────────────────────
 
     def _build_ui(self) -> None:
@@ -106,9 +201,20 @@ class CatalogWindow(QMainWindow):
         root.setContentsMargins(12, 12, 12, 12)
         root.setSpacing(8)
 
+        top_row = QHBoxLayout()
         self._status_label = QLabel("")
         self._status_label.setObjectName("catalogStatusLabel")
-        root.addWidget(self._status_label)
+        top_row.addWidget(self._status_label, stretch=1)
+
+        export_btn = QPushButton("Export…")
+        export_btn.clicked.connect(self._on_export)
+        top_row.addWidget(export_btn)
+
+        import_btn = QPushButton("Import…")
+        import_btn.clicked.connect(self._on_import)
+        top_row.addWidget(import_btn)
+
+        root.addLayout(top_row)
 
         splitter = QSplitter(Qt.Orientation.Horizontal)
         root.addWidget(splitter, stretch=1)
@@ -578,3 +684,237 @@ class CatalogWindow(QMainWindow):
         elif column == _COL_ENTRY_NOTES:
             self._service.update_entry(entry_id, notes=item.text())
             self._save()
+
+
+class _ExportDialog(QDialog):
+    """Export scope picker — ADR-0055. "Everything" / "Selected
+    categories" / "Selected profiles", chosen here rather than three
+    separate buttons on the main window — matches the mockup
+    (``docs/design/catalog-import-export-wireframe.html``)."""
+
+    def __init__(self, service: CatalogService, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._service = service
+        self.setWindowTitle("Export Word List")
+        self.setMinimumSize(360, 420)
+        self._build_ui()
+        self._on_scope_changed()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.addWidget(QLabel("Choose what to include, then save it as a JSON file."))
+
+        self._all_radio = QRadioButton("Everything")
+        self._all_radio.setChecked(True)
+        self._categories_radio = QRadioButton("Selected categories")
+        self._profiles_radio = QRadioButton("Selected profiles")
+        self._scope_group = QButtonGroup(self)
+        for radio in (self._all_radio, self._categories_radio, self._profiles_radio):
+            self._scope_group.addButton(radio)
+            radio.toggled.connect(self._on_scope_changed)
+            root.addWidget(radio)
+
+        self._category_list = QListWidget()
+        for category in self._service.list_categories(include_archived=False):
+            item = QListWidgetItem(category.name)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            item.setData(_ID_ROLE, category.id)
+            self._category_list.addItem(item)
+        root.addWidget(self._category_list)
+
+        self._profile_list = QListWidget()
+        for profile in self._service.list_profiles(include_archived=False):
+            item = QListWidgetItem(profile.name)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            item.setData(_ID_ROLE, profile.id)
+            self._profile_list.addItem(item)
+        root.addWidget(self._profile_list)
+
+        self._archived_cb = QCheckBox("Include archived items")
+        self._archived_cb.setToolTip(
+            'Only applies to "Everything" — a true backup, not a share.'
+        )
+        root.addWidget(self._archived_cb)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        export_btn = QPushButton("Export…")
+        export_btn.setDefault(True)
+        export_btn.clicked.connect(self._on_export_clicked)
+        btn_row.addWidget(export_btn)
+        root.addLayout(btn_row)
+
+    def _on_scope_changed(self) -> None:
+        self._category_list.setVisible(self._categories_radio.isChecked())
+        self._profile_list.setVisible(self._profiles_radio.isChecked())
+        self._archived_cb.setEnabled(self._all_radio.isChecked())
+
+    @staticmethod
+    def _checked_ids(list_widget: QListWidget) -> list[str]:
+        ids = []
+        for row in range(list_widget.count()):
+            item = list_widget.item(row)
+            assert item is not None
+            if item.checkState() == Qt.CheckState.Checked:
+                ids.append(item.data(_ID_ROLE))
+        return ids
+
+    def _on_export_clicked(self) -> None:
+        if self._categories_radio.isChecked() and not self._checked_ids(
+            self._category_list
+        ):
+            QMessageBox.warning(
+                self, "Nothing Selected", "Choose at least one category to export."
+            )
+            return
+        if self._profiles_radio.isChecked() and not self._checked_ids(
+            self._profile_list
+        ):
+            QMessageBox.warning(
+                self, "Nothing Selected", "Choose at least one profile to export."
+            )
+            return
+        self.accept()
+
+    def resolve_records(
+        self,
+    ) -> tuple[list[Category], list[CatalogEntry], list[FilterProfile]]:
+        """Resolve the chosen scope into the records to write — called by
+        the caller after this dialog accepts."""
+        if self._categories_radio.isChecked():
+            return self._service.export_categories(
+                self._checked_ids(self._category_list)
+            )
+        if self._profiles_radio.isChecked():
+            return self._service.export_profiles(self._checked_ids(self._profile_list))
+        return self._service.export_everything(
+            include_archived=self._archived_cb.isChecked()
+        )
+
+
+class _ImportPreviewDialog(QDialog):
+    """Shows exactly what an import would do — new vs. duplicate words,
+    new vs. merged categories, new vs. duplicate profiles — before
+    anything is written (ADR-0055's core safety requirement). The
+    caller applies the same *plan* this dialog previewed via
+    ``CatalogService.apply_import`` once it accepts, so the two can
+    never drift apart."""
+
+    def __init__(
+        self, plan: ImportPlan, file_name: str, parent: QWidget | None = None
+    ) -> None:
+        super().__init__(parent)
+        self._plan = plan
+        self.overwrite_duplicates = False
+        self.setWindowTitle(f"Import Preview — {file_name}")
+        self.setMinimumSize(420, 480)
+        self._build_ui()
+        self._populate()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+
+        note = QLabel("Nothing is written until you press Import.")
+        note.setObjectName("statusLabel")
+        root.addWidget(note)
+
+        self._summary_label = QLabel("")
+        self._summary_label.setWordWrap(True)
+        root.addWidget(self._summary_label)
+
+        self._tree = QTreeWidget()
+        self._tree.setHeaderHidden(True)
+        root.addWidget(self._tree, stretch=1)
+
+        self._overwrite_cb = QCheckBox("Overwrite duplicates")
+        self._overwrite_cb.toggled.connect(self._on_overwrite_toggled)
+        root.addWidget(self._overwrite_cb)
+
+        sub = QLabel(
+            "Off by default — a duplicate keeps your existing notes and "
+            "mask setting unless you check this."
+        )
+        sub.setObjectName("statusLabel")
+        sub.setWordWrap(True)
+        root.addWidget(sub)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch(1)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+        import_btn = QPushButton("Import")
+        import_btn.setDefault(True)
+        import_btn.clicked.connect(self.accept)
+        btn_row.addWidget(import_btn)
+        root.addLayout(btn_row)
+
+    def _on_overwrite_toggled(self) -> None:
+        self.overwrite_duplicates = self._overwrite_cb.isChecked()
+        self._populate()
+
+    def _duplicate_label(self) -> str:
+        return (
+            "duplicate — will overwrite"
+            if self.overwrite_duplicates
+            else "duplicate — skipped"
+        )
+
+    def _populate(self) -> None:
+        self._tree.clear()
+        new_categories = 0
+        new_words = 0
+        duplicate_words = 0
+
+        for cat_plan in self._plan.categories:
+            if cat_plan.is_new_category:
+                new_categories += 1
+            suffix = (
+                "new category" if cat_plan.is_new_category else "merges into existing"
+            )
+            cat_item = QTreeWidgetItem(self._tree)
+            cat_item.setText(0, f"{cat_plan.name} ({suffix})")
+            for entry_plan in cat_plan.entries:
+                word_item = QTreeWidgetItem(cat_item)
+                if entry_plan.is_duplicate:
+                    duplicate_words += 1
+                    word_item.setText(
+                        0, f"{entry_plan.canonical_phrase} — {self._duplicate_label()}"
+                    )
+                else:
+                    new_words += 1
+                    word_item.setText(0, f"{entry_plan.canonical_phrase} — new")
+            cat_item.setExpanded(True)
+
+        new_profiles = 0
+        duplicate_profiles = 0
+        if self._plan.profiles:
+            profiles_item = QTreeWidgetItem(self._tree)
+            profiles_item.setText(0, "Profiles")
+            for profile_plan in self._plan.profiles:
+                profile_item = QTreeWidgetItem(profiles_item)
+                if profile_plan.is_duplicate:
+                    duplicate_profiles += 1
+                    profile_item.setText(
+                        0, f"{profile_plan.name} — {self._duplicate_label()}"
+                    )
+                else:
+                    new_profiles += 1
+                    profile_item.setText(0, f"{profile_plan.name} — new")
+            profiles_item.setExpanded(True)
+
+        duplicate_verb = (
+            "will be overwritten" if self.overwrite_duplicates else "will be skipped"
+        )
+        self._summary_label.setText(
+            f"{new_categories} new categor{'y' if new_categories == 1 else 'ies'} · "
+            f"{new_words} new word(s) · "
+            f"{duplicate_words + duplicate_profiles} duplicate(s) found "
+            f"({duplicate_verb}) · "
+            f"{new_profiles} new profile(s)"
+        )

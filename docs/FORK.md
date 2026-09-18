@@ -2704,3 +2704,100 @@ A partial reconstruction of the "Family Friendly" profile from
 incidental data surfaced during earlier, unrelated validation work in
 this same conversation follows in a later entry — a best-effort rebuild
 from real evidence, not a true restoration.
+
+## Word List import/export — scoped and mocked up (ADR-0055, 2026-09-18)
+
+The Contributor asked to scope backup/restore for the Word List
+(catalog), naming duplicate detection on import and all-or-selective
+export as required. `CatalogService` already had `export_all()`/
+`from_records()`, but both are whole-catalog, replace-everything
+operations with no User-facing surface — neither does what an import
+into an *already-populated* catalog needs: matching, duplicate
+detection, or leaving anything alone.
+
+ADR-0055 records the design: export scope (Everything / selected
+categories / selected profiles) chosen in one dialog rather than three
+buttons; category matching by case-insensitive name, so restoring your
+own backup merges back into place and someone else's list joins yours
+instead of forking; per-entry duplicates skip by default, never
+silently overwritten — a deliberate break from ADR-0040's outright-
+rejection precedent in the manual add flow, since bulk import needs a
+default chosen up front, and skip is the only one that's both safe and
+still useful; an explicit "Overwrite duplicates" checkbox opts in,
+off by default; a preview dialog shows exact counts and the full detail
+list before the one explicit Import button; and a timestamped backup of
+`catalog.json` is taken immediately before an import's merged result is
+saved, reusing ADR-0054's unreadable-file backup pattern generalized to
+any risky bulk write — import gets no new write path to get wrong.
+
+Per this project's mockup-before-code discipline (ADR-0010, most
+recently ADR-0052/0053), built an interactive wireframe
+(`docs/design/catalog-import-export-wireframe.html`) before touching
+Qt: the export scope picker, and — the screen with the real information
+density — the import preview, driven by three demo files exercising all
+three real outcomes (a list with genuine overlap, a self-backup that
+should be a safe no-op, and a corrupted file that must fail validation
+cleanly). Caught and fixed one real rendering bug in the mockup itself
+while verifying it interactively: `<table>` elements in this session's
+browser pane weren't inheriting text color from ancestor elements
+(confirmed via a minimal repro — inline `color` set directly on a
+`<table>` propagates to its cells; the same color set only on an
+ancestor `<div>` does not reach the table at all) — worked around by
+setting `color` explicitly on the table rule rather than relying on
+inheritance. Verified interactively end to end: scope picker radio/
+checklist toggling, all three import outcomes, the "Overwrite
+duplicates" checkbox relabeling every duplicate pill live, and both the
+mock app's own light and dark palettes.
+
+## Word List import/export — built (ADR-0055, 2026-09-18)
+
+Implemented the design from the mockup above, same session. `catalog.py`
+gained `export_everything()`/`export_categories()`/`export_profiles()`
+(three small methods rather than one flag-driven one — the transitive
+profile→entry→category resolution needed by the "Selected profiles"
+scope is different enough logic from a flat category-id filter that
+splitting them reads more directly as the three scopes they back) and
+`plan_import()`/`apply_import()`, split so a preview UI renders exactly
+what the mutation will do — `CatalogWindow._on_import()` builds one
+`ImportPlan` and hands that same object to both `_ImportPreviewDialog`
+and `apply_import()`, so the two can't drift apart. `catalog_store.py`
+gained `write_export_file`/`read_export_file` (PRD §12.5's schema/
+version/size validation, raising `CatalogImportError` rather than a bare
+parse exception) and `backup_before_import()`, sharing a
+`_timestamped_backup()` helper with ADR-0054's own unreadable-file
+backup rather than duplicating the copy2-plus-timestamp logic.
+`CatalogWindow` gained Export…/Import… buttons and two new dialogs,
+`_ExportDialog` (scope radio + `QListWidget` checklists, reusing the
+checkbox-item pattern the existing category/entry tables already use)
+and `_ImportPreviewDialog` (a `QTreeWidget` grouped by category, the
+same widget `ProfileEditorDialog`'s own word picker already uses, with
+the "Overwrite duplicates" checkbox relabeling every row live on
+toggle, matching the mockup exactly).
+
+One real deviation from the ADR's original wording, caught while
+implementing: ids are *not* actually stripped out of the export JSON.
+`apply_import()` never reuses an imported id as a real local one — every
+local record is created via `create_category`/`create_entry`/
+`create_profile`, which always mint a fresh UUID — so a collision with
+an unrelated local record was never actually reachable, and stripping
+ids would only have added bookkeeping (renumbering a profile's
+`entry_ids` to match) for a safety property that already held for free.
+Updated the ADR's own "Implementation notes" section to record this
+rather than leave the doc describing behavior that isn't what shipped.
+
+66 new tests across `test_catalog.py` (export scope resolution,
+`plan_import`/`apply_import`, and a test that deliberately re-imports an
+unmodified self-export to confirm the skip-by-default policy makes it a
+true no-op — the same shape of mistake ADR-0054 was written about,
+reproduced against this feature on purpose), `test_catalog_store.py`
+(round-trip and every PRD §12.5 validation rejection, plus a
+zero-local-patch backup-path test in the same proof-of-isolation style
+ADR-0054 established), and `test_catalog_window.py` (both new dialogs'
+behavior directly, plus `CatalogWindow`'s own wiring — cancel-at-any-
+step, an invalid file, a real accepted import, and the re-import-your-
+own-backup no-op verified again at the full window level). Full suite:
+2158 passed, 2 skipped (up from 2099), zero regressions;
+`black`/`flake8`/`mypy` clean. Re-ran the same real-`catalog.json`
+mtime/size check ADR-0054 introduced — unchanged, confirming this
+feature's own two new write paths (`backup_before_import`,
+`apply_import` → `save_catalog`) don't reach the real file under test.
