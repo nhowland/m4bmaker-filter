@@ -5,8 +5,12 @@ Releases API, compares the latest tag against the running __version__, and
 emits ``update_available(str)`` with the new version string if one exists.
 
 Network call:
-    GET https://api.github.com/repos/sageframe-no-kaji/m4bmaker/releases/latest
+    GET https://api.github.com/repos/nhowland/m4bmaker-filter/releases/latest
     User-Agent: m4bmaker/<version>
+
+Points at this fork's own repository, not upstream's — a User running this
+fork should be notified about this fork's own releases, not upstream's
+(distributability follow-up, see docs/FORK.md).
 
 Fails silently on any network or parse error — the user is never informed of
 a failed check.
@@ -30,8 +34,8 @@ from m4bmaker import __version__
 
 _log = logging.getLogger(__name__)
 
-_API_URL = "https://api.github.com/repos/sageframe-no-kaji/m4bmaker/releases/latest"
-_RELEASES_URL = "https://github.com/sageframe-no-kaji/m4bmaker/releases"
+_API_URL = "https://api.github.com/repos/nhowland/m4bmaker-filter/releases/latest"
+_RELEASES_URL = "https://github.com/nhowland/m4bmaker-filter/releases"
 _TIMEOUT = 5  # seconds
 
 

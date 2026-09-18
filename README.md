@@ -6,7 +6,7 @@
 
 Convert a folder of audio files into a clean M4B audiobook — in seconds.
 
-[![PyPI](https://img.shields.io/pypi/v/m4bmaker?color=blue)](https://pypi.org/project/m4bmaker/)
+[![PyPI](https://img.shields.io/pypi/v/m4bmaker-filter?color=blue)](https://pypi.org/project/m4bmaker-filter/)
 [![License: GPL-3.0](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
 [![macOS](https://img.shields.io/badge/macOS-13%2B-black?logo=apple&logoColor=white)](#installation)
 [![Windows](https://img.shields.io/badge/Windows-10%2B-0078D4?logo=windows&logoColor=white)](#installation)
@@ -64,13 +64,13 @@ ffmpeg is bundled — nothing else to install.
 Works on macOS, Windows, and Linux. Requires Python 3.11+ and ffmpeg.
 
 ```bash
-pip install m4bmaker
+pip install m4bmaker-filter
 ```
 
 Or with the optional GUI:
 
 ```bash
-pip install m4bmaker[gui]
+pip install m4bmaker-filter[gui]
 ```
 
 Install ffmpeg if you don't have it:
@@ -91,8 +91,8 @@ winget install ffmpeg
 Requires Python 3.11+ and ffmpeg.
 
 ```bash
-git clone https://github.com/sageframe-no-kaji/m4bmaker.git
-cd m4bmaker
+git clone https://github.com/nhowland/m4bmaker-filter.git
+cd m4bmaker-filter
 pip install -e .
 ```
 
@@ -105,7 +105,7 @@ python -m m4bmaker.gui.app
 Or use the CLI:
 
 ```bash
-m4bmaker ./MyBook --title "Dune" --author "Frank Herbert"
+m4bmaker-filter ./MyBook --title "Dune" --author "Frank Herbert"
 ```
 
 ---
@@ -113,7 +113,7 @@ m4bmaker ./MyBook --title "Dune" --author "Frank Herbert"
 ## CLI reference
 
 ```bash
-m4bmaker <folder> [options]
+m4bmaker-filter <folder> [options]
 ```
 
 | Flag | Description |
@@ -144,11 +144,11 @@ m4Bookmaker is fully local — it never uploads your audio files or metadata.
 **Update checker:** On startup, the GUI makes a single outbound request to the GitHub Releases API to check whether a newer version is available:
 
 ```
-GET https://api.github.com/repos/sageframe-no-kaji/m4bmaker/releases/latest
+GET https://api.github.com/repos/nhowland/m4bmaker-filter/releases/latest
 User-Agent: m4bmaker/<version>
 ```
 
-This sends your IP address and the installed version number to GitHub's API. No other data is transmitted. The check runs silently in the background and fails silently if you are offline. The CLI (`m4bmaker` command) makes no network calls at all.
+This sends your IP address and the installed version number to GitHub's API. No other data is transmitted. The check runs silently in the background and fails silently if you are offline. The CLI (`m4bmaker-filter` command) makes no network calls at all.
 
 ---
 
