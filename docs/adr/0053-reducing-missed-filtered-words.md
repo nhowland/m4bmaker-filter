@@ -515,6 +515,62 @@ at all; loading with it checked still does, with the right argument).
 Full suite: 2169 passed, 2 skipped (up from 2162 before this pass);
 `black`/`flake8`/`mypy` clean on every file touched.
 
+## Performance-fix follow-up: two real issues from live testing (2026-09-18)
+
+Overall load/toggle speed confirmed much better, but two more real
+issues surfaced from screenshots of the actual app.
+
+**1. The chapter popup still showed every chapter in one long list.**
+`setMaxVisibleItems(15)`, the previous fix, had no effect at all —
+confirmed live, not just suspected. Qt documents this property as
+ignored for a non-editable combo box under a style that reports true
+for `QStyle::SH_ComboBox_Popup`, which includes macOS's native style;
+this app's combo boxes render with exactly that native popup despite
+the QSS applied to `QComboBox QAbstractItemView` (that QSS restyles
+colors, it doesn't change which popup mechanism macOS's style hint
+selects). Fixed by capping the popup view's own height directly —
+`self._chapter_combo.view().setMaximumHeight(360)` — a hard geometry
+constraint on the real widget the popup lays out from, which holds
+regardless of the ignored style hint.
+
+**2. "Highlight uncertain words" was too subtle to scan for.** A
+one-pixel dotted underline on running, single-spaced text doesn't
+draw the eye the way the toggle's own label ("highlight") promises.
+Replaced with a translucent background wash — the actual highlighter-
+pen convention — using the same accent hue a real hit's strikethrough
+already uses (`#c45a2d`) but as a soft fill (alpha 70/255) rather than
+solid text color, so it reads as related ("worth a look") without
+being confused with a confirmed match.
+
+**Verification:** the two existing tests asserting the underline style
+were rewritten to assert the background brush instead
+(`test_enabling_highlights_only_the_qualifying_word`,
+`test_disabling_reverts_the_highlight`); the chapter-popup test gained
+an assertion that the view's `maximumHeight()` is actually constrained
+(not Qt's `QWIDGETSIZE_MAX` "unset" sentinel), not just that
+`maxVisibleItems()` was called — the earlier version of this test
+would have passed even with the fix from the first pass doing nothing,
+exactly the class of gap that let this ship unnoticed the first time.
+Full suite: 2169 passed, 2 skipped (unchanged count — existing tests
+rewritten/strengthened, not added); `black`/`flake8`/`mypy` clean.
+
+**3. Neither visual treatment was ever explained anywhere a Contributor
+would see it.** A bold, struck-through word (a real catalog hit) and a
+highlighted word (once "Highlight uncertain words" is checked) both
+meant something specific, but nothing on screen said what — a tooltip
+on the checkbox alone doesn't help someone who hasn't hovered it, and
+this app already prefers a persistently visible caption over a tooltip
+for exactly this reason (`ProfileEditorDialog`'s own per-field
+descriptions, same precedent). Added a `statusLabel`-styled legend line
+directly under the chapter/highlight controls, above the transcript
+text itself: "Bold, struck-through words are already tagged as catalog
+hits. When checked, 'Highlight uncertain words' also shades any other
+word the transcript is less sure about, so it's easy to spot."
+
+**Verification:** 1 new test (`test_legend_explains_both_visual_treatments`)
+checking the legend's own text names both cues. Full suite: 2170
+passed, 2 skipped (up from 2169); `black`/`flake8`/`mypy` clean.
+
 ## Open questions for Contributor decision
 
 1. Whether to build Option 1 (full-transcript review) as the primary

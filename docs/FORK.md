@@ -2918,3 +2918,39 @@ build; 4 in `test_review_step.py`). Full suite: 2169 passed, 2 skipped
 addendum to ADR-0053, which — turned out on inspection — never had its
 own Status line updated to say the Transcript tab it describes was
 actually built; corrected that in passing.
+
+## Transcript tab performance follow-up: two real issues (ADR-0053, 2026-09-18)
+
+Overall speed confirmed much better, but two more real issues from
+live screenshots. The chapter popup still showed every chapter —
+`setMaxVisibleItems(15)` turned out to have no effect at all: Qt
+documents it as ignored for a non-editable combo box under a style
+reporting true for `SH_ComboBox_Popup`, which includes macOS's native
+style, and this app's combo boxes hit exactly that despite the QSS
+applied to their popup view (that QSS restyles colors, not which
+popup mechanism the native style hint selects). Fixed by capping the
+popup view's own height directly (`view().setMaximumHeight(360)`), a
+hard constraint that holds regardless of the ignored hint.
+
+"Highlight uncertain words" was also too subtle — a one-pixel dotted
+underline doesn't draw the eye across real running text. Replaced
+with a translucent background wash (the actual highlighter-pen
+convention), same accent hue as a real hit's strikethrough but as a
+soft fill rather than solid text color.
+
+Rewrote the two tests that had asserted the old underline style to
+assert the background brush instead, and strengthened the chapter-
+popup test to check the view's `maximumHeight()` is actually
+constrained — the previous version would have passed even with the
+first fix doing nothing, which is exactly how that shipped unnoticed.
+Full suite: 2169 passed, 2 skipped (unchanged count); `black`/
+`flake8`/`mypy` clean.
+
+Also added a persistently-visible legend line under the chapter/
+highlight controls, since neither visual treatment (bold+struck-
+through for a real hit, the new highlight for uncertain words) was
+explained anywhere a Contributor would actually see it — a tooltip on
+the checkbox alone doesn't help someone who hasn't hovered it, and
+this app already prefers a visible caption over a tooltip for exactly
+that reason. 1 new test. Full suite: 2170 passed, 2 skipped;
+`black`/`flake8`/`mypy` clean.

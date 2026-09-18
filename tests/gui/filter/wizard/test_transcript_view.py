@@ -14,7 +14,7 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import pytest
-from PySide6.QtCore import QPoint
+from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QTextCharFormat, QTextCursor
 from PySide6.QtWidgets import QMenu
 
@@ -243,7 +243,10 @@ class TestLowConfidenceHint:
         v.load_words(words, [_hit(200, 300)])
         assert v._low_confidence_indices == [0]
 
-    def test_enabling_underlines_only_the_qualifying_word(self) -> None:
+    def test_enabling_highlights_only_the_qualifying_word(self) -> None:
+        """A background wash, not a subtle underline -- a dotted
+        underline read as too hard to spot while scanning real running
+        text."""
         words = [
             _word("a", 0, 100, confidence=0.5),
             _word("b", 100, 200, confidence=0.95),
@@ -253,19 +256,14 @@ class TestLowConfidenceHint:
 
         v.set_low_confidence_hint(True)
 
-        # fontUnderline() doesn't reliably mirror a style set only via
-        # setUnderlineStyle() in this PySide6 build -- underlineStyle()
-        # is what's actually applied and rendered.
-        assert (
-            _format_at(v, v._spans[0].char_start).underlineStyle()
-            == QTextCharFormat.UnderlineStyle.DotLine
+        assert _format_at(v, v._spans[0].char_start).background().style() != (
+            Qt.BrushStyle.NoBrush
         )
-        assert (
-            _format_at(v, v._spans[1].char_start).underlineStyle()
-            == QTextCharFormat.UnderlineStyle.NoUnderline
+        assert _format_at(v, v._spans[1].char_start).background().style() == (
+            Qt.BrushStyle.NoBrush
         )
 
-    def test_disabling_reverts_the_underline(self) -> None:
+    def test_disabling_reverts_the_highlight(self) -> None:
         words = [_word("a", 0, 100, confidence=0.5)]
         v = TranscriptView()
         v.load_words(words, [])
@@ -274,13 +272,13 @@ class TestLowConfidenceHint:
         v.set_low_confidence_hint(False)
 
         assert (
-            _format_at(v, v._spans[0].char_start).underlineStyle()
-            == QTextCharFormat.UnderlineStyle.NoUnderline
+            _format_at(v, v._spans[0].char_start).background().style()
+            == Qt.BrushStyle.NoBrush
         )
 
     def test_pending_word_is_left_alone_even_when_enabled(self) -> None:
         """mark_pending()'s own dashed underline must not be overwritten
-        by the dotted low-confidence one — _apply_low_confidence_formatting
+        by the low-confidence highlight — _apply_low_confidence_formatting
         must keep skipping a pending word, not just skip it before it's
         pending."""
         words = [_word("a", 0, 100, confidence=0.5)]

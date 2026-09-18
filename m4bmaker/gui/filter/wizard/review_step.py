@@ -511,7 +511,15 @@ class ReviewStep(WizardStep):
         self._chapter_combo = QComboBox()
         # A long audiobook can have dozens of chapters/segments -- cap
         # the popup to a scrollable list instead of one giant menu.
+        # setMaxVisibleItems() alone doesn't do this: Qt documents it as
+        # ignored for a non-editable combo box under styles that report
+        # true for QStyle::SH_ComboBox_Popup, which includes macOS's
+        # native style -- confirmed live, the popup still showed every
+        # item. Capping the popup view's own height directly works
+        # regardless of that style hint, since it's a hard constraint
+        # on the real widget Qt lays the popup out from.
         self._chapter_combo.setMaxVisibleItems(15)
+        self._chapter_combo.view().setMaximumHeight(360)
         self._chapter_combo.currentIndexChanged.connect(self._on_chapter_changed)
         nav_row.addWidget(self._chapter_combo)
         prev_btn = QPushButton("‹ Prev")
@@ -537,6 +545,22 @@ class ReviewStep(WizardStep):
         jump_btn.clicked.connect(self._on_jump_to_next_hit)
         nav_row.addWidget(jump_btn)
         layout.addLayout(nav_row)
+
+        # A persistently visible legend, not a tooltip on the checkbox
+        # alone (this app's own established preference, e.g.
+        # ProfileEditorDialog's per-field descriptions) -- otherwise the
+        # two visual treatments below (strikethrough for a real hit,
+        # highlight for this toggle) have no explanation anywhere a
+        # Contributor would actually see it.
+        self._transcript_legend_label = QLabel(
+            "Bold, struck-through words are already tagged as catalog "
+            "hits. When checked, “Highlight uncertain words” also "
+            "shades any other word the transcript is less sure about, "
+            "so it's easy to spot."
+        )
+        self._transcript_legend_label.setObjectName("statusLabel")
+        self._transcript_legend_label.setWordWrap(True)
+        layout.addWidget(self._transcript_legend_label)
 
         self._transcript_view = TranscriptView()
         self._transcript_view.selection_changed.connect(

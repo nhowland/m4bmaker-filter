@@ -844,6 +844,16 @@ class TestTranscriptTabPlacement:
     def test_low_confidence_toggle_is_off_by_default(self, step: ReviewStep) -> None:
         assert step._lowconf_checkbox.isChecked() is False
 
+    def test_legend_explains_both_visual_treatments(self, step: ReviewStep) -> None:
+        """A Contributor seeing bold/struck-through words and, once the
+        toggle is on, shaded words, needs to find out what each one
+        means somewhere they'll actually see it -- not only a tooltip
+        on the checkbox."""
+        text = step._transcript_legend_label.text().lower()
+        assert "struck" in text or "strikethrough" in text
+        assert "hits" in text or "hit" in text
+        assert "uncertain" in text or "sure" in text
+
 
 class TestTranscriptTabChapters:
     def test_chapter_combo_has_one_entry_for_the_fixtures_single_segment(
@@ -871,8 +881,13 @@ class TestTranscriptTabChapters:
         self, step: ReviewStep
     ) -> None:
         """A long audiobook can have dozens of chapters/segments -- the
-        combo's popup must scroll rather than render one giant menu."""
+        combo's popup must scroll rather than render one giant menu.
+        maxVisibleItems() alone doesn't guarantee this -- it's
+        documented as ignored on macOS's native combo-box style, and
+        was confirmed live to have no effect there -- so the popup
+        view's own height must be capped directly too."""
         assert step._chapter_combo.maxVisibleItems() <= 15
+        assert 0 < step._chapter_combo.view().maximumHeight() < 16777215
 
     def test_loading_a_chapter_skips_the_low_confidence_pass_when_unchecked(
         self, step: ReviewStep, fixture: _Fixture

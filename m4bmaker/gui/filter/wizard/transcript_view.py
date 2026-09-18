@@ -324,10 +324,20 @@ class TranscriptView(QTextEdit):
         precomputed once in :meth:`load_words` — rather than every word
         in the chapter. That subset is also what makes toggling the
         checkbox on an already-loaded chapter cheap: nothing here
-        re-scans word confidence values on every toggle."""
+        re-scans word confidence values on every toggle.
+
+        A plain dotted underline read as too subtle to scan for in a
+        real transcript's worth of running text — a translucent
+        background wash (the actual "highlighter" convention this
+        toggle's own label promises) is far more scannable at a glance.
+        The same accent hue as a real hit's strikethrough, but as a
+        soft fill rather than solid text color, so the two read as
+        related ("worth a look") without being confused with a
+        confirmed match."""
+        lowconf_bg = QColor("#c45a2d")
+        lowconf_bg.setAlpha(70)
         lowconf_fmt = QTextCharFormat()
-        lowconf_fmt.setFontUnderline(True)
-        lowconf_fmt.setUnderlineStyle(QTextCharFormat.UnderlineStyle.DotLine)
+        lowconf_fmt.setBackground(lowconf_bg)
         plain_fmt = QTextCharFormat()
         cursor = self.textCursor()
         cursor.beginEditBlock()
