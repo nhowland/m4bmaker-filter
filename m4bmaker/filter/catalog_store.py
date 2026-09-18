@@ -16,9 +16,11 @@ no concurrent-writer or transactional-boundary needs the job/chunk store
 from __future__ import annotations
 
 import logging
+import shutil
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from . import storage
 from .catalog import CatalogService
@@ -48,7 +50,23 @@ def save_catalog(service: CatalogService, path: Path | None = None) -> None:
     storage.write_json_atomic(path or catalog_path(), data)
 
 
-def load_catalog(path: Path | None = None) -> CatalogService:
+def _backup_unreadable_catalog(target: Path) -> Path:
+    """Copy *target* (not move — the original stays exactly where it
+    was) to a timestamped sibling before :func:`load_catalog` returns a
+    fresh fallback service for it, so a genuine parse failure always
+    leaves forensic evidence on disk rather than only a log line nobody
+    sees before something later overwrites *target* for real."""
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup_path = target.with_name(f"{target.name}.unreadable-{stamp}.bak")
+    shutil.copy2(target, backup_path)
+    return backup_path
+
+
+def load_catalog(
+    path: Path | None = None,
+    *,
+    on_recovery: Callable[[Path], None] | None = None,
+) -> CatalogService:
     """Load a :class:`CatalogService` from *path* (default: the standard
     per-user catalog location).
 
@@ -65,6 +83,21 @@ def load_catalog(path: Path | None = None) -> CatalogService:
     touching the catalog would silently re-seed (and duplicate) on every
     later launch, since nothing would exist on disk to make this branch
     stop firing.
+
+    A real, hand-curated catalog accumulates months of manually-reviewed
+    word-list work — silently discarding it on a parse failure with
+    nothing but a log line is not an acceptable failure mode on its own
+    (see the real incident recorded in FORK.md / this ADR). If *target*
+    exists but can't be parsed, its current bytes are copied to a
+    timestamped ``<name>.unreadable-<UTC timestamp>.bak`` sibling
+    *before* this function returns the fallback service, so the
+    original is always recoverable even after something later calls
+    :func:`save_catalog` and overwrites *target* itself. *on_recovery*,
+    if given, is called with that backup path — the one case it's ever
+    invoked is exactly the one case a User needs to be told about
+    (``gui/window.py``'s ``_show_catalog_window`` passes a callback that
+    shows a real warning dialog; existing/non-GUI callers are unaffected
+    by leaving this at its default).
     """
     target = path or catalog_path()
     if not target.exists():
@@ -85,7 +118,15 @@ def load_catalog(path: Path | None = None) -> CatalogService:
             )
             profiles.append(FilterProfile(**profile_dict))
     except Exception as exc:  # noqa: BLE001 — any parse/shape failure, not just JSON
-        _log.warning("Could not read catalog from %s: %s", target, exc)
+        backup_path = _backup_unreadable_catalog(target)
+        _log.warning(
+            "Could not read catalog from %s: %s -- backed up to %s",
+            target,
+            exc,
+            backup_path,
+        )
+        if on_recovery is not None:
+            on_recovery(backup_path)
         return CatalogService()
 
     return CatalogService.from_records(categories, entries, profiles)

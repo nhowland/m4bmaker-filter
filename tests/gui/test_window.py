@@ -48,6 +48,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QCoreApplication, QEvent  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: F401, E402
 
+from m4bmaker.filter.catalog import CatalogService  # noqa: E402
 from m4bmaker.gui.window import MainWindow  # noqa: E402
 from m4bmaker.gui.widgets import ChapterTable  # noqa: E402
 from m4bmaker.models import Book, BookMetadata, Chapter, PipelineResult  # noqa: E402
@@ -2101,3 +2102,26 @@ class TestExtraWindowsCleanup:
         shiboken6.delete(extra)
         w._forget_extra_windows()
         assert extra not in w._extra_windows
+
+
+class TestCatalogRecoveryWarning:
+    """A real, hand-curated word list once got silently reset with
+    nothing but a log line — _warn_catalog_recovered is the fix: the
+    one path load_catalog()'s on_recovery callback ever fires on."""
+
+    def test_warns_with_the_backup_path_in_the_message(self, win):
+        w, tmp_path = win
+        backup = tmp_path / "catalog.json.unreadable-20260101T000000Z.bak"
+        with patch("m4bmaker.gui.window.QMessageBox.warning") as mock_warn:
+            w._warn_catalog_recovered(backup)
+        mock_warn.assert_called_once()
+        args, _ = mock_warn.call_args
+        assert str(backup) in args[2]
+
+    def test_show_catalog_window_wires_on_recovery(self, win):
+        w, _ = win
+        with patch("m4bmaker.gui.window.load_catalog") as mock_load:
+            mock_load.return_value = CatalogService()
+            w._show_catalog_window()
+        _, kwargs = mock_load.call_args
+        assert kwargs["on_recovery"] == w._warn_catalog_recovered

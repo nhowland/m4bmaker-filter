@@ -2667,3 +2667,40 @@ being demonstrated. Considered and rejected: moving this out of the tab
 row into a separate menu/link — tabs are already this step's own
 established pattern for "another view of the same Review data," and a
 second UI paradigm for one tab would draw more attention, not less.
+
+## Real incident: the Contributor's real catalog was silently reset (ADR-0054, 2026-09-17)
+
+During real-app verification of the Transcript tab, a new test —
+`TestAddToCatalogDialog::test_creates_entry_in_the_chosen_category_and_accepts`
+— called `_AddToCatalogDialog._on_add()` directly, which calls the real
+`save_catalog()` with no path override. Unlike every other test in this
+codebase that exercises a catalog-mutating dialog, this one never
+patched it. Every run of the test suite this session quietly overwrote
+the Contributor's real, hand-curated catalog — two profiles built up
+over weeks of manually reviewing real transcripts — with a throwaway
+`"Mild"`/`"darnit"` test fixture. No backup existed anywhere (no Time
+Machine, no local APFS snapshot); the two real profiles are not
+recoverable from disk.
+
+The Contributor's own framing mattered more than the immediate fix: the
+catalog accumulates real human review effort and nothing about
+`catalog_store.py` treated it that way. ADR-0054 records three
+independent hardening layers, not just the one missing `patch()` call:
+a session-wide autouse fixture (`tests/conftest.py`) that structurally
+redirects `m4bmaker.filter.storage`'s data/cache roots to a per-test
+tmp directory for every test, unconditionally, so this class of mistake
+can't recur even if a future test forgets the convention entirely;
+`load_catalog()` now backs up any unreadable file to a timestamped
+sibling before returning a fallback, rather than silently discarding
+it; and the GUI now shows a real warning dialog naming the backup path
+the moment a reset happens, instead of nothing but a log line. 11 new
+tests, including two that deliberately call `load_catalog()`/
+`save_catalog()` with zero local patching to prove the global fixture
+alone is sufficient — the same shape of mistake that caused this
+incident, reproduced against the fix to confirm it's closed. Full
+suite: 2099 passed, 2 skipped, zero regressions.
+
+A partial reconstruction of the "Family Friendly" profile from
+incidental data surfaced during earlier, unrelated validation work in
+this same conversation follows in a later entry — a best-effort rebuild
+from real evidence, not a true restoration.

@@ -172,6 +172,63 @@ class TestLoadCorruptedFile:
             load_catalog(path)
         mock_log.warning.assert_called_once()
 
+    def test_corrupted_file_is_backed_up_before_the_fallback_is_returned(
+        self, tmp_path: Path
+    ) -> None:
+        # A real incident, not hypothetical: this exact fallback path
+        # once silently discarded a real, hand-curated catalog with
+        # nothing but a log line. The unreadable bytes must always
+        # survive somewhere on disk after this.
+        path = tmp_path / "catalog.json"
+        original_bytes = "{not valid json"
+        path.write_text(original_bytes, encoding="utf-8")
+        load_catalog(path)
+        backups = list(tmp_path.glob("catalog.json.unreadable-*.bak"))
+        assert len(backups) == 1
+        assert backups[0].read_text(encoding="utf-8") == original_bytes
+
+    def test_original_unreadable_file_is_left_in_place_too(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "catalog.json"
+        path.write_text("{not valid json", encoding="utf-8")
+        load_catalog(path)
+        assert path.exists()
+        assert path.read_text(encoding="utf-8") == "{not valid json"
+
+    def test_missing_file_creates_no_backup(self, tmp_path: Path) -> None:
+        load_catalog(tmp_path / "does-not-exist.json")
+        assert list(tmp_path.glob("*.bak")) == []
+
+    def test_healthy_file_creates_no_backup(self, tmp_path: Path) -> None:
+        path = tmp_path / "catalog.json"
+        save_catalog(CatalogService(), path)
+        load_catalog(path)
+        assert list(tmp_path.glob("*.bak")) == []
+
+    def test_on_recovery_called_with_the_backup_path_when_unparseable(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "catalog.json"
+        path.write_text("{not valid json", encoding="utf-8")
+        received = []
+        load_catalog(path, on_recovery=received.append)
+        assert len(received) == 1
+        assert received[0].name.startswith("catalog.json.unreadable-")
+        assert received[0].exists()
+
+    def test_on_recovery_not_called_on_a_healthy_load(self, tmp_path: Path) -> None:
+        path = tmp_path / "catalog.json"
+        save_catalog(CatalogService(), path)
+        received = []
+        load_catalog(path, on_recovery=received.append)
+        assert received == []
+
+    def test_on_recovery_not_called_on_first_run(self, tmp_path: Path) -> None:
+        received = []
+        load_catalog(tmp_path / "does-not-exist.json", on_recovery=received.append)
+        assert received == []
+
     def test_pre_masking_schema_loads_with_mask_defaults(self, tmp_path: Path) -> None:
         """A catalog.json saved before mask_all_terms/mask existed (ADR-0011)
         must still load — new fields fall back to their dataclass defaults
@@ -224,4 +281,37 @@ class TestDefaultPath:
             service.create_category("Profanity")
             save_catalog(service)  # no explicit path -> default location
             restored = load_catalog()  # same default location
+        assert len(restored.list_categories()) == 1
+
+
+class TestDefaultPathIsAlwaysIsolatedInTests:
+    """Proves the ``tests/conftest.py`` ``_isolated_filter_data_root``
+    autouse fixture actually redirects the real default path away from
+    the real per-user directory — not just trusted by design.
+
+    This is exactly the code path (``save_catalog()``/``load_catalog()``
+    with no explicit path) that once silently overwrote a real, hand-
+    curated production ``catalog.json`` when a *different* test forgot
+    its own local patch of ``save_catalog``. Neither test method here
+    patches anything locally, on purpose — proving the global safety
+    net alone is enough to prevent that class of mistake, without
+    relying on every test file remembering the convention.
+    """
+
+    def test_default_catalog_path_never_resolves_under_the_real_home_library(
+        self,
+    ) -> None:
+        from m4bmaker.filter.catalog_store import catalog_path
+
+        resolved = catalog_path()
+        real_library = Path.home() / "Library" / "Application Support"
+        assert not str(resolved).startswith(str(real_library))
+
+    def test_save_and_load_with_no_local_patch_still_round_trips_safely(
+        self,
+    ) -> None:
+        service = CatalogService()
+        service.create_category("Profanity")
+        save_catalog(service)  # no explicit path, no local patch either
+        restored = load_catalog()
         assert len(restored.list_categories()) == 1

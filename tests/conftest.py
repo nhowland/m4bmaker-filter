@@ -10,6 +10,44 @@ from unittest.mock import MagicMock
 import pytest
 
 # ---------------------------------------------------------------------------
+# Safety net: no test may ever reach the real per-user data directory
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _isolated_filter_data_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect ``m4bmaker.filter.storage``'s data/cache roots to a
+    per-test tmp directory, for every test in the whole suite,
+    unconditionally.
+
+    A safety net *on top of* — not a replacement for — each test file's
+    own convention of patching ``save_catalog``/``load_catalog`` calls
+    locally where they're imported (see ``test_word_variation_dialog.py``'s
+    own docstring). That convention alone was not a strong enough
+    guarantee: one test in this suite once forgot it and silently
+    overwrote a real, hand-curated production ``catalog.json`` as a
+    result — months of manually-reviewed word-list work gone with no
+    warning, because nothing forced the mistake to fail loudly instead.
+    Patching ``platformdirs``' functions here, at the one place
+    ``m4bmaker.filter.storage`` itself imports them, means no test — now
+    or in the future, in this file or any other — can reach the real
+    per-user application-data directory even if it never thinks about
+    the question at all. ``models_dir()``/``transcripts_dir()``/
+    ``temp_root()`` all fall back to a `data_root()` subdirectory when
+    unconfigured, so this one patch covers them too, not just the
+    catalog.
+    """
+    fake_data = tmp_path / "m4bmaker-test-data"
+    fake_cache = tmp_path / "m4bmaker-test-cache"
+    monkeypatch.setattr(
+        "m4bmaker.filter.storage.user_data_dir", lambda *a, **k: str(fake_data)
+    )
+    monkeypatch.setattr(
+        "m4bmaker.filter.storage.user_cache_dir", lambda *a, **k: str(fake_cache)
+    )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 

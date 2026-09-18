@@ -1200,12 +1200,31 @@ class MainWindow(QMainWindow):
             # the window is the sole in-process owner of this CatalogService
             # instance and saves after every mutation, so there is no other
             # writer to reconcile with while it stays open.
-            service = load_catalog()
+            service = load_catalog(on_recovery=self._warn_catalog_recovered)
             self._catalog_window = CatalogWindow(service, parent=self)
             self._catalog_window.apply_stylesheet(self._dark_mode)
         self._catalog_window.show()
         self._catalog_window.raise_()
         self._catalog_window.activateWindow()
+
+    def _warn_catalog_recovered(self, backup_path: Path) -> None:
+        # Fires only in the one real case a User needs to know about:
+        # the catalog file existed but couldn't be read, so a fresh one
+        # is starting in its place. Silently doing this with nothing but
+        # a log line nobody sees is exactly what once let a real,
+        # hand-curated catalog vanish without anyone noticing until much
+        # later — see catalog_store.load_catalog()'s own docstring.
+        QMessageBox.warning(
+            self,
+            "Word List Could Not Be Read",
+            "Your word list file couldn't be read, so a fresh one has "
+            "been started in its place.\n\n"
+            "The unreadable file was not deleted — a copy was saved to:\n"
+            f"{backup_path}\n\n"
+            "If this was your real word list, that file may still be "
+            "recoverable; otherwise you'll need to rebuild your "
+            "categories, words, and profiles.",
+        )
 
     def _show_model_manager_window(self) -> None:
         if self._model_manager_window is None:
