@@ -27,7 +27,7 @@ The Contributor's stated hypothesis was that missed filtered words come
 from Whisper's tokenization of compound words/phrases — the existing Word
 Variation Scanner (ADR-0036) already targets exactly this, and helped.
 
-ADR-0042's real investigation (Carl's Doomsday Scenario, Book 2 — 18 audible
+ADR-0042's real investigation (the test audiobook, Book 2 — 18 audible
 misses) found that tokenization splits are only one of three distinct
 causes, and the only one a same-shaped fix can safely reach:
 

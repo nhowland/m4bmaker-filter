@@ -116,7 +116,7 @@ spacing had been silently hiding at three rows.
 Prompted by the User reporting ~25GB of unaccounted-for disk space —
 real filesystem investigation (`du`/`df` against `$TMPDIR`), not
 speculation. Nearly all of it (20GB) turned out to be stale
-`pytest-of-nate/pytest-<N>` session directories from earlier test runs
+`pytest-of-<user>/pytest-<N>` session directories from earlier test runs
 (the model-manager test suite's realistic-sized fake `ggml-*.bin`
 fixtures, ~4GB per full-suite run, across five old sessions that
 outlived pytest's own default retention) — unrelated to this feature,

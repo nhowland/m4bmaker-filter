@@ -661,7 +661,7 @@
   <div class="frame">
     <div class="frame-titlebar">
       <div class="dots"><span></span><span></span><span></span></div>
-      <div class="title">Filter Audiobook — Dungeon Crawler Carl</div>
+      <div class="title">Filter Audiobook — Test Audiobook</div>
       <div class="step-tag" id="stepTag">STEP 1 / 8</div>
     </div>
 
@@ -685,7 +685,7 @@
   </div>
 
   <footer class="colophon">
-    Palette and type are wireframe-only (IBM Plex Sans / Mono, blueprint neutrals) — deliberately distinct from the shipped app's own light/dark stylesheet (<code>gui/styles.py</code>) so this reads as a structural draft, not a finished screen. Source file and figures throughout (Dungeon Crawler Carl, 13h 31m, 50 chapters) are the real fixture this fork has been tested against since G4, not placeholder text.
+    Palette and type are wireframe-only (IBM Plex Sans / Mono, blueprint neutrals) — deliberately distinct from the shipped app's own light/dark stylesheet (<code>gui/styles.py</code>) so this reads as a structural draft, not a finished screen. Source file and figures throughout (Test Audiobook, 13h 31m, 50 chapters) are the real fixture this fork has been tested against since G4, not placeholder text.
   </footer>
 
 </div>
@@ -700,7 +700,7 @@
         <div class="sketch">
           <p class="sketch-label">source</p>
           <div class="row">
-            <div class="field grow">📁 Dungeon Crawler Carl_ A LitRPG⁄Gamelit Adventure.m4b</div>
+            <div class="field grow">📁 Test Audiobook.m4b</div>
             <button class="btn ghost">Browse…</button>
           </div>
         </div>`,
@@ -973,7 +973,7 @@
           <p class="sketch-label">output plan</p>
           <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Nothing runs until this is confirmed — Start is its own explicit action, same as every other commit-point in this wizard.</p>
           <dl class="kv">
-            <dt>Output</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).m4b <span class="chip warn">default-naming helper not built yet</span> <button class="btn ghost small">Change…</button></dd>
+            <dt>Output</dt><dd>~/Audiobooks/Test Audiobook (filtered).m4b <span class="chip warn">default-naming helper not built yet</span> <button class="btn ghost small">Change…</button></dd>
             <dt>Bitrate</dt><dd>128 kbps <span class="chip">auto-selected from source's own ~126 kbps</span> <button class="btn ghost small">Change…</button></dd>
             <dt>Est. storage needed</dt><dd>~24.7 GB <span class="chip ok">real — same figure Source step already computed</span></dd>
             <dt>Intervals to attenuate</dt><dd>13 (merged from 14 hits — see Review) <span class="chip warn">blocked on a small Review addition</span></dd>
@@ -1041,8 +1041,8 @@
           <p class="sketch-label">result <span class="chip ok">✓ passed validation</span></p>
           <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">This screen only ever shows a passing render — <code>RenderStep</code> already gatekeeps a failed <code>ValidationReport</code> into its own Needs Attention state (ADR-0019); Complete never has to handle failure itself.</p>
           <dl class="kv">
-            <dt>Output</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).m4b</dd>
-            <dt>Report</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).filter-report.json</dd>
+            <dt>Output</dt><dd>~/Audiobooks/Test Audiobook (filtered).m4b</dd>
+            <dt>Report</dt><dd>~/Audiobooks/Test Audiobook (filtered).filter-report.json</dd>
             <dt>Warnings</dt><dd>none</dd>
           </dl>
           <div class="row" style="margin-top:14px;">
@@ -1062,8 +1062,8 @@
           <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Real <code>ValidationReport.warnings</code> — WARNING-severity issues never block success (PRD §6.3: best-effort metadata isn't guaranteed), but they're still real information worth surfacing, not silently dropped just because the render passed overall.</p>
           <div class="row"><span class="chip warn">Best-effort field "series" not preserved.</span></div>
           <dl class="kv" style="margin-top:12px;">
-            <dt>Output</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).m4b</dd>
-            <dt>Report</dt><dd>~/Audiobooks/Dungeon Crawler Carl (filtered).filter-report.json</dd>
+            <dt>Output</dt><dd>~/Audiobooks/Test Audiobook (filtered).m4b</dd>
+            <dt>Report</dt><dd>~/Audiobooks/Test Audiobook (filtered).filter-report.json</dd>
           </dl>
           <div class="row" style="margin-top:14px;">
             <button class="btn ghost">Open Folder</button>

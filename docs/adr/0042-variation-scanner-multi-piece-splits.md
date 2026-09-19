@@ -11,7 +11,7 @@ are unchanged.*
 
 ## Context
 
-Investigating why a real filtered book (Carl's Doomsday Scenario, Book 2)
+Investigating why a real filtered book (the test audiobook, Book 2)
 still had 18 profanity instances audible after re-transcription found
 that 15 of the 18 were never targeted by the render at all: the original
 transcript never produced a matchable token for those specific word

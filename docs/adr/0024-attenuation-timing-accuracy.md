@@ -18,7 +18,7 @@ Rather than trust a re-transcription of the filtered output as the
 primary signal (noisy — confounded by whisper's own robustness to
 partially-attenuated audio, and requires a full second STT pass over a
 multi-hour file to even get a data point), this investigation built a
-small suite of diagnostic scripts (`/Users/nate/Claude/test/
+small suite of diagnostic scripts (`/Users/<user>/Claude/test/
 diagnostic_0{1..6}_*.py`, kept outside the package — throwaway
 harnesses, not shipped code) around one core technique: macOS `say`
 with the embedded `[[slnc N]]` command to synthesize short speech

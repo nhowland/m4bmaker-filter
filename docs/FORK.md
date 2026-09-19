@@ -1898,7 +1898,7 @@ pass unmodified. Full suite 1862 passed, 2 skipped; `black`/`flake8`/
 
 ## G5: Book 2 residual-hits investigation, and Variation Scanner multi-piece splits (ADR-0042, 2026-08-30)
 
-Investigating why a real filtered book (Carl's Doomsday Scenario, Book
+Investigating why a real filtered book (the test audiobook, Book
 2) still had 18 profanity instances audible after re-transcription
 found that 15 of the 18 were never targeted by the render at all — the
 original transcript never produced a matchable token for those
@@ -2111,7 +2111,7 @@ settings).
 
 The User reported ~25GB of unaccounted-for disk space. Real
 investigation, not speculation: `du`/`df` against `$TMPDIR` found 20GB
-was stale `pytest-of-nate/pytest-<N>` session directories (the
+was stale `pytest-of-<user>/pytest-<N>` session directories (the
 model-manager test suite's realistic-sized fake `ggml-*.bin` fixtures,
 ~4GB/session, across five sessions that outlived pytest's own default
 retention) — unrelated to this feature, deleted directly. A separate
