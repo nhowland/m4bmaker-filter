@@ -1,0 +1,2008 @@
+"""Main application window.
+
+Layout
+------
+┌─ Source ───────────────────────────────────────────────────┐
+│  [ /path/to/folder                           ] [ Browse ]  │
+└────────────────────────────────────────────────────────────┘
+┌─ Build ──────────────────────┬─ Chapters ──────────────────┐
+│  ┌─ Audiobook ─────────────┐ │  ┌─ flat table ───────────┐ │
+│  │ [cover] Title           │ │  │  # │ Time │ Title      │ │
+│  │         Author          │ │  │  …                      │ │
+│  │         Narrator        │ │  └────────────────────────┘ │
+│  │         Genre           │ │  (Enter / Shift+Enter move) │
+│  └─────────────────────────┘ │  (right-click: bulk tools)  │
+│  ┌─ Encoding ──────────────┐ │                             │
+│  │ Bitrate [96k▾] ○M ●S   │ │                             │
+│  └─────────────────────────┘ │                             │
+│  ┌─ Output Location ───────┐ │                             │
+│  │ ● …/Author/Title/T.m4b │ │                             │
+│  │ ○ …/Author - Title.m4b │ │                             │
+│  │ ○ Custom [path][Browse] │ │                             │
+│  └─────────────────────────┘ │                             │
+└──────────────────────────────┴─────────────────────────────┘
+[ ▓▓▓░░░░ ]  Scanning…
+                    [ Convert to M4B ]
+"""
+
+from __future__ import annotations
+
+from copy import deepcopy
+from pathlib import Path
+from typing import Optional
+
+from PySide6.QtCore import QSize, Qt, QThread, QUrl
+from PySide6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QDesktopServices,
+    QKeySequence,
+    QPainter,
+    QPixmap,
+)
+from PySide6.QtWidgets import (
+    QApplication,
+    QButtonGroup,
+    QComboBox,
+    QDialog,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMainWindow,
+    QMessageBox,
+    QProgressBar,
+    QPushButton,
+    QRadioButton,
+    QScrollArea,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
+
+from m4bmaker import __version__
+from m4bmaker.models import Book, Chapter, PipelineResult
+from m4bmaker.gui.player import AudioPlayerWidget
+from m4bmaker.gui.icons import dark_mode_icon
+from m4bmaker.gui.styles import get_stylesheet
+from m4bmaker.gui.widgets import ChapterTable, CoverWidget, FolderDropZone
+from m4bmaker.gui.worker import (
+    ConvertWorker,
+    LoadM4bWorker,
+    LoadWorker,
+    PreflightWorker,
+    SaveChaptersWorker,
+    SplitWorker,
+)
+from m4bmaker.gui.job import job_from_book
+from m4bmaker.gui.prefs import get as _prefs_get, set as _prefs_set
+from m4bmaker.gui.queue_manager import QueueManager
+from m4bmaker.gui.queue_window import QueueWindow
+from m4bmaker.gui.updater import UpdateChecker, _RELEASES_URL
+from m4bmaker.gui.filter.about_dialog import AboutLanguageFilterDialog
+from m4bmaker.gui.filter.catalog_window import CatalogWindow
+from m4bmaker.gui.filter.model_manager_window import ModelManagerWindow
+from m4bmaker.gui.filter.settings_window import SettingsWindow
+from m4bmaker.gui.filter.wizard.wizard_window import WizardWindow
+from m4bmaker.filter.catalog_store import load_catalog
+from m4bmaker.preflight import format_preflight_summary
+from m4bmaker.utils import sanitize_filename_component
+
+try:
+    from PySide6.QtSvg import QSvgRenderer as _QSvgRenderer
+
+    _HAS_SVG = True
+except ImportError:
+    _HAS_SVG = False
+
+_BITRATES = ["32k", "48k", "64k", "96k", "128k", "192k", "256k", "320k"]
+_DEFAULT_BITRATE = "96k"
+_DONATE_URL = "https://buymeacoffee.com/sageframe"
+_GITHUB_URL = "https://github.com/sageframe-no-kaji"
+_SAGEFRAME_URL = "https://sageframe.net"
+_BUG_REPORT_URL = "https://tally.so/r/1AKQPW"
+
+# Sageframe brand SVG (embedded so the app has no file dependency)
+_SAGEFRAME_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 301 301">'
+    b"<defs><style>"
+    b".s1{fill:none;stroke:#c45b35;stroke-linecap:square;stroke-miterlimit:10;stroke-width:23px}"
+    b".s2{fill:#eae5dd}</style></defs>"
+    b'<circle class="s2" cx="150.5" cy="150.5" r="150.5"/>'
+    b'<line class="s1" x1="150.19" y1="52.98" x2="150.19" y2="257.92"/>'
+    b'<line class="s1" x1="86.88" y1="106.38" x2="182.15" y2="203.64"/>'
+    b'<line class="s1" x1="86.88" y1="236.27" x2="150.19" y2="172.97"/>'
+    b'<line class="s1" x1="150.19" y1="43.08" x2="214.12" y2="106.38"/>'
+    b'<line class="s1" x1="86.88" y1="106.38" x2="150.19" y2="43.08"/>'
+    b"</svg>"
+)
+
+
+def _sageframe_pixmap(size: int = 16) -> QPixmap:
+    pix = QPixmap(size, size)
+    pix.fill(Qt.GlobalColor.transparent)
+    if _HAS_SVG:
+        renderer = _QSvgRenderer(_SAGEFRAME_SVG)
+        painter = QPainter(pix)
+        renderer.render(painter)
+        painter.end()
+    return pix
+
+
+def _muted_label(text: str) -> QLabel:
+    lbl = QLabel(text)
+    lbl.setStyleSheet("color: #7a7a7a; font-size: 12px; background: transparent;")
+    return lbl
+
+
+# The first tab is relabelled to match the current mode; see _set_mode.
+_MODE_TAB_INDEX = 0
+
+
+class MainWindow(QMainWindow):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("m4Bookmaker")
+        self.setMinimumWidth(760)
+        self.setMinimumHeight(520)
+        self.resize(775, 800)
+        self._dark_mode = False
+
+        self._book: Optional[Book] = None
+        self._mode: str = "build"  # "build" or "edit"
+        self._m4b_total_duration: float = 0.0
+        self._chapter_durations: list[float] = []
+        self._chapters_merged: bool = False
+        self._load_worker: Optional[LoadWorker] = None
+        self._m4b_load_worker: Optional[LoadM4bWorker] = None
+        self._convert_worker: Optional[ConvertWorker] = None
+        self._convert_running: bool = False
+        self._preflight_worker: Optional[PreflightWorker] = None
+        self._preflight_sample_rate: Optional[int] = None
+        self._save_worker: Optional[SaveChaptersWorker] = None
+        self._split_worker: Optional[SplitWorker] = None
+        # Generation counter for load workers: each load stamps a generation id,
+        # and result slots ignore payloads from a superseded generation so a slow
+        # scan of folder A cannot populate the UI under folder B's path (H5).
+        self._load_generation: int = 0
+        # Superseded load workers kept alive until their native finished fires,
+        # so a still-running QThread is never destroyed.
+        self._stale_load_workers: list[QThread] = []
+        self._extra_windows: list["MainWindow"] = []
+        self._queue_manager = QueueManager()
+        self._queue_window: Optional[QueueWindow] = None
+        self._catalog_window: Optional[CatalogWindow] = None
+        self._model_manager_window: Optional[ModelManagerWindow] = None
+        self._settings_window: Optional[SettingsWindow] = None
+        self._wizard_window: Optional[WizardWindow] = None
+        # H6: keep direct-convert controls gated on live queue state.
+        # Bound methods only — a lambda here would outlive the window and a
+        # late queue signal would invoke a slot on a destroyed C++ object.
+        self._queue_manager.job_updated.connect(self._on_job_updated)
+        self._queue_manager.queue_finished.connect(self._update_controls)
+
+        self._build_menu_bar()
+        self._build_ui()
+
+        # Restore persisted theme preference.
+        if _prefs_get("dark_mode"):
+            self._dark_action.setChecked(True)
+            self._toggle_dark_mode()
+
+        # Start background update check (once per session, fails silently).
+        # Respects the "Check for Updates on Startup" preference.
+        self._update_checker = UpdateChecker(self)
+        self._update_checker.update_available.connect(self._show_update_bar)
+        if _prefs_get("check_for_updates"):
+            self._update_checker.start()
+
+    # ── Menu bar ──────────────────────────────────────────────────────────────
+
+    def _build_menu_bar(self) -> None:
+        mb = self.menuBar()
+
+        # File menu
+        file_menu = mb.addMenu("File")
+
+        new_action = QAction("New Window", self)
+        new_action.setShortcut(QKeySequence.StandardKey.New)
+        new_action.triggered.connect(self._new_window)
+        file_menu.addAction(new_action)
+
+        open_action = QAction("Open Folder\u2026", self)
+        open_action.setShortcut(QKeySequence.StandardKey.Open)
+        open_action.triggered.connect(lambda: self._folder_zone._browse())
+        file_menu.addAction(open_action)
+
+        open_m4b_action = QAction("Open M4B File\u2026", self)
+        open_m4b_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        open_m4b_action.triggered.connect(self._open_m4b_file)
+        file_menu.addAction(open_m4b_action)
+
+        file_menu.addSeparator()
+
+        quit_action = QAction("Quit m4Bookmaker", self)
+        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
+        # F11: route through close() so closeEvent's cancel/wait guard runs,
+        # rather than QApplication.quit which bypasses it (Cmd+Q mid-encode
+        # would otherwise abort the QThread and orphan ffmpeg).
+        quit_action.triggered.connect(self.close)
+        file_menu.addAction(quit_action)
+
+        # Queue action
+        queue_action = QAction("Show Encode Queue", self)
+        queue_action.setShortcut("Ctrl+Shift+Q")
+        queue_action.triggered.connect(self._show_queue_window)
+        file_menu.addSeparator()
+        file_menu.addAction(queue_action)
+
+        # Language Filter menu — every item here belongs to the
+        # audiobook-filtering feature, so the menu is named for that
+        # rather than a generic "Tools" label.
+        tools_menu = mb.addMenu("Language Filter")
+        wizard_action = QAction("Filter Audiobook Language…", self)
+        wizard_action.triggered.connect(self._show_wizard_window)
+        tools_menu.addAction(wizard_action)
+        tools_menu.addSeparator()
+        catalog_action = QAction("Word List…", self)
+        catalog_action.triggered.connect(self._show_catalog_window)
+        tools_menu.addAction(catalog_action)
+        model_manager_action = QAction("Manage Transcription Models…", self)
+        model_manager_action.triggered.connect(self._show_model_manager_window)
+        tools_menu.addAction(model_manager_action)
+        tools_menu.addSeparator()
+        settings_action = QAction("Settings…", self)
+        # Qt's macOS integration auto-detects "Settings"/"Preferences"-like
+        # action text and silently relocates it into the app's own
+        # top-level menu (Cmd+,), regardless of which menu it was added
+        # to — NoRole opts out, keeping this alongside Word List/Manage
+        # Transcription Models in Tools as intended.
+        settings_action.setMenuRole(QAction.MenuRole.NoRole)
+        settings_action.triggered.connect(self._show_settings_window)
+        tools_menu.addAction(settings_action)
+        tools_menu.addSeparator()
+        about_language_filter_action = QAction("About Language Filter", self)
+        # Same NoRole reasoning as Settings above — Qt's macOS integration
+        # auto-detects "About"-like action text and would otherwise try to
+        # relocate this into the app's own top-level menu, colliding with
+        # the base app's own "About m4Bookmaker" entry there.
+        about_language_filter_action.setMenuRole(QAction.MenuRole.NoRole)
+        about_language_filter_action.triggered.connect(self._show_language_filter_about)
+        tools_menu.addAction(about_language_filter_action)
+
+        # View menu
+        view_menu = mb.addMenu("View")
+        self._dark_action = QAction("Dark Mode", self)
+        self._dark_action.setCheckable(True)
+        self._dark_action.triggered.connect(self._toggle_dark_mode)
+        view_menu.addAction(self._dark_action)
+
+        # Help menu
+        help_menu = mb.addMenu("Help")
+
+        about_action = QAction("About m4Bookmaker", self)
+        about_action.triggered.connect(self._show_about)
+        help_menu.addAction(about_action)
+
+        help_menu.addSeparator()
+
+        self._updates_action = QAction("Check for Updates on Startup", self)
+        self._updates_action.setCheckable(True)
+        self._updates_action.setChecked(bool(_prefs_get("check_for_updates")))
+        self._updates_action.toggled.connect(self._toggle_update_check)
+        help_menu.addAction(self._updates_action)
+
+        bug_action = QAction("Report a Bug…", self)
+        bug_action.triggered.connect(
+            lambda: QDesktopServices.openUrl(QUrl(_BUG_REPORT_URL))
+        )
+        help_menu.addAction(bug_action)
+
+        help_menu.addSeparator()
+
+        support_title = QAction("Support Development", self)
+        support_title.setEnabled(False)
+        help_menu.addAction(support_title)
+
+        donate_action = QAction("♥  Buy Me a Coffee…", self)
+        donate_action.triggered.connect(
+            lambda: QDesktopServices.openUrl(QUrl(_DONATE_URL))
+        )
+        help_menu.addAction(donate_action)
+
+        help_menu.addSeparator()
+
+        github_action = QAction("GitHub…", self)
+        github_action.triggered.connect(
+            lambda: QDesktopServices.openUrl(QUrl(_GITHUB_URL))
+        )
+        help_menu.addAction(github_action)
+
+    def _set_status(self, text: str) -> None:
+        self._status_label.setText(text)
+        self._status_label.setVisible(bool(text))
+
+    def _on_dark_mode_btn(self) -> None:
+        self._dark_action.setChecked(not self._dark_action.isChecked())
+        self._toggle_dark_mode()
+
+    def _toggle_update_check(self, enabled: bool) -> None:
+        _prefs_set("check_for_updates", enabled)
+
+    def _toggle_dark_mode(self) -> None:
+        self._dark_mode = self._dark_action.isChecked()
+        _prefs_set("dark_mode", self._dark_mode)
+        # Setting the application stylesheet forces Qt to re-polish every
+        # live widget in the process — skip it when nothing changed (e.g. a
+        # second window opening in the already-active mode).
+        app = QApplication.instance()
+        stylesheet = get_stylesheet(self._dark_mode)
+        if app.styleSheet() != stylesheet:
+            app.setStyleSheet(stylesheet)
+        if hasattr(self, "_dark_btn"):
+            self._dark_btn.setIcon(dark_mode_icon(self._dark_mode))
+        if self._queue_window is not None:
+            self._queue_window.apply_stylesheet(self._dark_mode)
+        if self._catalog_window is not None:
+            self._catalog_window.apply_stylesheet(self._dark_mode)
+        if self._model_manager_window is not None:
+            self._model_manager_window.apply_stylesheet(self._dark_mode)
+        if self._settings_window is not None:
+            self._settings_window.apply_stylesheet(self._dark_mode)
+        if self._wizard_window is not None:
+            self._wizard_window.apply_stylesheet(self._dark_mode)
+
+    def _on_job_updated(self, _job_id: object) -> None:
+        self._update_controls()
+
+    def _new_window(self) -> None:
+        win = MainWindow()
+        win.show()
+        self._extra_windows.append(win)
+        # L2: drop the reference when the window is destroyed so the list does
+        # not grow without bound across the session. Bound method, not a
+        # lambda: the connection dies with THIS window instead of dangling.
+        win.destroyed.connect(self._forget_extra_windows)
+
+    def _forget_extra_windows(self, _obj: object = None) -> None:
+        """Prune destroyed windows from the keep-alive list.
+
+        The ``destroyed`` payload is the dying QObject's shell, so identity
+        comparison against our list is unreliable — prune by validity instead.
+        """
+        import shiboken6
+
+        self._extra_windows = [w for w in self._extra_windows if shiboken6.isValid(w)]
+
+    def _open_m4b_file(self) -> None:
+        """Open a .m4b file via dialog and load it in edit mode.
+
+        Delegates to FolderDropZone._browse_m4b() so the same picker logic
+        (osascript on macOS, Qt DontUseNativeDialog elsewhere) is used.
+        """
+        self._folder_zone._browse_m4b()
+
+    def _show_about(self) -> None:
+        dlg = QDialog(self)
+        dlg.setWindowTitle("About m4Bookmaker")
+        dlg.setFixedWidth(320)
+
+        v = QVBoxLayout(dlg)
+        v.setContentsMargins(32, 32, 32, 32)
+        v.setSpacing(0)
+
+        icon_lbl = QLabel()
+        icon_lbl.setPixmap(_sageframe_pixmap(72))
+        icon_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon_lbl.setStyleSheet("background: transparent; margin-bottom: 14px;")
+        v.addWidget(icon_lbl)
+
+        name_lbl = QLabel("m4Bookmaker")
+        name_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        name_lbl.setStyleSheet(
+            "font-size: 22px; font-weight: 700; color: #1a1a1a; background: transparent;"
+        )
+        v.addWidget(name_lbl)
+
+        ver_lbl = QLabel(f"Version {__version__}")
+        ver_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        ver_lbl.setStyleSheet(
+            "font-size: 12px; color: #7a7a7a; background: transparent; margin-bottom: 18px;"
+        )
+        v.addWidget(ver_lbl)
+
+        author_lbl = QLabel("by Andrew T. Marcus")
+        author_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        author_lbl.setStyleSheet(
+            "font-size: 13px; color: #4a4a4a; background: transparent;"
+        )
+        v.addWidget(author_lbl)
+
+        sf_lbl = QLabel(
+            f'<a href="{_SAGEFRAME_URL}" style="color: #7a7a7a; text-decoration: none;">Sageframe</a>'
+        )
+        sf_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        sf_lbl.setOpenExternalLinks(True)
+        sf_lbl.setStyleSheet(
+            "font-size: 12px; background: transparent; margin-bottom: 22px;"
+        )
+        v.addWidget(sf_lbl)
+
+        links = QHBoxLayout()
+        links.setSpacing(20)
+        links.addStretch()
+        gh_lbl = QLabel(
+            f'<a href="{_GITHUB_URL}/m4bmaker" style="color: #c45a2d; text-decoration: none;">GitHub</a>'
+        )
+        gh_lbl.setOpenExternalLinks(True)
+        gh_lbl.setStyleSheet("font-size: 13px; background: transparent;")
+        links.addWidget(gh_lbl)
+        ko_lbl = QLabel(
+            f'<a href="{_DONATE_URL}" style="color: #c45a2d; text-decoration: none;">♥ Support</a>'
+        )
+        ko_lbl.setOpenExternalLinks(True)
+        ko_lbl.setStyleSheet("font-size: 13px; background: transparent;")
+        links.addWidget(ko_lbl)
+        links.addStretch()
+        v.addLayout(links)
+        v.addSpacing(16)
+
+        _privacy_url = "https://m4bookmaker.sageframe.net/help.html#privacy"
+        privacy_lbl = QLabel(
+            "Checks GitHub for updates on startup "
+            "(disable: Help → Check for Updates on Startup). "
+            f'<a href="{_privacy_url}" style="color: #7a7a7a;">Privacy info</a>'
+        )
+        privacy_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        privacy_lbl.setOpenExternalLinks(True)
+        privacy_lbl.setStyleSheet(
+            "font-size: 11px; color: #9a9a9a; background: transparent;"
+        )
+        privacy_lbl.setWordWrap(True)
+        v.addWidget(privacy_lbl)
+        v.addSpacing(10)
+
+        ok_btn = QPushButton("OK")
+        ok_btn.setFixedWidth(88)
+        ok_btn.clicked.connect(dlg.accept)
+        ok_row = QHBoxLayout()
+        ok_row.addStretch()
+        ok_row.addWidget(ok_btn)
+        ok_row.addStretch()
+        v.addLayout(ok_row)
+
+        dlg.exec()
+
+    # ── UI construction ───────────────────────────────────────────────────────
+
+    def _build_ui(self) -> None:
+        root = QWidget()
+        self.setCentralWidget(root)
+
+        outer = QVBoxLayout(root)
+        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setSpacing(10)
+
+        # Update notification bar — hidden until UpdateChecker signals.
+        self._update_bar = self._build_update_bar()
+        outer.addWidget(self._update_bar)
+
+        outer.addWidget(self._build_folder_section())
+        outer.addWidget(self._build_tabs(), stretch=1)
+        outer.addLayout(self._build_bottom_bar())
+
+        self._update_controls()
+
+    def _build_update_bar(self) -> QFrame:
+        """Build the dismissible info bar shown when a new version is available."""
+        bar = QFrame()
+        bar.setObjectName("updateBar")
+        bar.setStyleSheet(
+            "QFrame#updateBar {"
+            "  background: #2563eb;"
+            "  border-radius: 6px;"
+            "  padding: 0px;"
+            "}"
+        )
+        bar.setFixedHeight(36)
+        bar.hide()
+
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(12, 0, 8, 0)
+        row.setSpacing(8)
+
+        self._update_label = QLabel()
+        self._update_label.setStyleSheet("color: white; font-size: 13px;")
+        row.addWidget(self._update_label, stretch=1)
+
+        download_btn = QPushButton("Download")
+        download_btn.setStyleSheet(
+            "QPushButton {"
+            "  color: white; background: transparent;"
+            "  border: 1px solid white; border-radius: 4px;"
+            "  padding: 2px 8px; font-size: 12px;"
+            "}"
+            "QPushButton:hover { background: rgba(255,255,255,0.15); }"
+        )
+        download_btn.clicked.connect(
+            lambda: QDesktopServices.openUrl(QUrl(_RELEASES_URL))
+        )
+        row.addWidget(download_btn)
+
+        dismiss_btn = QPushButton("×")
+        dismiss_btn.setFixedSize(24, 24)
+        dismiss_btn.setStyleSheet(
+            "QPushButton {"
+            "  color: white; background: transparent; border: none; font-size: 16px;"
+            "}"
+            "QPushButton:hover {"
+            " background: rgba(255,255,255,0.15); border-radius: 4px; }"
+        )
+        dismiss_btn.clicked.connect(bar.hide)
+        row.addWidget(dismiss_btn)
+
+        return bar
+
+    def _show_update_bar(self, new_version: str) -> None:
+        """Slot called by UpdateChecker when a newer release is available."""
+        self._update_label.setText(f"m4Bookmaker {new_version} is available.")
+        self._update_bar.show()
+
+    # ── Folder section ────────────────────────────────────────────────────────
+
+    def _build_folder_section(self) -> QGroupBox:
+        box = QGroupBox("Source")
+        layout = QVBoxLayout(box)
+        layout.setContentsMargins(12, 20, 12, 8)
+        layout.setSpacing(4)
+
+        self._folder_zone = FolderDropZone(accept_m4b=True)
+        self._folder_zone.folder_changed.connect(self._on_folder_changed)
+        self._folder_zone.folder_cleared.connect(self._on_folder_cleared)
+        layout.addWidget(self._folder_zone)
+
+        badge_row = QHBoxLayout()
+        badge_row.setContentsMargins(4, 0, 4, 0)
+        badge_row.addStretch()
+        self._mode_badge = QLabel("Build")
+        self._mode_badge.setObjectName("modeBadge")
+        badge_row.addWidget(self._mode_badge)
+        layout.addLayout(badge_row)
+
+        return box
+
+    # ── Tab widget ────────────────────────────────────────────────────────────
+
+    def _build_tabs(self) -> QTabWidget:
+        self._tabs = QTabWidget()
+        self._tabs.addTab(self._build_build_tab(), "Build")  # _MODE_TAB_INDEX
+        self._tabs.addTab(self._build_chapters_tab(), "Chapters")
+        return self._tabs
+
+    # ── Build tab ─────────────────────────────────────────────────────────────
+
+    def _build_build_tab(self) -> QWidget:
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        layout.addWidget(self._build_meta_section())
+        layout.addSpacing(8)
+        layout.addWidget(self._build_settings_tabs())
+        layout.addStretch()
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(inner)
+        return scroll
+
+    def _build_settings_tabs(self) -> QTabWidget:
+        """Compact horizontal tab strip for Analysis / Encoding / Output."""
+        self._settings_tabs = QTabWidget()
+        self._settings_tabs.addTab(self._build_analysis_tab_content(), "Analysis")
+        self._settings_tabs.addTab(self._build_encoding_tab_content(), "Encoding")
+        self._settings_tabs.addTab(self._build_output_tab_content(), "Output")
+        self._settings_tabs.setCurrentIndex(1)  # start on Encoding
+        return self._settings_tabs
+
+    def _build_analysis_tab_content(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(12, 12, 12, 12)
+        self._analysis_label = QLabel("No analysis yet.")
+        self._analysis_label.setWordWrap(True)
+        layout.addWidget(self._analysis_label)
+        layout.addStretch()
+        return w
+
+    def _build_analysis_section(self) -> None:  # kept for compat; unused
+        pass
+
+    def _build_meta_section(self) -> QGroupBox:
+        box = QGroupBox("Audiobook")
+        hbox = QHBoxLayout(box)
+        hbox.setContentsMargins(12, 20, 12, 12)
+        hbox.setSpacing(16)
+
+        # Left — cover thumbnail
+        self._cover_widget = CoverWidget()
+        self._cover_widget.cover_changed.connect(self._on_cover_changed)
+        hbox.addWidget(self._cover_widget, 0, Qt.AlignmentFlag.AlignTop)
+
+        # Right — metadata (QGridLayout forces left-aligned labels on macOS)
+        grid = QGridLayout()
+        grid.setVerticalSpacing(8)
+        grid.setHorizontalSpacing(10)
+        grid.setColumnStretch(1, 1)
+
+        self._title_edit = QLineEdit()
+        self._author_edit = QLineEdit()
+        self._narrator_edit = QLineEdit()
+        self._genre_edit = QLineEdit()
+
+        for i, (label_text, widget) in enumerate(
+            (
+                ("Title", self._title_edit),
+                ("Author", self._author_edit),
+                ("Narrator", self._narrator_edit),
+                ("Genre", self._genre_edit),
+            )
+        ):
+            lbl = _muted_label(label_text)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+            grid.addWidget(lbl, i, 0)
+            grid.addWidget(widget, i, 1)
+            widget.textChanged.connect(self._update_output_preview)
+
+        hbox.addLayout(grid, stretch=1)
+        return box
+
+    def _build_encoding_tab_content(self) -> QWidget:
+        w = QWidget()
+        layout = QHBoxLayout(w)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(14)
+
+        layout.addWidget(_muted_label("Bitrate"))
+
+        self._bitrate_combo = QComboBox()
+        self._bitrate_combo.addItems(_BITRATES)
+        self._bitrate_combo.setCurrentText(_DEFAULT_BITRATE)
+        self._bitrate_combo.setFixedWidth(90)
+        layout.addWidget(self._bitrate_combo)
+
+        layout.addSpacing(10)
+        layout.addWidget(_muted_label("Channels"))
+
+        self._mono_radio = QRadioButton("Mono")
+        self._stereo_radio = QRadioButton("Stereo")
+        self._mono_radio.setChecked(True)
+        chan_group = QButtonGroup(self)
+        chan_group.addButton(self._mono_radio)
+        chan_group.addButton(self._stereo_radio)
+        layout.addWidget(self._mono_radio)
+        layout.addWidget(self._stereo_radio)
+        layout.addStretch()
+        return w
+
+    def _build_encoding_section(self) -> None:  # kept for compat; unused
+        pass
+
+    def _build_output_tab_content(self) -> QWidget:
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        self._out_group = QButtonGroup(self)
+
+        self._out_nested = QRadioButton()  # label set dynamically
+        self._out_flat = QRadioButton()  # label set dynamically
+        self._out_custom = QRadioButton("Custom")
+        self._out_nested.setChecked(True)
+        self._out_group.addButton(self._out_nested, 0)
+        self._out_group.addButton(self._out_flat, 1)
+        self._out_group.addButton(self._out_custom, 2)
+
+        layout.addWidget(self._out_nested)
+        layout.addWidget(self._out_flat)
+
+        custom_row = QHBoxLayout()
+        custom_row.setSpacing(6)
+        custom_row.addWidget(self._out_custom)
+        self._custom_path_edit = QLineEdit()
+        self._custom_path_edit.setPlaceholderText("Choose output path…")
+        self._custom_path_edit.setEnabled(False)
+        self._custom_browse_btn = QPushButton("Browse")
+        self._custom_browse_btn.setFixedWidth(72)
+        self._custom_browse_btn.setEnabled(False)
+        self._custom_browse_btn.clicked.connect(self._browse_custom_output)
+        custom_row.addWidget(self._custom_path_edit)
+        custom_row.addWidget(self._custom_browse_btn)
+        layout.addLayout(custom_row)
+
+        self._out_custom.toggled.connect(self._custom_path_edit.setEnabled)
+        self._out_custom.toggled.connect(self._custom_browse_btn.setEnabled)
+        self._out_group.buttonClicked.connect(lambda _: self._update_output_preview())
+
+        self._update_output_preview()
+        return w
+
+    def _build_output_section(self) -> None:  # kept for compat; unused
+        pass
+
+    # ── Chapters tab ──────────────────────────────────────────────────────────
+
+    def _build_chapters_tab(self) -> QWidget:
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        self._chapter_table = ChapterTable()
+        self._chapter_table.currentCellChanged.connect(self._on_chapter_selected)
+        self._chapter_table.itemSelectionChanged.connect(self._update_chapter_buttons)
+        layout.addWidget(self._chapter_table, stretch=1)
+
+        # Move / Remove toolbar (build mode only)
+        ch_tools_row = QHBoxLayout()
+        ch_tools_row.setContentsMargins(0, 0, 0, 0)
+        ch_tools_row.setSpacing(4)
+        self._ch_up_btn = QPushButton("↑")
+        self._ch_up_btn.setFixedWidth(32)
+        self._ch_up_btn.setToolTip("Move chapter up")
+        self._ch_up_btn.setEnabled(False)
+        self._ch_up_btn.clicked.connect(self._on_chapter_move_up)
+        self._ch_down_btn = QPushButton("↓")
+        self._ch_down_btn.setFixedWidth(32)
+        self._ch_down_btn.setToolTip("Move chapter down")
+        self._ch_down_btn.setEnabled(False)
+        self._ch_down_btn.clicked.connect(self._on_chapter_move_down)
+        ch_tools_row.addWidget(self._ch_up_btn)
+        ch_tools_row.addWidget(self._ch_down_btn)
+        ch_tools_row.addStretch()
+        self._insert_time_btn = QPushButton("\u21a6 Insert Time")
+        self._insert_time_btn.setToolTip(
+            "Set selected chapter start time to current playback position"
+        )
+        self._insert_time_btn.setEnabled(False)
+        self._insert_time_btn.clicked.connect(self._on_insert_time)
+        ch_tools_row.addWidget(self._insert_time_btn)
+        self._ch_add_btn = QPushButton("Add Chapter")
+        self._ch_add_btn.setToolTip(
+            "Add a new chapter marker at the current playback position\n"
+            "(edit mode only — scrub the player, then click)"
+        )
+        self._ch_add_btn.setEnabled(False)
+        self._ch_add_btn.setVisible(False)
+        self._ch_add_btn.clicked.connect(self._on_add_chapter)
+        ch_tools_row.addWidget(self._ch_add_btn)
+        self._ch_merge_btn = QPushButton("Merge")
+        self._ch_merge_btn.setToolTip(
+            "Merge selected consecutive rows into one chapter —\n"
+            "all audio still encodes, just fewer chapter markers.\n"
+            "Shift-click to select a range."
+        )
+        self._ch_merge_btn.setEnabled(False)
+        self._ch_merge_btn.clicked.connect(self._on_chapter_merge)
+        ch_tools_row.addWidget(self._ch_merge_btn)
+        self._ch_remove_btn = QPushButton("Remove File")
+        self._ch_remove_btn.setToolTip(
+            "Remove selected file from book (build mode only)"
+        )
+        self._ch_remove_btn.setEnabled(False)
+        self._ch_remove_btn.clicked.connect(self._on_chapter_remove)
+        ch_tools_row.addWidget(self._ch_remove_btn)
+        layout.addLayout(ch_tools_row)
+
+        hint = QLabel(
+            "Double-click or press a key to edit a title  ·  "
+            "Enter = next row  ·  Shift+Enter = previous row  ·  "
+            "Shift-click to select a range for Merge  ·  Right-click for bulk tools"
+        )
+        hint.setStyleSheet("color: #7a7a7a; font-size: 11px;")
+        hint.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        layout.addWidget(hint)
+
+        # Player row — prev/next injected directly into the player's button row
+        self._player = AudioPlayerWidget()
+        self._ch_prev_btn = QPushButton("⏮")
+        self._ch_prev_btn.setFixedWidth(36)
+        self._ch_prev_btn.setToolTip("Previous chapter")
+        self._ch_prev_btn.setEnabled(False)
+        self._ch_prev_btn.clicked.connect(self._on_chapter_prev)
+        self._ch_next_btn = QPushButton("⏭")
+        self._ch_next_btn.setFixedWidth(36)
+        self._ch_next_btn.setToolTip("Next chapter")
+        self._ch_next_btn.setEnabled(False)
+        self._ch_next_btn.clicked.connect(self._on_chapter_next)
+        # Insert prev/next before play button in the player's row layout
+        player_row = self._player.layout().itemAt(0).layout()
+        player_row.insertWidget(0, self._ch_next_btn)
+        player_row.insertWidget(0, self._ch_prev_btn)
+        layout.addWidget(self._player)
+        return tab
+
+    # ── Bottom bar (progress + convert) ──────────────────────────────────────
+
+    def _build_bottom_bar(self) -> QVBoxLayout:
+        layout = QVBoxLayout()
+        layout.setSpacing(6)
+
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setTextVisible(False)
+        self._progress_bar.setVisible(False)
+        layout.addWidget(self._progress_bar)
+
+        self._status_label = QLabel("")
+        self._status_label.setObjectName("statusLabel")
+        self._status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._status_label.setVisible(False)
+        layout.addWidget(self._status_label)
+
+        btn_row = QHBoxLayout()
+        btn_row.setSpacing(8)
+
+        # Dark mode toggle (far left)
+        self._dark_btn = QPushButton()
+        self._dark_btn.setObjectName("darkModeBtn")
+        self._dark_btn.setFixedSize(28, 28)
+        self._dark_btn.setIcon(dark_mode_icon(self._dark_mode))
+        self._dark_btn.setIconSize(QSize(16, 16))
+        self._dark_btn.setToolTip("Toggle dark mode")
+        self._dark_btn.clicked.connect(self._on_dark_mode_btn)
+        btn_row.addWidget(self._dark_btn)
+
+        self._convert_btn = QPushButton("Convert to M4B")
+        self._convert_btn.setObjectName("convertBtn")
+        self._convert_btn.setFixedHeight(44)
+        self._convert_btn.setFixedWidth(210)
+        self._convert_btn.clicked.connect(self._on_convert)
+
+        self._add_to_queue_btn = QPushButton("+ Queue")
+        self._add_to_queue_btn.setObjectName("addToQueueBtn")
+        self._add_to_queue_btn.setFixedHeight(44)
+        self._add_to_queue_btn.setToolTip(
+            "Add this book to the encode queue (⌘⇧Q to open queue)"
+        )
+        self._add_to_queue_btn.clicked.connect(self._on_add_to_queue)
+
+        self._split_btn = QPushButton("✂  Split into Chapters")
+        self._split_btn.setObjectName("splitBtn")
+        self._split_btn.setFixedHeight(44)
+        self._split_btn.setToolTip("Export each chapter as a separate audio file")
+        self._split_btn.clicked.connect(self._on_split_chapters)
+        self._split_btn.setVisible(False)
+
+        btn_row.addStretch()
+        btn_row.addWidget(self._split_btn)
+        btn_row.addWidget(self._add_to_queue_btn)
+        btn_row.addWidget(self._convert_btn)
+        btn_row.addStretch()
+
+        sf_icon_lbl = QLabel()
+        sf_icon_lbl.setPixmap(_sageframe_pixmap(14))
+        sf_icon_lbl.setStyleSheet("background: transparent;")
+        btn_row.addWidget(sf_icon_lbl)
+        sf_lbl = QLabel(
+            f'<a href="{_SAGEFRAME_URL}" style="color: #7a7a7a; text-decoration: none;">'
+            "Sageframe</a>"
+        )
+        sf_lbl.setOpenExternalLinks(True)
+        sf_lbl.setStyleSheet("font-size: 11px; background: transparent;")
+        btn_row.addWidget(sf_lbl)
+
+        donate_lbl = QLabel(
+            f'<a href="{_DONATE_URL}" style="color: #c45a2d; text-decoration: none;">'
+            "♥ Support</a>"
+        )
+        donate_lbl.setOpenExternalLinks(True)
+        donate_lbl.setStyleSheet("font-size: 11px; background: transparent;")
+        donate_lbl.setToolTip("Support m4Bookmaker development")
+        btn_row.addWidget(donate_lbl)
+
+        layout.addLayout(btn_row)
+
+        return layout
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    # ── Close-while-running guard (Feature 5) ────────────────────────────────
+
+    def _is_busy(self) -> bool:
+        return (
+            (self._convert_worker is not None and self._convert_worker.isRunning())
+            or (self._save_worker is not None and self._save_worker.isRunning())
+            or (self._split_worker is not None and self._split_worker.isRunning())
+        )
+
+    def _live_workers(self) -> list[QThread]:
+        """All owned QThreads that are currently running."""
+        candidates = [
+            self._convert_worker,
+            self._save_worker,
+            self._split_worker,
+            self._load_worker,
+            self._m4b_load_worker,
+            self._preflight_worker,
+            getattr(self, "_update_checker", None),
+        ]
+        candidates.extend(self._stale_load_workers)
+        return [w for w in candidates if w is not None and w.isRunning()]
+
+    def closeEvent(self, event: QCloseEvent) -> None:  # type: ignore[override]
+        import logging
+
+        _log = logging.getLogger(__name__)
+        queue_busy = self._queue_manager.is_running
+        if self._is_busy() or queue_busy:
+            msg = (
+                "The encode queue is running.\nAre you sure you want to quit?"
+                if queue_busy
+                else "A conversion is in progress.\nAre you sure you want to quit?"
+            )
+            reply = QMessageBox.question(
+                self,
+                "Cancel Conversion?",
+                msg,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                event.ignore()
+                return
+
+        # F10: request cancellation on everything that has a cancel event, then
+        # wait (bounded) for every live worker.  ffmpeg children die when their
+        # cancel events fire; a wait that times out is logged, not fatal.
+        self._queue_manager.stop()
+        for cancellable in (self._convert_worker, self._split_worker):
+            if cancellable is not None and cancellable.isRunning():
+                cancellable.request_cancel()
+        qm_worker = self._queue_manager._worker
+        if qm_worker is not None and qm_worker.isRunning():
+            qm_worker.request_cancel()
+
+        workers: list[QThread] = self._live_workers()
+        if qm_worker is not None and qm_worker.isRunning():
+            workers.append(qm_worker)
+        for worker in workers:
+            if not worker.wait(5000):
+                _log.warning(
+                    "Worker %s did not finish within timeout during shutdown; "
+                    "proceeding.",
+                    type(worker).__name__,
+                )
+
+        # L6: close the queue window explicitly so it does not linger.
+        if self._queue_window is not None:
+            self._queue_window.close()
+        if self._catalog_window is not None:
+            self._catalog_window.close()
+        if self._model_manager_window is not None:
+            self._model_manager_window.close()
+        if self._wizard_window is not None:
+            self._wizard_window.close()
+
+        super().closeEvent(event)
+
+    def _update_controls(self) -> None:
+        has_book = self._book is not None
+        busy = self._convert_worker is not None and self._convert_worker.isRunning()
+        save_busy = self._save_worker is not None and self._save_worker.isRunning()
+        split_busy = self._split_worker is not None and self._split_worker.isRunning()
+        queue_busy = self._queue_manager.is_running
+        # H6: a direct convert/save/split and the batch queue must never run the
+        # same book to the same output path concurrently.  Each side disables the
+        # other while it is active.
+        direct_busy = busy or save_busy or split_busy
+
+        # While a direct convert is running, the Convert button is a live Cancel
+        # control — leave it enabled and labelled by _on_convert wiring.
+        if self._convert_running:
+            self._convert_btn.setEnabled(True)
+        else:
+            self._convert_btn.setEnabled(
+                has_book and not direct_busy and not queue_busy
+            )
+        self._add_to_queue_btn.setEnabled(
+            has_book and self._mode == "build" and not direct_busy
+        )
+        self._split_btn.setVisible(self._mode == "edit")
+        self._split_btn.setEnabled(
+            has_book and not split_busy and not save_busy and not queue_busy
+        )
+        self._tabs.setTabEnabled(1, has_book)
+        if self._convert_running:
+            # Keep the Cancel label the running convert set.
+            self._build_encoding_section_visibility(True)
+        elif self._mode == "edit":
+            self._convert_btn.setText("Save Chapter Edits")
+            self._build_encoding_section_visibility(False)
+        else:
+            self._convert_btn.setText("Convert to M4B")
+            self._build_encoding_section_visibility(True)
+        self._update_chapter_buttons()
+
+    def _build_encoding_section_visibility(self, visible: bool) -> None:
+        self._settings_tabs.setVisible(visible)
+
+    def _update_output_preview(self) -> None:
+        author = self._author_edit.text().strip() or "Author"
+        title = self._title_edit.text().strip() or "Title"
+        self._out_nested.setText(f"…/{author}/{title}/{title}.m4b")
+        self._out_flat.setText(f"…/{author} – {title}.m4b")
+
+    def _computed_output_path(self) -> Optional[Path]:
+        folder = self._folder_zone.path()
+        # M9: tag-prefilled title/author text can contain path separators,
+        # "..", or Windows-reserved characters — sanitize before they become
+        # filename/directory components.
+        author = (
+            sanitize_filename_component(self._author_edit.text().strip())
+            if self._author_edit.text().strip()
+            else "Unknown Author"
+        )
+        title = (
+            sanitize_filename_component(self._title_edit.text().strip())
+            if self._title_edit.text().strip()
+            else "Unknown Title"
+        )
+        base = folder.parent if folder else Path.home()
+
+        choice = self._out_group.checkedId()
+        if choice == 0:
+            return base / author / title / f"{title}.m4b"
+        if choice == 1:
+            return base / f"{author} – {title}.m4b"
+        # choice == 2 (custom)
+        t = self._custom_path_edit.text().strip()
+        return Path(t) if t else None
+
+    def _apply_book_to_ui(self, book: Book) -> None:
+        self._book = book
+        self._title_edit.setText(book.metadata.title)
+        self._author_edit.setText(book.metadata.author)
+        self._narrator_edit.setText(book.metadata.narrator)
+        self._genre_edit.setText(book.metadata.genre)
+        self._cover_widget.set_cover(book.cover)
+        self._chapter_table.populate(book.chapters)
+        self._chapter_durations = self._derive_durations(book)
+        self._chapters_merged = False
+        self._update_output_preview()
+        self._update_controls()
+        self._set_status(
+            f"Loaded {len(book.files)} file(s) · {len(book.chapters)} chapter(s)."
+        )
+
+    def _collect_book_edits(self) -> Book:
+        """Deep-copy the book and apply current UI field values.
+
+        Applies both title and start-time overrides from the chapter table
+        (mirrors ``_gather_chapters_from_table``) so a user who edits a
+        chapter's time and then Converts or Adds to Queue does not silently
+        lose that edit (M8).
+        """
+        assert self._book is not None
+        book = deepcopy(self._book)
+        book.metadata.title = self._title_edit.text().strip()
+        book.metadata.author = self._author_edit.text().strip()
+        book.metadata.narrator = self._narrator_edit.text().strip()
+        book.metadata.genre = self._genre_edit.text().strip()
+        book.cover = self._cover_widget.cover_path()
+        times_ms = self._chapter_table.times_ms()
+        for i, (ch, new_title) in enumerate(
+            zip(book.chapters, self._chapter_table.titles())
+        ):
+            ch.title = new_title
+            ms = times_ms[i] if i < len(times_ms) else None
+            if ms is not None:
+                ch.start_time = ms / 1000.0
+        return book
+
+    # ── Slots ─────────────────────────────────────────────────────────────────
+
+    def _on_split_chapters(self) -> None:
+        if self._book is None:
+            return
+        source = self._folder_zone.path()
+        if source is None:
+            return
+        default_dir = source.parent / (source.stem + " - Chapters")
+        out_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Choose output folder for chapter files",
+            str(default_dir.parent),
+        )
+        if not out_dir:
+            return
+        chapters = self._gather_chapters_from_table()
+        self._progress_bar.setVisible(True)
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._set_status("Splitting into chapters…")
+        self._split_btn.setEnabled(False)
+        self._split_worker = SplitWorker(
+            source=source,
+            chapters=chapters,
+            total_duration=self._m4b_total_duration,
+            output_dir=Path(out_dir),
+        )
+        self._split_worker.progress.connect(self._on_progress)
+        self._split_worker.result_ready.connect(self._on_split_finished)
+        self._split_worker.cancelled.connect(self._on_split_cancelled)
+        self._split_worker.error.connect(self._on_split_error)
+        self._split_worker.start()
+
+    def _on_split_finished(self, out_dir: object) -> None:
+        self._progress_bar.setVisible(False)
+        self._update_controls()
+        self._set_status(f"Split complete → {Path(out_dir).name}/")
+
+    def _on_split_cancelled(self) -> None:
+        self._progress_bar.setVisible(False)
+        self._update_controls()
+        self._set_status("Cancelled.")
+
+    def _on_split_error(self, msg: str) -> None:
+        self._progress_bar.setVisible(False)
+        self._update_controls()
+        self._set_status("Split failed.")
+        if self.isVisible():
+            QMessageBox.critical(self, "Split Error", msg)
+
+    def _collect_job(self):
+        """Snapshot current GUI state as a Job for the queue."""
+        book = self._collect_book_edits()
+        out = self._computed_output_path()
+        if out is None:
+            return None
+        return job_from_book(
+            book,
+            out,
+            bitrate=self._bitrate_combo.currentText(),
+            stereo=self._stereo_radio.isChecked(),
+            sample_rate=self._preflight_sample_rate,
+        )
+
+    def _on_add_to_queue(self) -> None:
+        if self._book is None:
+            return
+        job = self._collect_job()
+        if job is None:
+            return
+        self._queue_manager.add(job)
+        self._show_queue_window()
+        self._set_status(
+            f'Added "{job.title}" to queue  ({len(self._queue_manager.jobs)} job(s))'
+        )
+
+    def _show_queue_window(self) -> None:
+        if self._queue_window is None:
+            # L6: parent to the main window so it does not outlive it as a
+            # detached top-level keeping the app alive with stale rows.
+            self._queue_window = QueueWindow(self._queue_manager, parent=self)
+            self._queue_window.apply_stylesheet(self._dark_mode)
+        self._queue_window.show()
+        self._queue_window.raise_()
+        self._queue_window.activateWindow()
+
+    def _show_catalog_window(self) -> None:
+        if self._catalog_window is None:
+            # Loaded once per window lifetime, not re-read on every open —
+            # the window is the sole in-process owner of this CatalogService
+            # instance and saves after every mutation, so there is no other
+            # writer to reconcile with while it stays open.
+            service = load_catalog(on_recovery=self._warn_catalog_recovered)
+            self._catalog_window = CatalogWindow(service, parent=self)
+            self._catalog_window.apply_stylesheet(self._dark_mode)
+        self._catalog_window.show()
+        self._catalog_window.raise_()
+        self._catalog_window.activateWindow()
+
+    def _warn_catalog_recovered(self, backup_path: Path) -> None:
+        # Fires only in the one real case a User needs to know about:
+        # the catalog file existed but couldn't be read, so a fresh one
+        # is starting in its place. Silently doing this with nothing but
+        # a log line nobody sees is exactly what once let a real,
+        # hand-curated catalog vanish without anyone noticing until much
+        # later — see catalog_store.load_catalog()'s own docstring.
+        QMessageBox.warning(
+            self,
+            "Word List Could Not Be Read",
+            "Your word list file couldn't be read, so a fresh one has "
+            "been started in its place.\n\n"
+            "The unreadable file was not deleted — a copy was saved to:\n"
+            f"{backup_path}\n\n"
+            "If this was your real word list, that file may still be "
+            "recoverable; otherwise you'll need to rebuild your "
+            "categories, words, and profiles.",
+        )
+
+    def _show_model_manager_window(self) -> None:
+        if self._model_manager_window is None:
+            self._model_manager_window = ModelManagerWindow(parent=self)
+            self._model_manager_window.apply_stylesheet(self._dark_mode)
+        self._model_manager_window.show()
+        self._model_manager_window.raise_()
+        self._model_manager_window.activateWindow()
+
+    def _show_language_filter_about(self) -> None:
+        dlg = AboutLanguageFilterDialog(parent=self)
+        dlg.apply_stylesheet(self._dark_mode)
+        dlg.exec()
+
+    def _show_settings_window(self) -> None:
+        if self._settings_window is None:
+            self._settings_window = SettingsWindow(parent=self)
+            self._settings_window.apply_stylesheet(self._dark_mode)
+        self._settings_window.show()
+        self._settings_window.raise_()
+        self._settings_window.activateWindow()
+
+    def _show_wizard_window(self) -> None:
+        if self._wizard_window is None:
+            self._wizard_window = WizardWindow(parent=self)
+            self._wizard_window.apply_stylesheet(self._dark_mode)
+            self._wizard_window.open_settings_requested.connect(
+                self._show_settings_window
+            )
+        self._wizard_window.show()
+        self._wizard_window.raise_()
+        self._wizard_window.activateWindow()
+
+    def _on_folder_changed(self, p: Path) -> None:
+        self._book = None
+        self._preflight_sample_rate = None  # M1: reset on any folder change
+        self._analysis_label.setText("No analysis yet.")
+        self._player.stop()
+        self._update_controls()
+        self._set_status("Scanning…")
+        self._progress_bar.setVisible(True)
+        self._progress_bar.setRange(0, 0)  # indeterminate spinner
+
+        # Supersede any in-flight load (H5): bump the generation so late results
+        # from the previous scan are ignored, and park the old worker so its
+        # QThread is not destroyed while still running.
+        self._load_generation += 1
+        generation = self._load_generation
+        self._retire_load_worker(self._load_worker)
+        self._retire_load_worker(self._m4b_load_worker)
+        self._load_worker = None
+        self._m4b_load_worker = None
+
+        # Worker signals are connected as BOUND METHODS, never lambdas: Qt
+        # tracks the receiver of a bound-method connection and both disconnects
+        # it and discards queued events when the window is destroyed. A lambda
+        # has no receiver context, so a late signal from a worker thread would
+        # invoke a slot on a destroyed window — a fatal error under PySide6.
+        # The scan generation therefore rides on the worker object (read back
+        # via sender()), not in a closure.
+        if p.is_dir():
+            self._set_mode("build")
+            self._load_worker = LoadWorker(p)
+            self._load_worker.generation = generation
+            self._load_worker.result_ready.connect(self._on_load_finished)
+            self._load_worker.error.connect(self._on_load_error)
+            self._load_worker.start()
+        else:
+            self._set_mode("edit")
+            self._m4b_load_worker = LoadM4bWorker(p)
+            self._m4b_load_worker.generation = generation
+            self._m4b_load_worker.result_ready.connect(self._on_m4b_loaded)
+            self._m4b_load_worker.error.connect(self._on_load_error)
+            self._m4b_load_worker.start()
+
+    def _set_mode(self, mode: str) -> None:
+        """Switch between build and edit mode, moving every label with it.
+
+        The badge and the first tab both name the mode. They used to be set
+        independently, and the tab was simply never updated — opening an M4B
+        left it reading "Build" while the badge beside it said "Edit" (#13).
+        Routing both through here means the next mode-dependent label cannot
+        drift the same way.
+        """
+        self._mode = mode
+        label = "Edit" if mode == "edit" else "Build"
+        self._mode_badge.setText(label)
+        self._tabs.setTabText(_MODE_TAB_INDEX, label)
+
+    def _sender_generation(self, generation: int) -> int:
+        """Resolve the scan generation for a load-worker slot.
+
+        Slots receive the default ``-1`` when invoked through a Qt signal
+        (bound-method connections can't carry extra arguments) and read the
+        real generation off the emitting worker; tests pass it explicitly.
+        """
+        if generation != -1:
+            return generation
+        return int(getattr(self.sender(), "generation", -1))
+
+    def _retire_load_worker(self, worker: Optional[QThread]) -> None:
+        """Disconnect a superseded load worker and keep it alive until it exits.
+
+        Its signals are already generation-guarded, but we also drop the Qt
+        connections and park the object so its native ``finished`` can clean it
+        up without the QThread being garbage-collected mid-run.
+        """
+        if worker is None:
+            return
+        try:
+            worker.result_ready.disconnect()  # type: ignore[attr-defined]
+        except (RuntimeError, TypeError):
+            pass
+        try:
+            worker.error.disconnect()  # type: ignore[attr-defined]
+        except (RuntimeError, TypeError):
+            pass
+        if worker.isRunning():
+            self._stale_load_workers.append(worker)
+            worker.finished.connect(self._prune_stale_load_worker)
+
+    def _prune_stale_load_worker(self) -> None:
+        """Drop the finished worker (``sender()``) from the parking list."""
+        worker = self.sender()
+        if worker in self._stale_load_workers:
+            self._stale_load_workers.remove(worker)
+        if isinstance(worker, QThread):
+            worker.deleteLater()
+
+    def _on_folder_cleared(self) -> None:
+        self._preflight_sample_rate = None
+        self._book = None
+        self._set_mode("build")
+        self._analysis_label.setText("No analysis yet.")
+        self._chapter_table.populate([])
+        self._chapter_durations = []
+        self._player.stop()
+        self._progress_bar.setVisible(False)
+        self._set_status("")
+        self._update_controls()
+
+    def _on_load_finished(self, book: Book, generation: int = -1) -> None:
+        # H5: ignore results from a superseded scan.  ``generation == -1``
+        # (signal invocation or a direct test call) resolves via sender().
+        generation = self._sender_generation(generation)
+        if generation != -1 and generation != self._load_generation:
+            return
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setVisible(False)
+        self._apply_book_to_ui(book)
+        # Start preflight analysis in the background
+        self._preflight_worker = PreflightWorker(book.files)
+        self._preflight_worker.result_ready.connect(self._on_preflight_finished)
+        self._preflight_worker.error.connect(self._on_preflight_error)
+        self._preflight_worker.start()
+
+    def _on_m4b_loaded(self, payload: object, generation: int = -1) -> None:
+        # H5: ignore results from a superseded scan (see _sender_generation).
+        generation = self._sender_generation(generation)
+        if generation != -1 and generation != self._load_generation:
+            return
+        # L8: validate the payload shape before unpacking.
+        if not (isinstance(payload, tuple) and len(payload) == 2):
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "LoadM4bWorker returned an unexpected payload: %r", payload
+            )
+            return
+        book, total_duration = payload
+        if not isinstance(book, Book) or not isinstance(total_duration, (int, float)):
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "LoadM4bWorker payload has wrong types: %r", payload
+            )
+            return
+        self._m4b_total_duration = float(total_duration)
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setVisible(False)
+        self._apply_book_to_ui(book)
+
+    def _on_preflight_error(self, msg: str) -> None:
+        """M2: surface preflight probe failures in the Analysis panel."""
+        self._analysis_label.setText(f"Analysis unavailable: {msg}")
+
+    def _on_preflight_finished(self, analysis: object) -> None:
+        summary = format_preflight_summary(analysis)  # type: ignore[arg-type]
+        self._analysis_label.setText(summary)
+        self._settings_tabs.setCurrentIndex(0)  # switch to Analysis tab
+        # Auto-configure encoding from detected audio properties
+        a = analysis  # type: ignore[assignment]
+        if len(a.sample_rates) == 1:  # type: ignore[union-attr]
+            self._preflight_sample_rate = next(iter(a.sample_rates))  # type: ignore[union-attr]
+        else:
+            self._preflight_sample_rate = None  # mixed rates — let ffmpeg decide
+        # Snap bitrate to the best AAC default given the source.
+        # For MP3/MP2 sources AAC achieves equivalent quality at ~75% of the
+        # source bitrate, so we apply that discount before snapping — e.g.
+        # 128k MP3 → 96k AAC, 112k MP3 → 96k AAC, 96k MP3 → 64k AAC.
+        # For all other codecs (AAC, FLAC, WAV …) we snap without discount.
+        if a.bit_rates:  # type: ignore[union-attr]
+            dominant_bps = a.bit_rates.most_common(1)[0][0]  # type: ignore[union-attr]
+            dominant_kbps = dominant_bps // 1000
+            dominant_codec = (
+                a.codecs.most_common(1)[0][0]  # type: ignore[union-attr]
+                if a.codecs  # type: ignore[union-attr]
+                else ""
+            )
+            if dominant_codec in ("mp3", "mp2"):
+                target_kbps = int(dominant_kbps * 0.75)
+            else:
+                target_kbps = dominant_kbps
+            _avail = [int(r.rstrip("k")) for r in _BITRATES]
+            # On a tie defer to the higher step (safer quality).
+            closest = min(_avail, key=lambda x: (abs(x - target_kbps), -x))
+            self._bitrate_combo.setCurrentText(f"{closest}k")
+        # Snap mono/stereo to match source channels
+        if len(a.channels) == 1:  # type: ignore[union-attr]
+            ch = next(iter(a.channels))  # type: ignore[union-attr]
+            if ch >= 2:
+                self._stereo_radio.setChecked(True)
+            else:
+                self._mono_radio.setChecked(True)
+
+    def _on_chapter_selected(
+        self, row: int, _col: int, _prev_row: int, _prev_col: int
+    ) -> None:
+        self._update_chapter_buttons()
+        n = self._chapter_table.rowCount()
+        if self._book is None or row < 0 or row >= len(self._book.chapters):
+            self._insert_time_btn.setEnabled(False)
+            self._ch_add_btn.setEnabled(False)
+            self._ch_prev_btn.setEnabled(False)
+            self._ch_next_btn.setEnabled(False)
+            return
+        self._insert_time_btn.setEnabled(True)
+        self._ch_add_btn.setEnabled(self._mode == "edit")
+        self._ch_prev_btn.setEnabled(row > 0)
+        self._ch_next_btn.setEnabled(row < n - 1)
+        ch = self._book.chapters[row]
+        # In edit mode the source is the single .m4b, so ch.start_time is the
+        # correct seek position within that file.  In build mode each chapter is
+        # its own source file, so we always seek to the beginning of that file.
+        if self._mode == "edit":
+            start_ms = int(ch.start_time * 1000)
+        else:
+            start_ms = 0
+        if self._mode == "edit" and self._folder_zone.path() is not None:
+            src = self._folder_zone.path()
+        else:
+            src = ch.source_file
+        if src is not None:
+            if self._player.is_playing:
+                # Already playing — seek to the new chapter without restarting
+                self._player.load(src, start_ms)
+            else:
+                # Not playing — load and position but stay paused
+                self._player.load_paused(src, start_ms)
+
+    def _on_insert_time(self) -> None:
+        """Set the selected chapter's start time to the current player position.
+
+        In edit mode the player loads the single .m4b so positions are
+        already global.  In build mode each chapter has its own source
+        file, so the player position is file-local; we add the
+        cumulative offset of that file to get the global chapter time.
+        """
+        row = self._chapter_table.currentRow()
+        if row < 0 or self._book is None:
+            return
+        ms = self._player.current_position_ms
+        if self._mode == "build" and row < len(self._book.chapters):
+            # cumulative offset of this file in the final audiobook
+            ms += int(self._book.chapters[row].start_time * 1000)
+        self._chapter_table.set_chapter_time(row, ms)
+
+    def _on_add_chapter(self) -> None:
+        """Split the selected chapter at the current playback position (edit mode only)."""
+        if self._book is None or self._mode != "edit":
+            return
+        row = self._chapter_table.currentRow()
+        if row < 0 or row >= len(self._book.chapters):
+            return
+
+        # Commit any pending title and time edits before mutating the structure.
+        self._sync_titles_from_table()
+        self._sync_times_from_table()
+
+        pos_ms = self._player.current_position_ms
+        pos_s = pos_ms / 1000.0
+
+        chapter_start = self._book.chapters[row].start_time
+        chapter_dur = (
+            self._chapter_durations[row] if row < len(self._chapter_durations) else 0.0
+        )
+        chapter_end = chapter_start + chapter_dur
+
+        # Split point must sit strictly inside this chapter.
+        if pos_s <= chapter_start or (chapter_dur > 0.0 and pos_s >= chapter_end):
+            return
+
+        dur_before = pos_s - chapter_start
+        dur_after = chapter_dur - dur_before
+
+        if dur_after <= 0.0:
+            return
+
+        # Update the duration of the chapter being split.
+        self._chapter_durations[row] = dur_before
+        self._chapter_durations.insert(row + 1, dur_after)
+
+        # New chapter inherits source file; title uses the post-split 1-based index.
+        new_ch = Chapter(
+            index=0,
+            start_time=0.0,
+            title=f"Chapter {row + 2}",
+            source_file=self._book.chapters[row].source_file,
+        )
+        self._book.chapters.insert(row + 1, new_ch)
+
+        self._reindex_chapters()
+        self._chapter_table.populate(self._book.chapters)
+        self._chapter_table.setCurrentCell(row + 1, ChapterTable.COL_TITLE)
+        self._set_status(
+            f"{len(self._book.files)} file(s) \u00b7 {len(self._book.chapters)} chapter(s)."
+        )
+
+    def _on_chapter_prev(self) -> None:
+        """Select the previous chapter row and load it in the player."""
+        row = self._chapter_table.currentRow()
+        if row > 0:
+            self._chapter_table.setCurrentCell(row - 1, ChapterTable.COL_TITLE)
+
+    def _on_chapter_next(self) -> None:
+        """Select the next chapter row and load it in the player."""
+        row = self._chapter_table.currentRow()
+        if row < self._chapter_table.rowCount() - 1:
+            self._chapter_table.setCurrentCell(row + 1, ChapterTable.COL_TITLE)
+
+    # ── Chapter file management (build mode only) ─────────────────────────────
+
+    def _derive_durations(self, book: "Book") -> list[float]:
+        """Derive per-chapter durations from start_time diffs + book.total_duration."""
+        result = []
+        for i, ch in enumerate(book.chapters):
+            if i + 1 < len(book.chapters):
+                result.append(book.chapters[i + 1].start_time - ch.start_time)
+            else:
+                result.append(max(0.0, book.total_duration - ch.start_time))
+        return result
+
+    def _reindex_chapters(self) -> None:
+        """Rebuild chapter indices and start_times from self._chapter_durations."""
+        if self._book is None:
+            return
+        cursor = 0.0
+        for i, (ch, dur) in enumerate(
+            zip(self._book.chapters, self._chapter_durations)
+        ):
+            ch.index = i + 1
+            ch.start_time = cursor
+            cursor += dur
+        self._book.total_duration = cursor
+
+    def _sync_titles_from_table(self) -> None:
+        """Write table-edited titles back into self._book.chapters before structural change."""
+        if self._book is None:
+            return
+        for i, title in enumerate(self._chapter_table.titles()):
+            if i < len(self._book.chapters):
+                self._book.chapters[i].title = title
+
+    def _sync_times_from_table(self) -> None:
+        """Apply time-column overrides (Insert Time / direct edits) to _book.chapters.
+
+        Recomputes _chapter_durations afterwards so structural operations
+        (add, remove, reorder) see up-to-date durations.  Called before any
+        mutation that reads start_time or duration data.
+        """
+        if self._book is None:
+            return
+        for i, ms in enumerate(self._chapter_table.times_ms()):
+            if ms is not None and i < len(self._book.chapters):
+                self._book.chapters[i].start_time = ms / 1000.0
+        self._chapter_durations = self._derive_durations(self._book)
+
+    def _update_chapter_buttons(self) -> None:
+        """Show/enable chapter toolbar buttons based on mode, merge, selection."""
+        if not hasattr(self, "_ch_up_btn"):
+            return
+        has_book = self._book is not None
+        in_edit = has_book and self._mode == "edit"
+        in_build = has_book and self._mode == "build"
+        # After a merge in build mode files/chapters diverge — hide file-reorder ops.
+        build_merged = in_build and self._chapters_merged
+        # Move-up/move-down reorder time slices, which is physically meaningless
+        # within a single .m4b — edit mode never shows reorder controls.
+        show_reorder = in_build and not build_merged
+        # Remove stays available in both modes; it merges the span in edit mode
+        # rather than reordering anything (see _remove_chapters_edit_mode).
+        show_remove = has_book and not build_merged
+        self._ch_up_btn.setVisible(show_reorder)
+        self._ch_down_btn.setVisible(show_reorder)
+        self._ch_remove_btn.setVisible(show_remove)
+        self._ch_merge_btn.setVisible(has_book)
+        self._ch_add_btn.setVisible(in_edit)
+        if not has_book:
+            self._ch_merge_btn.setEnabled(False)
+            return
+        # Remove button label is context-sensitive
+        selected = sorted(
+            {idx.row() for idx in self._chapter_table.selectionModel().selectedRows()}
+        )
+        sel_count = len(selected)
+        if in_edit:
+            label = (
+                f"Remove {sel_count} Chapters" if sel_count > 1 else "Remove Chapter"
+            )
+            self._ch_remove_btn.setText(label)
+            self._ch_remove_btn.setToolTip("Remove selected chapter marker(s)")
+        else:
+            label = f"Remove {sel_count} Files" if sel_count > 1 else "Remove File"
+            self._ch_remove_btn.setText(label)
+            self._ch_remove_btn.setToolTip(
+                "Remove selected file(s) from book\n"
+                "Shift-click or Ctrl-click to select multiple."
+            )
+        if show_reorder:
+            row = self._chapter_table.currentRow()
+            n = self._chapter_table.rowCount()
+            self._ch_up_btn.setEnabled(row > 0)
+            self._ch_down_btn.setEnabled(0 <= row < n - 1)
+        if show_remove:
+            n = self._chapter_table.rowCount()
+            self._ch_remove_btn.setEnabled(sel_count > 0 and sel_count < n)
+        # Enable Merge when 2+ consecutive rows are selected
+        is_consecutive = len(selected) >= 2 and selected == list(
+            range(selected[0], selected[-1] + 1)
+        )
+        self._ch_merge_btn.setEnabled(is_consecutive)
+
+    def _on_chapter_move_up(self) -> None:
+        # Reordering time slices within a single .m4b is physically
+        # meaningless (edit mode) — the toolbar hides these buttons, but
+        # guard the handler too since it may be reached via other paths.
+        if self._mode != "build":
+            return
+        row = self._chapter_table.currentRow()
+        if row <= 0 or self._book is None:
+            return
+        self._sync_titles_from_table()
+        i = row
+        self._chapter_durations[i], self._chapter_durations[i - 1] = (
+            self._chapter_durations[i - 1],
+            self._chapter_durations[i],
+        )
+        self._book.files[i], self._book.files[i - 1] = (
+            self._book.files[i - 1],
+            self._book.files[i],
+        )
+        self._book.chapters[i], self._book.chapters[i - 1] = (
+            self._book.chapters[i - 1],
+            self._book.chapters[i],
+        )
+        self._reindex_chapters()
+        self._chapter_table.populate(self._book.chapters)
+        self._chapter_table.setCurrentCell(i - 1, ChapterTable.COL_TITLE)
+
+    def _on_chapter_move_down(self) -> None:
+        if self._mode != "build":
+            return
+        if self._book is None:
+            return
+        row = self._chapter_table.currentRow()
+        n = self._chapter_table.rowCount()
+        if row < 0 or row >= n - 1:
+            return
+        self._sync_titles_from_table()
+        i = row
+        self._chapter_durations[i], self._chapter_durations[i + 1] = (
+            self._chapter_durations[i + 1],
+            self._chapter_durations[i],
+        )
+        self._book.files[i], self._book.files[i + 1] = (
+            self._book.files[i + 1],
+            self._book.files[i],
+        )
+        self._book.chapters[i], self._book.chapters[i + 1] = (
+            self._book.chapters[i + 1],
+            self._book.chapters[i],
+        )
+        self._reindex_chapters()
+        self._chapter_table.populate(self._book.chapters)
+        self._chapter_table.setCurrentCell(i + 1, ChapterTable.COL_TITLE)
+
+    def _on_chapter_remove(self) -> None:
+        if self._book is None:
+            return
+        selected = sorted(
+            {idx.row() for idx in self._chapter_table.selectionModel().selectedRows()}
+        )
+        if not selected:
+            return
+        # Must keep at least one row
+        if len(selected) >= self._chapter_table.rowCount():
+            return
+        self._sync_titles_from_table()
+        if self._mode == "edit":
+            self._remove_chapters_edit_mode(selected)
+        else:
+            self._remove_chapters_build_mode(selected)
+        self._chapter_table.populate(self._book.chapters)
+        new_row = min(selected[0], self._chapter_table.rowCount() - 1)
+        if new_row >= 0:
+            self._chapter_table.setCurrentCell(new_row, ChapterTable.COL_TITLE)
+        self._set_status(
+            f"{len(self._book.files)} file(s) · {len(self._book.chapters)} chapter(s)."
+        )
+
+    def _remove_chapters_build_mode(self, selected: list[int]) -> None:
+        """Remove chapters (= files) and cumulatively rebuild the timeline."""
+        assert self._book is not None
+        for row in reversed(selected):
+            del self._chapter_durations[row]
+            del self._book.files[row]
+            del self._book.chapters[row]
+        self._reindex_chapters()
+
+    def _remove_chapters_edit_mode(self, selected: list[int]) -> None:
+        """Remove chapter markers without shifting the underlying timeline.
+
+        A chapter is a time slice of one file, so deleting a marker must not
+        change any other chapter's start time.  The removed span merges into
+        the PREVIOUS chapter (row 0's span merges forward into the chapter
+        that becomes the new row 0, whose start time moves to 0.0).  Files
+        are never touched in edit mode.
+        """
+        assert self._book is not None
+        for row in reversed(selected):
+            removed_dur = self._chapter_durations[row]
+            del self._chapter_durations[row]
+            del self._book.chapters[row]
+            if row > 0:
+                # Absorb the removed span into the previous (still-present)
+                # chapter; that chapter's own start_time is unchanged.
+                self._chapter_durations[row - 1] += removed_dur
+            elif self._chapter_durations:
+                # First chapter removed: the new first chapter's start moves
+                # to 0 and its duration grows by the removed span.
+                self._chapter_durations[0] += removed_dur
+                self._book.chapters[0].start_time = 0.0
+        # Renumber indices only — start_times of surviving chapters (besides
+        # a new row 0) are left exactly as they were.
+        for i, ch in enumerate(self._book.chapters):
+            ch.index = i + 1
+
+    def _on_chapter_merge(self) -> None:
+        """Merge selected consecutive rows into a single chapter.
+
+        All source files are still encoded in full — only the chapter markers
+        collapse.  The merged chapter uses the first selected row's title and
+        start time; subsequent selected rows are absorbed into it.
+        """
+        if self._book is None:
+            return
+        selected = sorted(
+            {idx.row() for idx in self._chapter_table.selectionModel().selectedRows()}
+        )
+        if len(selected) < 2:
+            return
+        if selected != list(range(selected[0], selected[-1] + 1)):
+            return  # non-consecutive; button should already be disabled
+
+        self._sync_titles_from_table()
+
+        first = selected[0]
+        merged_dur = sum(self._chapter_durations[r] for r in selected)
+        self._chapter_durations[first] = merged_dur
+        for r in reversed(selected[1:]):
+            del self._chapter_durations[r]
+            del self._book.chapters[r]
+            # book.files is intentionally left intact — all audio still encodes
+
+        self._reindex_chapters()
+        self._chapter_table.populate(self._book.chapters)
+        self._chapter_table.setCurrentCell(first, ChapterTable.COL_TITLE)
+
+        if self._mode == "build":
+            self._chapters_merged = True
+        self._update_chapter_buttons()
+        self._set_status(
+            f"{len(self._book.files)} file(s) · {len(self._book.chapters)} chapter(s)."
+        )
+
+    def _on_load_error(self, msg: str, generation: int = -1) -> None:
+        # H5: ignore errors from a superseded scan (see _sender_generation).
+        generation = self._sender_generation(generation)
+        if generation != -1 and generation != self._load_generation:
+            return
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setVisible(False)
+        self._set_status("Error loading folder.")
+        self._update_controls()
+        # No modal on a closed window: the user abandoned this scan, and a
+        # dialog parented to a deletion-pending window is fatal under Qt.
+        if self.isVisible():
+            QMessageBox.critical(self, "Load Error", msg)
+
+    def _on_cover_changed(self, p: Path) -> None:
+        if self._book:
+            self._book.cover = p
+
+    def _browse_custom_output(self) -> None:
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save M4B As", "", "M4B audiobook (*.m4b)"
+        )
+        if path:
+            if not path.lower().endswith(".m4b"):
+                path += ".m4b"
+            self._custom_path_edit.setText(path)
+
+    def _on_convert(self) -> None:
+        # While a direct convert is running the button is a Cancel control.
+        if self._convert_running:
+            if self._convert_worker is not None and self._convert_worker.isRunning():
+                self._convert_worker.request_cancel()
+                self._set_status("Cancelling…")
+                self._convert_btn.setEnabled(False)
+            return
+
+        if not self._book:
+            return
+
+        if self._mode == "edit":
+            self._do_save_chapters()
+            return
+
+        out = self._computed_output_path()
+        if not out:
+            QMessageBox.warning(
+                self,
+                "No Output Path",
+                "Please specify a custom output path.",
+            )
+            return
+
+        book = self._collect_book_edits()
+        self._progress_bar.setVisible(True)
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._set_status("Starting…")
+        self._convert_btn.setEnabled(False)
+
+        self._convert_worker = ConvertWorker(
+            book=book,
+            output_path=out,
+            bitrate=self._bitrate_combo.currentText(),
+            stereo=self._stereo_radio.isChecked(),
+            sample_rate=self._preflight_sample_rate,
+        )
+        self._convert_worker.progress.connect(self._on_progress)
+        self._convert_worker.result_ready.connect(self._on_convert_finished)
+        self._convert_worker.cancelled.connect(self._on_convert_cancelled)
+        self._convert_worker.error.connect(self._on_convert_error)
+        self._convert_worker.start()
+        # Turn the Convert button into a Cancel control while the encode runs.
+        self._convert_running = True
+        self._convert_btn.setText("Cancel")
+        self._convert_btn.setEnabled(True)
+
+    def _do_save_chapters(self) -> None:
+        source = self._folder_zone.path()
+        if source is None:
+            return
+        chapters = self._gather_chapters_from_table()
+        from m4bmaker.models import BookMetadata
+
+        metadata = BookMetadata(
+            title=self._title_edit.text().strip(),
+            author=self._author_edit.text().strip(),
+            narrator=self._narrator_edit.text().strip(),
+            genre=self._genre_edit.text().strip(),
+        )
+        self._progress_bar.setVisible(True)
+        self._progress_bar.setRange(0, 0)
+        self._set_status("Saving chapter edits…")
+        self._convert_btn.setEnabled(False)
+
+        # M6: the player may still hold the .m4b being rewritten — release
+        # it (stop + clear source) before the worker starts, or the save can
+        # fail with a sharing violation on Windows.
+        self._player.release()
+
+        self._save_worker = SaveChaptersWorker(
+            source=source,
+            chapters=chapters,
+            total_duration=self._m4b_total_duration,
+            dest=source,  # in-place edit
+            metadata=metadata,
+        )
+        self._save_worker.result_ready.connect(self._on_save_finished)
+        self._save_worker.error.connect(self._on_convert_error)
+        self._save_worker.start()
+
+    def _gather_chapters_from_table(self) -> list[Chapter]:
+        assert self._book is not None
+        from copy import deepcopy
+
+        chapters = deepcopy(self._book.chapters)
+        times_ms = self._chapter_table.times_ms()
+        for i, (ch, new_title) in enumerate(
+            zip(chapters, self._chapter_table.titles())
+        ):
+            ch.title = new_title
+            ms = times_ms[i] if i < len(times_ms) else None
+            if ms is not None:
+                ch.start_time = ms / 1000.0
+        return chapters
+
+    def _on_save_finished(self, dest: object) -> None:
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(100)
+        # L4: don't leave the bar sitting at 100% forever — match the error path.
+        self._progress_bar.setVisible(False)
+        self._set_status(f"Saved — {Path(str(dest)).name}")
+        self._update_controls()
+        # M6: the save released the player's source; reload it now that the
+        # rewrite is complete so playback/seek continues to work.
+        self._player.load_paused(Path(str(dest)), 0)
+        if not self.isVisible():
+            return
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Saved")
+        msg.setIcon(QMessageBox.Icon.Information)
+        mins = self._m4b_total_duration / 60
+        msg.setText(
+            f"Chapter metadata saved\n\n"
+            f"{Path(str(dest)).name}\n\n"
+            f"{len(self._book.chapters) if self._book else 0} chapter(s)  ·  {mins:.1f} min"
+        )
+        msg.exec()
+
+    def _on_progress(self, msg: str, fraction: float) -> None:
+        self._set_status(msg)
+        self._progress_bar.setValue(int(fraction * 100))
+
+    def _on_convert_finished(self, result: PipelineResult) -> None:
+        self._convert_running = False
+        self._progress_bar.setValue(100)
+        self._set_status(f"Done — {result.output_file.name}")
+        self._update_controls()
+        if not self.isVisible():
+            return
+        mins = result.duration_seconds / 60
+        msg = QMessageBox(self)
+        msg.setWindowTitle("Saved")
+        msg.setIcon(QMessageBox.Icon.Information)
+        msg.setText(
+            f"Audiobook saved\n\n"
+            f"{result.output_file}\n\n"
+            f"{result.chapter_count} chapter(s)  ·  {mins:.1f} min"
+        )
+        msg.exec()
+
+    def _on_convert_cancelled(self) -> None:
+        """ConvertWorker cancellation: hide progress, no error dialog (F18)."""
+        self._convert_running = False
+        self._progress_bar.setVisible(False)
+        self._set_status("Cancelled.")
+        self._update_controls()
+
+    def _on_convert_error(self, msg: str) -> None:
+        self._convert_running = False
+        self._progress_bar.setVisible(False)
+        self._set_status("Conversion failed.")
+        self._update_controls()
+        if self.isVisible():
+            QMessageBox.critical(self, "Conversion Error", msg)

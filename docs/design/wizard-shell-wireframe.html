@@ -1,0 +1,1704 @@
+<title>Filter Wizard Shell</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --paper: #faf9f6;
+    --panel: #f1efe9;
+    --ink: #262a2e;
+    --prose: #4b5157;
+    --muted: #7d8790;
+    --line: #cfd4d9;
+    --line-strong: #a9b0b6;
+    --accent: #c15a35;
+    --accent-rgb: 193, 90, 53;
+    --accent-ink: #fdf6f2;
+    --success: #4f7a5c;
+    --success-bg: #e9f1eb;
+    --locked: #b7bcc1;
+    --locked-bg: #eceeef;
+    --shadow: 0 1px 2px rgba(38, 42, 46, 0.06), 0 8px 24px rgba(38, 42, 46, 0.08);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #1c1e21;
+      --panel: #232629;
+      --ink: #e3e2de;
+      --prose: #b7bbc0;
+      --muted: #868c92;
+      --line: #34383c;
+      --line-strong: #454a4f;
+      --accent: #d97a51;
+      --accent-rgb: 217, 122, 81;
+      --accent-ink: #241209;
+      --success: #7cb389;
+      --success-bg: #1e2a22;
+      --locked: #5a5f64;
+      --locked-bg: #26292c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 12px 28px rgba(0, 0, 0, 0.4);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #1c1e21;
+    --panel: #232629;
+    --ink: #e3e2de;
+    --prose: #b7bbc0;
+    --muted: #868c92;
+    --line: #34383c;
+    --line-strong: #454a4f;
+    --accent: #d97a51;
+    --accent-ink: #241209;
+    --success: #7cb389;
+    --success-bg: #1e2a22;
+    --locked: #5a5f64;
+    --locked-bg: #26292c;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 12px 28px rgba(0, 0, 0, 0.4);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+    padding: clamp(20px, 4vw, 56px);
+  }
+
+  .page {
+    max-width: 1180px;
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  .masthead {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    flex-wrap: wrap;
+  }
+
+  .masthead h1 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    margin: 0;
+    text-wrap: balance;
+  }
+
+  .masthead .kicker {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin: 0 0 4px;
+  }
+
+  .masthead .note {
+    font-size: 0.85rem;
+    color: var(--muted);
+    max-width: 46ch;
+  }
+
+  /* ── device frame ─────────────────────────────────────────────────── */
+
+  .frame {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+
+  .frame-titlebar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--line);
+    background: var(--paper);
+  }
+
+  .dots { display: flex; gap: 6px; }
+  .dots span {
+    width: 10px; height: 10px; border-radius: 50%;
+    background: var(--line-strong); opacity: 0.5;
+  }
+
+  .frame-titlebar .title {
+    flex: 1;
+    text-align: center;
+    font-size: 0.8rem;
+    color: var(--prose);
+    font-weight: 500;
+  }
+
+  .frame-titlebar .step-tag {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    color: var(--muted);
+    letter-spacing: 0.04em;
+  }
+
+  .frame-body {
+    display: flex;
+    flex-direction: column;
+    min-height: 480px; /* floor before JS measures the tallest step and sets the real value */
+  }
+
+  /* ── step rail: horizontal stepper ───────────────────────────────── */
+
+  .rail {
+    display: grid;
+    grid-template-columns: repeat(8, 1fr);
+    border-bottom: 1px solid var(--line);
+    background: var(--paper);
+    padding: 18px 20px 14px;
+  }
+
+  .rail-item {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    height: 62px;
+    border: none;
+    background: none;
+    cursor: pointer;
+    font: inherit;
+    color: var(--prose);
+    padding: 0;
+  }
+
+  /* circle + connecting line share one row; the line is two flexed
+     segments either side of the circle so neighboring cells' segments
+     meet exactly at the shared cell boundary and read as one line */
+  .node {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    height: 28px;
+    flex-shrink: 0;
+  }
+
+  .node .line { flex: 1; height: 2px; background: var(--line); }
+  .rail-item:first-child .node .line-before { background: transparent; }
+  .rail-item:last-child .node .line-after { background: transparent; }
+
+  .node .num {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    display: grid; place-items: center;
+    border: 2px solid var(--line-strong);
+    background: var(--paper);
+    color: var(--muted);
+    flex-shrink: 0;
+  }
+
+  .rail-item .label {
+    font-size: 0.74rem;
+    line-height: 1.2;
+    text-align: center;
+    white-space: nowrap;
+    padding: 0 4px;
+  }
+
+  .rail-item:hover:not(.locked):not(.current) .num { border-color: var(--muted); }
+  .rail-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 4px; }
+
+  /* done: filled green circle with a check; the line to its next
+     neighbor fills too — colored from both sides so the two flexed
+     half-segments meet without a visible seam at the cell boundary */
+  .rail-item.done .num { background: var(--success); border-color: var(--success); color: var(--accent-ink); }
+  .rail-item.done .node .line-after { background: var(--success); }
+  .rail-item.done + .rail-item .node .line-before { background: var(--success); }
+  .rail-item.done .label { color: var(--ink); }
+
+  /* current: the only bolded step — everything else stays quiet */
+  .rail-item.current .num { border-color: var(--accent); color: var(--accent); border-width: 3px; }
+  .rail-item.current .label { color: var(--accent); font-weight: 700; }
+
+  /* upcoming/locked: shaded gray, not interactive */
+  .rail-item.locked { cursor: not-allowed; }
+  .rail-item.locked .num { color: var(--locked); border-color: var(--locked-bg); background: var(--locked-bg); }
+  .rail-item.locked .label { color: var(--locked); }
+
+  /* ── content pane ─────────────────────────────────────────────────── */
+
+  .pane {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .pane-scroll {
+    flex: 1;
+    padding: 26px 30px 10px;
+    overflow-y: auto;
+  }
+
+  .step-eyebrow {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 4px;
+  }
+
+  .step-title {
+    font-size: 1.2rem;
+    font-weight: 600;
+    margin: 0 0 4px;
+  }
+
+  .step-sub {
+    font-size: 0.85rem;
+    color: var(--muted);
+    margin: 0 0 20px;
+    max-width: 60ch;
+  }
+
+  /* schematic building blocks — deliberately low-fidelity */
+
+  .sketch {
+    border: 1px dashed var(--line-strong);
+    border-radius: 8px;
+    padding: 16px 18px;
+    background: var(--paper);
+  }
+
+  .sketch + .sketch { margin-top: 12px; }
+
+  .sketch-label {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+
+  .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .row + .row { margin-top: 10px; }
+  .grow { flex: 1; }
+
+  .field {
+    border: 1px solid var(--line-strong);
+    border-radius: 5px;
+    padding: 8px 10px;
+    font-size: 0.82rem;
+    color: var(--prose);
+    background: var(--panel);
+  }
+
+  .drop {
+    border: 1.5px dashed var(--line-strong);
+    border-radius: 8px;
+    padding: 26px;
+    text-align: center;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 5px 16px; font-size: 0.82rem; }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; color: var(--prose); font-variant-numeric: tabular-nums; }
+
+  .btn {
+    font: inherit;
+    font-size: 0.82rem;
+    font-weight: 600;
+    padding: 8px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--line-strong);
+    background: var(--panel);
+    color: var(--ink);
+    cursor: pointer;
+  }
+
+  .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn.link { border: none; background: none; color: var(--accent); padding: 8px 2px; text-decoration: underline; text-underline-offset: 2px; }
+  .btn.ghost { border-style: dashed; color: var(--prose); }
+
+  .chip {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.65rem;
+    letter-spacing: 0.03em;
+    padding: 3px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--line-strong);
+    color: var(--muted);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+  }
+  .chip.warn { border-color: var(--accent); color: var(--accent); }
+  .chip.ok { border-color: var(--success); color: var(--success); background: var(--success-bg); }
+
+  .progress {
+    height: 8px;
+    border-radius: 999px;
+    background: var(--locked-bg);
+    overflow: hidden;
+    border: 1px solid var(--line);
+  }
+  .progress > i { display: block; height: 100%; background: var(--accent); border-radius: 999px; }
+
+  .disclosure summary {
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--accent);
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .disclosure summary::-webkit-details-marker { display: none; }
+  .disclosure summary::before { content: "▸"; font-size: 0.7em; transition: transform .15s; }
+  .disclosure[open] summary::before { transform: rotate(90deg); }
+  .disclosure .disclosure-body { padding: 10px 2px 2px 16px; font-size: 0.8rem; color: var(--prose); }
+
+  table.hits { width: 100%; border-collapse: collapse; font-size: 0.8rem; }
+  table.hits th { text-align: left; color: var(--muted); font-weight: 500; font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.05em; padding: 0 8px 8px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--paper); }
+  table.hits td { padding: 8px; border-bottom: 1px solid var(--line); color: var(--prose); vertical-align: top; }
+  table.hits td.mono { font-family: "IBM Plex Mono", ui-monospace, monospace; font-variant-numeric: tabular-nums; color: var(--muted); }
+  table.hits tbody tr.excluded { opacity: 0.55; }
+  table.hits tbody tr.excluded td.term-cell { text-decoration: line-through; text-decoration-color: var(--muted); }
+
+  /* ── Review step: a real (not schematic) panel — this is the screen
+     under design review, so it gets full interaction fidelity rather
+     than a dashed placeholder block ────────────────────────────────── */
+
+  .stat-strip {
+    display: flex;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--paper);
+    overflow-x: auto;
+    margin-bottom: 14px;
+  }
+
+  .stat {
+    padding: 10px 18px;
+    border-right: 1px solid var(--line);
+    white-space: nowrap;
+  }
+  .stat:last-child { border-right: none; }
+
+  .stat .stat-label {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.62rem;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: block;
+    margin-bottom: 2px;
+  }
+
+  .stat .stat-value {
+    font-size: 1.05rem;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--ink);
+  }
+  .stat .stat-value.included { color: var(--success); }
+  .stat .stat-value.excluded { color: var(--accent); }
+
+  .filter-bar {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
+
+  .filter-bar select {
+    font: inherit;
+    font-size: 0.78rem;
+    border: 1px solid var(--line-strong);
+    border-radius: 5px;
+    padding: 6px 8px;
+    background: var(--panel);
+    color: var(--ink);
+  }
+  .filter-bar select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .filter-bar label {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.62rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--muted);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .bulk-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 12px;
+    border-radius: 6px;
+    background: rgba(var(--accent-rgb), 0.08);
+    border: 1px solid var(--accent);
+    margin-bottom: 10px;
+    font-size: 0.8rem;
+    color: var(--ink);
+  }
+  .bulk-bar.is-empty { visibility: hidden; }
+
+  .btn.small { padding: 4px 10px; font-size: 0.74rem; }
+
+  .table-scroll {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    max-height: 250px;
+    overflow-y: auto;
+    background: var(--paper);
+  }
+  .table-scroll table.hits { font-size: 0.76rem; }
+  .table-scroll table.hits th, .table-scroll table.hits td { padding: 6px 8px; }
+
+  .state-toggle { display: inline-flex; border: 1px solid var(--line-strong); border-radius: 999px; overflow: hidden; }
+  .state-toggle button {
+    font: inherit;
+    font-size: 0.68rem;
+    font-weight: 600;
+    padding: 3px 9px;
+    border: none;
+    background: var(--panel);
+    color: var(--muted);
+    cursor: pointer;
+  }
+  .state-toggle button + button { border-left: 1px solid var(--line-strong); }
+  .state-toggle button.active.incl { background: var(--success); color: var(--accent-ink); }
+  .state-toggle button.active.excl { background: var(--accent); color: var(--accent-ink); }
+
+  .conf-chip { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.7rem; color: var(--muted); }
+  .conf-chip.na { font-style: italic; }
+
+  .context-cell { color: var(--muted); font-size: 0.74rem; max-width: 220px; }
+  .context-cell .term-cell { color: var(--ink); font-weight: 600; font-style: normal; }
+
+  .interval-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin: 16px 0 8px;
+  }
+  .interval-heading .sketch-label { margin: 0; }
+  .interval-heading .interval-total { font-size: 0.74rem; color: var(--muted); }
+
+  .interval-list {
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--paper);
+    max-height: 250px;
+    overflow-y: auto;
+  }
+  .interval-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 8px 12px;
+    font-size: 0.78rem;
+  }
+  .interval-row + .interval-row { border-top: 1px solid var(--line); }
+  .interval-row .interval-time { font-family: "IBM Plex Mono", ui-monospace, monospace; color: var(--ink); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+  .interval-row .interval-dur { color: var(--muted); font-size: 0.72rem; flex-shrink: 0; }
+  .interval-row .interval-prov { flex: 1; color: var(--prose); font-size: 0.74rem; }
+  .interval-row .interval-prov strong { color: var(--ink); }
+  .interval-empty { padding: 16px; text-align: center; color: var(--muted); font-size: 0.8rem; }
+
+  .tabs {
+    display: flex;
+    border-bottom: 1px solid var(--line);
+    margin-bottom: 14px;
+  }
+  .tab {
+    font: inherit;
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.72rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    padding: 0 0 10px;
+    margin-bottom: -1px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: none;
+    color: var(--muted);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tab + .tab { margin-left: 22px; }
+  .tab:hover { color: var(--ink); }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+
+  .tab-panel-note {
+    font-size: 0.78rem;
+    color: var(--muted);
+    margin: 0 0 12px;
+    max-width: 62ch;
+  }
+
+  /* ── footer nav ───────────────────────────────────────────────────── */
+
+  .nav {
+    border-top: 1px solid var(--line);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: var(--paper);
+  }
+
+  .nav .hint {
+    flex: 1;
+    font-size: 0.76rem;
+    color: var(--muted);
+  }
+
+  /* ── design notes: single-column, topic-tagged (not numbered — these
+     describe shell behavior, not the steps, and numbering them read as
+     if they mapped to the 8 numbered steps above) ─────────────────── */
+
+  .notes-heading {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.7rem;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin: 0 0 10px;
+  }
+
+  .notes {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+
+  .note-row {
+    display: grid;
+    grid-template-columns: 152px 1fr;
+    gap: 18px;
+    padding: 14px 18px;
+    align-items: baseline;
+  }
+
+  .note-row + .note-row { border-top: 1px solid var(--line); }
+
+  .note-tag {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.68rem;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--accent);
+    white-space: nowrap;
+  }
+
+  .note-row p {
+    margin: 0;
+    font-size: 0.83rem;
+    color: var(--prose);
+    line-height: 1.55;
+  }
+
+  .note-row p strong { color: var(--ink); }
+
+  code {
+    font-family: "IBM Plex Mono", ui-monospace, monospace;
+    font-size: 0.9em;
+    background: var(--locked-bg);
+    padding: 1px 5px;
+    border-radius: 3px;
+  }
+
+  @media (max-width: 640px) {
+    .note-row { grid-template-columns: 1fr; gap: 4px; }
+  }
+
+  footer.colophon {
+    font-size: 0.75rem;
+    color: var(--muted);
+    border-top: 1px solid var(--line);
+    padding-top: 14px;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+
+  @media (max-width: 640px) {
+    .rail { padding: 14px 10px 10px; }
+    .rail-item .label { font-size: 0.62rem; }
+  }
+</style>
+
+<div class="page">
+
+  <div class="masthead">
+    <div>
+      <p class="kicker">m4bmaker-filter · G5 wireframe</p>
+      <h1>Filter Wizard Shell</h1>
+      <p class="note">Structural review only — step content below is schematic, not final screen design. Click a rail item, or Back / Next, to preview how the shell behaves at each of the eight PRD §7.2 stages.</p>
+    </div>
+  </div>
+
+  <div class="frame">
+    <div class="frame-titlebar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <div class="title">Filter Audiobook — Test Audiobook</div>
+      <div class="step-tag" id="stepTag">STEP 1 / 8</div>
+    </div>
+
+    <div class="frame-body">
+      <nav class="rail" id="rail" aria-label="Wizard steps"></nav>
+
+      <div class="pane">
+        <div class="pane-scroll" id="paneScroll"></div>
+        <div class="nav">
+          <button class="btn" id="backBtn">Back</button>
+          <span class="hint" id="navHint"></span>
+          <button class="btn primary" id="nextBtn">Continue</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <p class="notes-heading">Shell design notes</p>
+    <div class="notes" id="notes"></div>
+  </div>
+
+  <footer class="colophon">
+    Palette and type are wireframe-only (IBM Plex Sans / Mono, blueprint neutrals) — deliberately distinct from the shipped app's own light/dark stylesheet (<code>gui/styles.py</code>) so this reads as a structural draft, not a finished screen. Source file and figures throughout (Test Audiobook, 13h 31m, 50 chapters) are the real fixture this fork has been tested against since G4, not placeholder text.
+  </footer>
+
+</div>
+
+<script>
+  const steps = [
+    {
+      id: "source", label: "Source", eyebrow: "Step 1 · Select source",
+      title: "Select Source",
+      sub: "Inspect eligibility, selected audio track, duration, chapters, required metadata, storage estimate, and compatible saved transcript availability — every field here is a real MediaManifest field (media_inspector.py), not invented for the mockup.",
+      body: `
+        <div class="sketch">
+          <p class="sketch-label">source</p>
+          <div class="row">
+            <div class="field grow">📁 Test Audiobook.m4b</div>
+            <button class="btn ghost">Browse…</button>
+          </div>
+        </div>`,
+      scenarios: [
+        {
+          id: "eligible", label: "Eligible",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">result <span class="chip ok">✓ eligible</span></p>
+          <dl class="kv">
+            <dt>Audio track</dt><dd>Stereo AAC-LC · 44.1&nbsp;kHz · ~126&nbsp;kbps (track 0 of 1)</dd>
+            <dt>Duration</dt><dd>13h 31m 33s</dd>
+            <dt>Chapters</dt><dd>50</dd>
+            <dt>Metadata</dt><dd>Title, Author, Narrator, Genre present</dd>
+            <dt>Cover art</dt><dd>Present</dd>
+            <dt>Est. storage needed</dt><dd>~24.7 GB (3 PCM scratch stages + AAC output — <code>renderer.estimate_storage_bytes()</code>)</dd>
+            <dt>Saved transcript</dt><dd>None found for this source</dd>
+          </dl>
+        </div>`
+        },
+        {
+          id: "ineligible", label: "Not eligible",
+          html: `
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">result <span class="chip warn">✗ not eligible</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 8px;">Continue stays disabled until an eligible source is selected. Every reason is surfaced, not just the first one found:</p>
+          <ul style="margin:0;padding-left:18px;font-size:.85rem;color:var(--prose);">
+            <li>Primary audio track is MP3 — v1 only supports AAC M4B sources</li>
+          </ul>
+        </div>`
+        }
+      ]
+    },
+    {
+      id: "transcript", label: "Transcript", eyebrow: "Step 2 · Choose transcript path",
+      title: "Choose Transcript Path",
+      sub: "Reuse a compatible saved transcript, or set up local transcription. First-run empty states (PRD §7.3) render inline here, not as separate error screens.",
+      scenarios: [
+        {
+          id: "found", label: "Transcript found",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">match <span class="chip ok">✓ complete</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Real <code>Transcript</code> object returned by <code>find_compatible_transcript()</code> — same fingerprint as this source, status <code>complete</code> (a draft/partial/failed transcript never counts, PRD §10.4). Reusing it skips Transcribe entirely — there is nothing left to run.</p>
+          <div class="row">
+            <span class="chip ok">whisper.cpp 1.9.2 · base.en · 13h 31m 33s</span>
+          </div>
+          <div class="row" style="margin-top:12px;">
+            <button class="btn primary" id="useExistingBtn">Use existing →</button>
+            <button class="btn ghost" id="reTranscribeBtn">Transcribe again instead</button>
+          </div>
+        </div>`
+        },
+        {
+          id: "choose-model", label: "Choose a model",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">models</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Shown when no compatible transcript exists, or after “Transcribe again instead.” Both real catalog entries (<code>model_manager.KNOWN_MODELS</code>) always show, each with its own real install state (<code>is_installed()</code>) — one chooser, not a separate screen per state. Selecting a not-yet-installed model reveals Download right on its row — no second window (<code>ModelDownloadWorker</code>, the exact worker <code>ModelManagerWindow</code> already uses).</p>
+          <div class="row"><input type="radio" name="model" checked disabled> <span class="grow">base.en <span class="chip ok">✓ installed</span></span><span class="chip">Recommended · 141 MB</span></div>
+          <div class="row" style="margin-top:8px;"><input type="radio" name="model" disabled> <span class="grow">small.en <span class="chip warn">not installed</span></span><span class="chip">Higher recognition effort · 465 MB</span><button class="btn ghost small">Download</button></div>
+        </div>
+        <div class="sketch">
+          <p class="sketch-label">while downloading</p>
+          <div class="row"><span class="grow">small.en</span><span class="chip">144.2 / 465.0 MB</span></div>
+          <div class="row" style="margin-top:6px;"><div class="grow"><div class="progress"><i style="width:31%"></i></div></div><span class="chip">31%</span></div>
+          <div class="row" style="margin-top:10px;"><button class="btn ghost">Cancel</button></div>
+        </div>`
+        },
+        {
+          id: "offline", label: "Offline — blocked",
+          html: `
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">nothing installed <span class="chip warn">⚠ blocked</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">PRD §7.3: explain that transcription can't start until a supported model is installed — never fail silently. Same chooser as “Choose a model,” both rows read “not installed,” each with its own inline Download. Continue stays disabled until one finishes.</p>
+          <div class="row"><span class="grow">base.en <span class="chip warn">not installed</span></span><span class="chip">Recommended · 141 MB</span><button class="btn ghost small">Download</button></div>
+          <div class="row" style="margin-top:8px;"><span class="grow">small.en <span class="chip warn">not installed</span></span><span class="chip">Higher recognition effort · 465 MB</span><button class="btn ghost small">Download</button></div>
+        </div>`
+        }
+      ]
+    },
+    {
+      id: "transcribe", label: "Transcribe", eyebrow: "Step 3 · Transcribe",
+      title: "Transcribe",
+      sub: "Durable and resumable — progress persists across app restarts, picking up from the first uncommitted chunk via the SQLite Job Orchestrator (ADR-0005), not a re-run from zero.",
+      scenarios: [
+        {
+          id: "ready", label: "Ready to start",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">plan</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Nothing runs until this is confirmed — Start is its own explicit action, same as every other commit-point in this wizard (Source's eligibility gate, Transcript's explicit reuse-or-transcribe choice).</p>
+          <dl class="kv">
+            <dt>Model</dt><dd>base.en (whisper.cpp) <span class="chip ok">GPU: Apple M4 Pro (Metal)</span></dd>
+            <dt>Chunks planned</dt><dd>50 — one per chapter, chapter-aligned by default (chunk sizing is chosen for efficiency/durability, not pause speed — chunk_ms/overlap_ms revised 2026-08-25; no chapter in this book exceeds the 45-minute subdivision ceiling)</dd>
+          </dl>
+          <div class="row" style="margin-top:14px;"><button class="btn primary">▶ Start Transcription</button></div>
+        </div>`
+        },
+        {
+          id: "running", label: "Running",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">progress <span class="chip ok">RUNNING</span></p>
+          <div class="row"><div class="grow"><div class="progress"><i style="width:42%"></i></div></div><span class="chip">42%</span></div>
+          <p style="font-size:.78rem;color:var(--muted);margin:6px 0 0;">Real <code>JobRecord.progress_message</code>/<code>.progress_fraction</code>, written by <code>run_transcription_job()</code> after every committed chunk: “Transcribed chunk 21/50” — with chapter-aligned chunking (revised 2026-08-25), chunk 21 <em>is</em> chapter 21 in the common case, no separate correlation needed except for the rare chapter over the 45-minute ceiling.</p>
+          <div class="row" style="margin-top:12px;">
+            <dl class="kv" style="grid-template-columns:auto 1fr;">
+              <dt>Chapter</dt><dd>21 / 50 <span class="chip warn">friendly label still not built in code</span></dd>
+              <dt>Elapsed</dt><dd>6m 12s</dd>
+              <dt>Est. remaining</dt><dd style="color:var(--muted);">— <span class="chip warn">not yet decided</span></dd>
+            </dl>
+          </div>
+          <p style="font-size:.78rem;color:var(--muted);margin:0 0 8px;">Pause is no longer latency-optimized (PRD D-16, revised) — it takes effect at the next chapter boundary, which may be a while into a long chapter, not within 30 seconds.</p>
+          <div class="row">
+            <button class="btn">⏸ Pause</button>
+            <button class="btn ghost">✕ Cancel</button>
+            <span class="chip ok">safe to close — resumes on reopen</span>
+          </div>
+        </div>`
+        },
+        {
+          id: "paused", label: "Paused",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">progress <span class="chip warn">PAUSED</span></p>
+          <div class="row"><div class="grow"><div class="progress"><i style="width:42%"></i></div></div><span class="chip">42%</span></div>
+          <p style="font-size:.85rem;color:var(--prose);margin:8px 0 0;">Paused at a committed chunk boundary (PRD §11.3 — never mid-chunk). Every chunk transcribed so far is durably written; nothing is redone on Resume.</p>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn primary">▶ Resume</button>
+            <button class="btn ghost">✕ Cancel</button>
+          </div>
+        </div>`
+        },
+        {
+          id: "needs-attention", label: "Needs attention",
+          html: `
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">progress <span class="chip warn">NEEDS_ATTENTION</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 8px;">PRD §11.2: every recoverable state needs a User action, not a dead end. Real <code>JobState.NEEDS_ATTENTION</code> — e.g. a compatibility re-check failed. 21 chapters already committed stay durable either way.</p>
+          <div class="row"><span class="chip warn">whisper-cli not found on PATH — reinstall and retry</span></div>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn primary">↻ Retry</button>
+            <button class="btn ghost">✕ Cancel Job</button>
+          </div>
+        </div>`
+        }
+      ]
+    },
+    {
+      id: "profile", label: "Profile", eyebrow: "Step 4 · Select profile",
+      title: "Select Profile",
+      sub: "Pick a saved filter profile — every scan freezes its current entries and settings into an immutable snapshot (PRD §9.1/§9.4). First-run empty states (PRD §7.3) render inline here too.",
+      scenarios: [
+        {
+          id: "choose", label: "Choose a profile",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">saved profiles</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Real <code>CatalogService.list_profiles(include_archived=False)</code> — each row is one <code>FilterProfile</code> (id, name, <code>entry_ids</code>, <code>attenuation</code>, revision). Counts are computed from <code>entry_ids</code> resolved through <code>get_entry().category_id</code> — unique categories touched, and total entries — not stored fields on the profile itself.</p>
+          <div class="row"><input type="radio" name="prof" checked disabled> <span class="grow">Family Friendly <span class="chip">2 categories · 34 words</span></span></div>
+          <div class="row"><input type="radio" name="prof" disabled> <span class="grow">Profanity Only <span class="chip">1 category · 19 words</span></span></div>
+          <div class="row" style="margin-top:12px;">
+            <button class="btn ghost">+ New Profile <span class="chip warn">not built anywhere yet</span></button>
+            <button class="btn link">Manage Word Catalog… →</button>
+          </div>
+        </div>
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">where profile authoring lives <span class="chip ok">resolved — see ADR-0016</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0;"><strong>Not in <code>CatalogWindow</code> — its own docstring already settled this.</strong> <code>catalog_window.py</code>: "Profile management ... is deliberately not built here; it belongs with the wizard's 'select profile' step, a later increment" (ADR-0008). So "+ New Profile" opens a modal profile editor that lives in the wizard itself — name, a checkable category/entry tree sourced from the same <code>CatalogService</code>, and an <code>AttenuationSettings</code> form — not a new <code>CatalogWindow</code> pane. Design and scope: ADR-0016.</p>
+        </div>`
+        },
+        {
+          id: "empty", label: "No profiles yet",
+          html: `
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">first run <span class="chip warn">⚠ nothing to select</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">The realistic default, not an edge case — PRD §9.2: "The app may ship with no active offensive-word terms," no starter catalog enabled by default. A brand-new install has zero categories, zero entries, and <code>list_profiles()</code> returns <code>[]</code>. Continue must stay disabled: <code>create_snapshot(profile_id)</code> needs a real profile id, and PRD §9.4 requires a scan to consume "an immutable profile snapshot" — there is nothing to snapshot yet.</p>
+          <p style="margin:0 0 12px;color:var(--muted);font-size:.85rem;">No filter profiles yet.</p>
+          <div class="row">
+            <button class="btn primary">+ Create a Profile <span class="chip warn">not built anywhere yet</span></button>
+            <button class="btn ghost">Manage Word Catalog… →</button>
+          </div>
+        </div>`
+        }
+      ]
+    },
+    {
+      id: "scan", label: "Scan", eyebrow: "Step 5 · Scan",
+      title: "Scan",
+      sub: "Matches the transcript against an immutable snapshot of the selected profile — a persisted, immutable raw result (PRD §9.4). Re-scanning always starts a new scan revision; it never copies decisions from the last one.",
+      scenarios: [
+        {
+          id: "ready", label: "Ready to scan",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">plan</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Real inputs, both already produced by earlier steps — nothing new to configure here. <code>CatalogService.create_snapshot(profile_id)</code> freezes the chosen profile's current entries and revision the moment Scan runs, not before — so an edit made back on the Profile step right up until you click Start is still captured.</p>
+          <dl class="kv">
+            <dt>Transcript</dt><dd>whisper.cpp 1.9.2 · base.en · 13h 31m 33s</dd>
+            <dt>Profile</dt><dd>Family Friendly — will snapshot as rev. 3 when Scan starts</dd>
+          </dl>
+          <div class="row" style="margin-top:14px;"><button class="btn primary">▶ Start Scan</button></div>
+        </div>
+        <details class="disclosure">
+          <summary>Advanced: padding &amp; merge settings</summary>
+          <div class="disclosure-body">
+            <p style="font-size:.78rem;color:var(--muted);margin:0 0 8px;">Read-only here — these are the selected profile's own <code>AttenuationSettings</code>, authored in its editor (ADR-0016/0017), not re-configurable per scan.</p>
+            <div class="kv" style="grid-template-columns:auto 1fr;">
+              <dt>Lead / tail padding</dt><dd>60&nbsp;ms / 80&nbsp;ms</dd>
+              <dt>Merge adjacency</dt><dd>20&nbsp;ms</dd>
+              <dt>Gain floor</dt><dd>-80&nbsp;dBFS</dd>
+            </div>
+          </div>
+        </details>`
+        },
+        {
+          id: "running", label: "Running",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">progress <span class="chip warn">not chunked — open question</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;"><code>matcher.scan_transcript()</code> is a single pure function over the whole transcript at once — no natural chunk boundary the way Transcribe's chunks give it one, and its own docstring already flags that it "has not been benchmarked against a reference fixture yet." Shown here as a simple indeterminate busy state, not a job-orchestrator-backed pause/resume flow like Transcribe's — that's real infrastructure this step doesn't yet have a proven need for. If a real long-book benchmark someday shows this taking long enough to want interruptibility, that's a real re-scoping, not a small tweak.</p>
+          <div class="row"><span class="chip">Matching against 2 categories · 34 words…</span></div>
+        </div>`
+        },
+        {
+          id: "complete", label: "Complete",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">scan summary <span class="chip ok">✓ complete</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Every field below is a real <code>ScanReport</code> field (<code>scan.build_report()</code>) — not invented for the mockup. Raw hits are immutable from this point; Review only records include/exclude/manual decisions against them.</p>
+          <dl class="kv">
+            <dt>Hits found</dt><dd>14 — Profanity ×10, Slurs ×4 (see Review)</dd>
+            <dt>Unique terms hit</dt><dd>4</dd>
+            <dt>Profile snapshot</dt><dd>Family Friendly · rev. 3</dd>
+            <dt>Planned attenuated duration</dt><dd>~5.6s (from the current include/exclude state — recalculates live as Review decisions change)</dd>
+          </dl>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn ghost">↻ Re-scan</button>
+          </div>
+        </div>
+        <details class="disclosure">
+          <summary>Advanced: padding &amp; merge settings</summary>
+          <div class="disclosure-body">
+            <div class="kv" style="grid-template-columns:auto 1fr;">
+              <dt>Lead / tail padding</dt><dd>60&nbsp;ms / 80&nbsp;ms</dd>
+              <dt>Merge adjacency</dt><dd>20&nbsp;ms</dd>
+              <dt>Gain floor</dt><dd>-80&nbsp;dBFS</dd>
+            </div>
+          </div>
+        </details>`
+        }
+      ]
+    },
+    {
+      id: "review", label: "Review", eyebrow: "Step 6 · Review",
+      title: "Review",
+      sub: "Every hit the scan found, matched against an immutable profile snapshot. Include or exclude individually, or act on a whole category or term at once — nothing is rendered until Render.",
+      body: `<div id="reviewRoot"></div>`
+    },
+    {
+      id: "render", label: "Render", eyebrow: "Step 7 · Render",
+      title: "Render",
+      sub: "Confirm the output plan, then attenuate, encode, mux, and validate — all real, already-built backend (ADR-0006/0007), wired to this screen for the first time.",
+      scenarios: [
+        {
+          id: "ready", label: "Ready to render",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">output plan</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Nothing runs until this is confirmed — Start is its own explicit action, same as every other commit-point in this wizard.</p>
+          <dl class="kv">
+            <dt>Output</dt><dd>~/Audiobooks/Test Audiobook (filtered).m4b <span class="chip warn">default-naming helper not built yet</span> <button class="btn ghost small">Change…</button></dd>
+            <dt>Bitrate</dt><dd>128 kbps <span class="chip">auto-selected from source's own ~126 kbps</span> <button class="btn ghost small">Change…</button></dd>
+            <dt>Est. storage needed</dt><dd>~24.7 GB <span class="chip ok">real — same figure Source step already computed</span></dd>
+            <dt>Intervals to attenuate</dt><dd>13 (merged from 14 hits — see Review) <span class="chip warn">blocked on a small Review addition</span></dd>
+            <dt>Est. render time</dt><dd>~10–11 min <span class="chip ok">real measurement, one fixture</span></dd>
+          </dl>
+          <div class="row" style="margin-top:14px;"><button class="btn primary">▶ Start Render</button></div>
+        </div>
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">open questions <span class="chip warn">flagged, not solved</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0;"><strong>Output path default</strong> — no helper computes "&lt;source stem&gt; (filtered).m4b" yet; the base app's own <code>_computed_output_path()</code> is shaped for a different flow (building a new M4B from a folder of files) and doesn't transfer directly. <strong>Bitrate default</strong> — the base app's real "snap to nearest of <code>_BITRATES</code> given the source's own bitrate" logic (<code>window.py</code>) is exactly the right behavior here too, but it's private/inline, not an exported, reusable function yet — porting it, not reinventing it differently, is the real scoped work. <strong>Intervals to attenuate</strong> — needs a real <code>RenderPlan</code> from Review, but <code>ReviewStep</code> has no public getter for its current scan/attenuation/plan today (everything is a private <code>_scan</code>/<code>_attenuation</code>) — the same "nothing downstream consumes this yet" situation every previous step passed through on its own way to being wired up. <strong>Est. render time</strong> — real for this one fixture (615s/10.25min for this exact 13.5-hour book, ADR-0007), but ADR-0007 itself already cautions every number there comes from one real 44.1kHz/~126kbps/stereo file — a production estimate for an arbitrary source needs either a real duration-proportional extrapolation or, like Transcribe's own "Est. remaining," honestly showing nothing until more fixtures exist.</p>
+        </div>`
+        },
+        {
+          id: "running", label: "Running",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">progress <span class="chip ok">RUNNING</span></p>
+          <div class="row"><div class="grow"><div class="progress"><i style="width:50%"></i></div></div><span class="chip">50%</span></div>
+          <p style="font-size:.78rem;color:var(--muted);margin:6px 0 0;">Real, determinate — <code>renderer.render()</code>'s own <code>progress_callback(message, fraction)</code> already reports four real stages at 0.0 / 0.25 / 0.5 / 0.75 / 1.0: "Extracting source audio…", "Generating gain envelope…", "Applying attenuation…", "Encoding and muxing output…" This is genuinely different ground than Scan's indeterminate bar — render() already has real stage granularity to show, nothing invented for this mockup.</p>
+          <div class="row" style="margin-top:10px;"><span class="chip">Applying attenuation…</span></div>
+          <p style="font-size:.78rem;color:var(--muted);margin:8px 0 0;">After render() finishes, <code>validator.validate()</code> runs as one more (indeterminate — it has no progress callback of its own) tail phase before Complete, labeled "Validating output…" — same reasoning as Scan's own indeterminate state: no chunk boundary to report a fraction of.</p>
+          <div class="row" style="margin-top:10px;"><button class="btn ghost">✕ Cancel</button></div>
+          <p style="font-size:.78rem;color:var(--muted);margin:8px 0 0;">No Pause, and Cancel/a crash both mean starting over, not resuming — ADR-0007's own already-decided position: "given the real 615s/10.25-minute total render time... full-restart-on-failure is a reasonable MVP position," matching PRD §11.4's mandatory-fallback tier. Not an open question here — already settled, cited rather than re-argued.</p>
+        </div>`
+        },
+        {
+          id: "needs-attention", label: "Needs attention",
+          html: `
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">progress <span class="chip warn">NEEDS_ATTENTION</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Two real, distinct failure sources land here, not just render() itself: a <code>RenderError</code> from any of the four ffmpeg/Python stages, <em>or</em> a failed <code>ValidationReport</code> (real ERROR-severity issues — PRD §8.1 never allows presenting a failed validation as success). Either way the output file is left on disk, not auto-deleted — <code>encode_and_mux()</code>'s own atomic staging means Retry safely overwrites it, no manual cleanup needed.</p>
+          <div class="row"><span class="chip warn">Chapter 3 start time differs by 340ms (tolerance 50ms)</span></div>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn primary">↻ Retry</button>
+            <button class="btn ghost">✕ Cancel</button>
+          </div>
+        </div>`
+        },
+        {
+          id: "complete", label: "Complete",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">result <span class="chip ok">✓ passed validation</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Real <code>RenderResult</code>/<code>ValidationReport</code> fields — nothing invented. Continue hands these to the not-yet-built Complete step, the same "nothing downstream consumes this yet" spot every earlier step was in before its own successor existed.</p>
+          <dl class="kv">
+            <dt>Duration match</dt><dd>Δ 0 ms</dd>
+            <dt>Chapters</dt><dd>50 / 50 match</dd>
+            <dt>Warnings</dt><dd>none</dd>
+          </dl>
+          <div class="row" style="margin-top:10px;"><span class="chip warn">filter-report.json not written yet</span></div>
+          <p style="font-size:.78rem;color:var(--muted);margin:6px 0 0;">ADR-0007 already flagged this precisely: <code>ValidationReport</code> exists as a real return value only — persisting it to a User-facing <code>filter-report.json</code> (PRD §14.4) is explicitly deferred "UI/orchestration-layer work (G5)," i.e. exactly this step, once it's actually implemented.</p>
+        </div>`
+        }
+      ]
+    },
+    {
+      id: "complete", label: "Complete", eyebrow: "Step 8 · Complete",
+      title: "Complete",
+      sub: "Validation status, output location, and the persisted filter report (PRD §7.2 stage 8) — reached only after Render's own COMPLETED state, which already means validation passed.",
+      scenarios: [
+        {
+          id: "clean", label: "Passed, no warnings",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">result <span class="chip ok">✓ passed validation</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">This screen only ever shows a passing render — <code>RenderStep</code> already gatekeeps a failed <code>ValidationReport</code> into its own Needs Attention state (ADR-0019); Complete never has to handle failure itself.</p>
+          <dl class="kv">
+            <dt>Output</dt><dd>~/Audiobooks/Test Audiobook (filtered).m4b</dd>
+            <dt>Report</dt><dd>~/Audiobooks/Test Audiobook (filtered).filter-report.json</dd>
+            <dt>Warnings</dt><dd>none</dd>
+          </dl>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn ghost">Open Folder</button>
+          </div>
+        </div>
+        <div class="sketch" style="border-color:var(--accent);">
+          <p class="sketch-label" style="color:var(--accent);">corrected from the original sketch</p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0;">The very first version of this mockup showed three separate green checks — "duration match Δ 0 ms," "chapters 50/50," "metadata &amp; cover preserved" — as if each were individually confirmed with a real number. Building Render (ADR-0019) surfaced that this isn't achievable honestly: <code>validator.py</code>'s checks only ever produce a structured <code>ValidationIssue</code> when something <em>fails</em> — a passing <code>ValidationReport</code> has zero issues and no recorded "matched within Xms" value for any check. Showing three specific green numbers here would be exactly the "guess dressed as data" anti-pattern already rejected for Transcribe's "Est. remaining" and Render's own "Est. render time." One combined "passed validation" statement is what the real data actually supports — corrected here to match, not left as a nicer-looking but false sketch.</p>
+        </div>`
+        },
+        {
+          id: "warnings", label: "Passed with warnings",
+          html: `
+        <div class="sketch">
+          <p class="sketch-label">result <span class="chip warn">✓ passed, with warnings</span></p>
+          <p style="font-size:.85rem;color:var(--prose);margin:0 0 12px;">Real <code>ValidationReport.warnings</code> — WARNING-severity issues never block success (PRD §6.3: best-effort metadata isn't guaranteed), but they're still real information worth surfacing, not silently dropped just because the render passed overall.</p>
+          <div class="row"><span class="chip warn">Best-effort field "series" not preserved.</span></div>
+          <dl class="kv" style="margin-top:12px;">
+            <dt>Output</dt><dd>~/Audiobooks/Test Audiobook (filtered).m4b</dd>
+            <dt>Report</dt><dd>~/Audiobooks/Test Audiobook (filtered).filter-report.json</dd>
+          </dl>
+          <div class="row" style="margin-top:14px;">
+            <button class="btn ghost">Open Folder</button>
+          </div>
+        </div>`
+        }
+      ]
+    }
+  ];
+
+  const railEl = document.getElementById("rail");
+  const paneEl = document.getElementById("paneScroll");
+  const stepTagEl = document.getElementById("stepTag");
+  const navHintEl = document.getElementById("navHint");
+  const backBtn = document.getElementById("backBtn");
+  const nextBtn = document.getElementById("nextBtn");
+  const notesEl = document.getElementById("notes");
+
+  // furthest step actually reached — steps beyond it are locked and not
+  // clickable, matching the real wizard's sequential gating. Starts at 0:
+  // a fresh wizard has completed nothing yet.
+  let furthest = 0;
+  let active = 0;
+
+  // Steps satisfied without running — currently just Transcribe (index 2),
+  // and only when "Use existing →" is chosen on the Transcript step. A
+  // skipped step still counts as reached (its circle turns green), but
+  // is marked distinctly rather than implying it actually ran.
+  const skippedSteps = new Set();
+
+  // A step with a real `scenarios` array (Source, Transcript) renders them
+  // as tabs rather than stacked — only one is ever actually true at once in
+  // the real app (a MediaManifest is never simultaneously eligible and
+  // not), so tabs match production instead of implying all states coexist.
+  // Keyed by step id, not a single shared index, so switching tabs on one
+  // step doesn't disturb another step's tab when you navigate back to it.
+  const activeScenario = {};
+
+  function renderScenarioTabs(step) {
+    if (activeScenario[step.id] === undefined) activeScenario[step.id] = 0;
+    const idx = activeScenario[step.id];
+    const tabs = step.scenarios.map((sc, i) => `
+      <button class="tab ${i === idx ? "active" : ""}" data-scenario-step="${step.id}" data-scenario-index="${i}" role="tab" aria-selected="${i === idx}">${sc.label}</button>
+    `).join("");
+    return `<div class="tabs" role="tablist">${tabs}</div>${step.scenarios[idx].html}`;
+  }
+
+  function renderRail() {
+    railEl.innerHTML = "";
+    steps.forEach((s, i) => {
+      const btn = document.createElement("button");
+      const isCurrent = i === active;
+      const isDone = i < furthest && !isCurrent;
+      const isSkipped = isDone && skippedSteps.has(i);
+      const isLocked = i > furthest;
+      btn.className = "rail-item " + (isCurrent ? "current" : isDone ? "done" : isLocked ? "locked" : "");
+      if (isSkipped) btn.title = `Skipped — ${s.label} was satisfied by an earlier choice, not run.`;
+      btn.innerHTML = `
+        <span class="node">
+          <span class="line line-before"></span>
+          <span class="num">${isSkipped ? "»" : isDone ? "✓" : i + 1}</span>
+          <span class="line line-after"></span>
+        </span>
+        <span class="label">${s.label}</span>`;
+      btn.disabled = i > furthest;
+      btn.setAttribute("aria-current", isCurrent ? "step" : "false");
+      btn.addEventListener("click", () => { active = i; render(); });
+      railEl.appendChild(btn);
+    });
+  }
+
+  // ── Review step: a real, working demo dataset and interaction — this
+  // is the most novel/interactive screen in the wizard, so it gets full
+  // fidelity rather than a schematic sketch (ADR-0008's wireframing
+  // decision). Field shapes mirror the real ScanHit/RenderInterval
+  // dataclasses (models.py) and the interval-merge rules mirror the real
+  // Interval Planner algorithm (PRD §8.3, MVP defaults) so the review
+  // and provenance behavior shown here is what the real screen will
+  // actually have to do, not just what looks plausible. ──────────────
+
+  const SOURCE_DURATION_MS = 48693108; // the real G4 fixture's measured duration
+  const PAD_LEAD_MS = 60, PAD_TAIL_MS = 80, MERGE_ADJACENCY_MS = 20; // PRD §8.3 MVP defaults
+
+  // maskAllTerms/hit.mask mirror the real Catalog's mask_all_terms/mask
+  // fields (ADR-0011) — a User sets these in the Catalog window, they
+  // are not hardcoded per category here. h13 below carries an explicit
+  // per-word mask even though its category doesn't, demonstrating that
+  // an individual word can still be masked in an otherwise-plain category.
+  const reviewCategories = [
+    { id: "cat-profanity", name: "Profanity", maskAllTerms: false },
+    { id: "cat-slurs", name: "Slurs", maskAllTerms: true }
+  ];
+
+  const reviewHits = [
+    { id: "h01", categoryId: "cat-profanity", term: "darn", rule: "exact_token", confidence: 0.91, startMs: 269340, endMs: 269820, before: ["and", "then", "he"], after: ["under", "his", "breath"] },
+    { id: "h02", categoryId: "cat-slurs", term: "input", rule: "exact_token", confidence: null, startMs: 612900, endMs: 613400, before: ["someone", "in", "the", "crowd"], after: ["shouted", "from", "the", "back"] },
+    { id: "h03", categoryId: "cat-profanity", term: "heck", rule: "exact_token", confidence: 0.88, startMs: 1332100, endMs: 1332560, before: ["what", "the"], after: ["is", "going", "on"] },
+    { id: "h04", categoryId: "cat-profanity", term: "dang", rule: "exact_token", confidence: 0.95, startMs: 2035500, endMs: 2035980, before: ["well", "that", "was", "one"], after: ["way", "to", "find", "out"] },
+    { id: "h05", categoryId: "cat-profanity", term: "oh darn", rule: "exact_phrase", confidence: 0.79, startMs: 2847220, endMs: 2847900, before: ["she", "froze", "and", "said"], after: ["not", "again"] },
+    { id: "h06", categoryId: "cat-slurs", term: "value", rule: "exact_token", confidence: 0.83, startMs: 3421750, endMs: 3422260, before: ["he", "muttered", "it"], after: ["without", "thinking"] },
+    { id: "h07", categoryId: "cat-profanity", term: "darn", rule: "exact_token", confidence: 0.90, startMs: 4467340, endMs: 4467820, before: ["and", "then", "he", "said"], after: ["it", "was", "too", "late"] },
+    { id: "h08", categoryId: "cat-profanity", term: "heck", rule: "exact_token", confidence: 0.86, startMs: 4467850, endMs: 4468320, before: ["darn"], after: ["that", "hurt"] },
+    { id: "h09", categoryId: "cat-slurs", term: "token", rule: "exact_token", confidence: null, startMs: 5501100, endMs: 5501600, before: ["the", "old", "man", "spat"], after: ["and", "walked", "away"] },
+    { id: "h10", categoryId: "cat-profanity", term: "dang it", rule: "exact_phrase", confidence: 0.81, startMs: 6203400, endMs: 6204050, before: ["she", "kicked", "the", "wall"], after: ["that", "really", "hurt"] },
+    { id: "h11", categoryId: "cat-profanity", term: "heck", rule: "exact_token", confidence: 0.93, startMs: 7012300, endMs: 7012780, before: ["what", "in", "the"], after: ["was", "that", "sound"] },
+    { id: "h12", categoryId: "cat-slurs", term: "label", rule: "exact_token", confidence: 0.77, startMs: 8455900, endMs: 8456420, before: ["someone", "yelled", "it", "across"], after: ["the", "tavern", "floor"] },
+    { id: "h13", categoryId: "cat-profanity", term: "darn", mask: true, rule: "exact_token", confidence: 0.89, startMs: 9821000, endMs: 9821480, before: ["for", "the", "love", "of"], after: ["can", "we", "just", "go"] },
+    { id: "h14", categoryId: "cat-profanity", term: "heck", rule: "exact_token", confidence: 0.92, startMs: 11734600, endMs: 11735100, before: ["he", "kicked", "the", "door"], after: ["open", "and", "froze"] }
+  ];
+
+  // Absent = included, matching Scan.status_for()'s real default (PRD
+  // §7.2's happy path expects excluding unwanted hits, not opting every
+  // hit in one by one).
+  const reviewDecisions = {};
+  const reviewSelected = new Set();
+  const reviewFilters = { category: "all", term: "all", confidence: "all", state: "all", sort: "time", dir: "asc" };
+  // Hits is the default and primary tab — reviewing/including/excluding
+  // hits is the actual task. Render Plan is the secondary, "advanced"
+  // view of what will run; most Users won't need to open it before
+  // clicking Continue.
+  let reviewTab = "hits";
+
+  function reviewStatus(hitId) {
+    return reviewDecisions[hitId] || "included";
+  }
+
+  function setReviewStatus(hitId, status) {
+    if (status === "included") delete reviewDecisions[hitId];
+    else reviewDecisions[hitId] = status;
+  }
+
+  function categoryName(id) {
+    const c = reviewCategories.find(c => c.id === id);
+    return c ? c.name : id;
+  }
+
+  function msToClock(ms) {
+    const totalSec = ms / 1000;
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return `${h}:${String(m).padStart(2, "0")}:${s.toFixed(1).padStart(4, "0")}`;
+  }
+
+  function formatDuration(ms) {
+    return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(2)}s`;
+  }
+
+  // First and last letter shown, everything between asterisked —
+  // e.g. "value" -> "v***e". Applied only to categories the User has
+  // chosen to keep out of plain view (here, Slurs) — Profanity's terms
+  // display in full, same as the real app would show a User their own
+  // catalog entries.
+  function maskTerm(term) {
+    if (term.length <= 2) return term[0] + "*".repeat(term.length - 1);
+    return term[0] + "*".repeat(term.length - 2) + term[term.length - 1];
+  }
+
+  function displayTerm(hit) {
+    // Mirrors CatalogService.is_masked()'s OR-composition exactly: a
+    // category-wide mask or a per-word mask, either one is enough.
+    const category = reviewCategories.find(c => c.id === hit.categoryId);
+    const categoryMasks = Boolean(category && category.maskAllTerms);
+    return categoryMasks || hit.mask ? maskTerm(hit.term) : hit.term;
+  }
+
+  function filteredSortedHits() {
+    let list = reviewHits.filter(h => {
+      if (reviewFilters.category !== "all" && h.categoryId !== reviewFilters.category) return false;
+      if (reviewFilters.term !== "all" && h.term !== reviewFilters.term) return false;
+      if (reviewFilters.confidence === "available" && h.confidence == null) return false;
+      if (reviewFilters.confidence === "unavailable" && h.confidence != null) return false;
+      if (reviewFilters.state !== "all" && reviewStatus(h.id) !== reviewFilters.state) return false;
+      return true;
+    });
+    const dir = reviewFilters.dir === "desc" ? -1 : 1;
+    list = list.slice().sort((a, b) => {
+      let cmp = 0;
+      if (reviewFilters.sort === "time") cmp = a.startMs - b.startMs;
+      else if (reviewFilters.sort === "category") cmp = categoryName(a.categoryId).localeCompare(categoryName(b.categoryId));
+      else if (reviewFilters.sort === "term") cmp = a.term.localeCompare(b.term);
+      else if (reviewFilters.sort === "confidence") cmp = (a.confidence ?? -1) - (b.confidence ?? -1);
+      return cmp * dir;
+    });
+    return list;
+  }
+
+  // Simplified version of the real Interval Planner (PRD §8.3): pad each
+  // included hit, clamp to the source duration, sort, then merge any
+  // padded intervals that touch or overlap — carrying every contributing
+  // hit id forward as provenance (models.py's RenderInterval.hit_ids).
+  function computeIntervals() {
+    const included = reviewHits.filter(h => reviewStatus(h.id) === "included");
+    const padded = included
+      .map(h => ({
+        start: Math.max(0, h.startMs - PAD_LEAD_MS),
+        end: Math.min(SOURCE_DURATION_MS, h.endMs + PAD_TAIL_MS),
+        hitIds: [h.id]
+      }))
+      .sort((a, b) => a.start - b.start);
+
+    const merged = [];
+    for (const iv of padded) {
+      const last = merged[merged.length - 1];
+      if (last && iv.start - last.end <= MERGE_ADJACENCY_MS) {
+        last.end = Math.max(last.end, iv.end);
+        last.hitIds.push(...iv.hitIds);
+      } else {
+        merged.push({ start: iv.start, end: iv.end, hitIds: [...iv.hitIds] });
+      }
+    }
+    return merged;
+  }
+
+  function reviewSummary() {
+    const included = reviewHits.filter(h => reviewStatus(h.id) === "included");
+    const excluded = reviewHits.filter(h => reviewStatus(h.id) === "excluded");
+    // Matches build_report()'s real semantics: term_counts (and so
+    // unique_terms_hit) counts every raw hit regardless of review status.
+    const uniqueTermsHit = new Set(reviewHits.map(h => h.term)).size;
+    const intervals = computeIntervals();
+    const attenuatedMs = intervals.reduce((sum, iv) => sum + (iv.end - iv.start), 0);
+    return {
+      total: reviewHits.length,
+      included: included.length,
+      excluded: excluded.length,
+      uniqueTermsHit,
+      attenuatedMs,
+      intervals
+    };
+  }
+
+  // Builds the Review step's full inner HTML for a given tab. Pure
+  // (no DOM reads/writes) so it can be reused both by the real render
+  // and by measureTallestStepHeight()'s off-screen probe — the probe
+  // needs Review's actual rendered content, not its empty <div id=
+  // "reviewRoot"> placeholder body, to correctly find the tallest step.
+  function buildReviewRootHtml(tab) {
+    const summary = reviewSummary();
+    const rows = filteredSortedHits();
+    const terms = [...new Set(reviewHits.map(h => h.term))].sort();
+
+    const hitsPanel = `
+      <div class="filter-bar">
+        <label>Category
+          <select id="fltCategory">
+            <option value="all">All</option>
+            ${reviewCategories.map(c => `<option value="${c.id}" ${reviewFilters.category === c.id ? "selected" : ""}>${c.name}</option>`).join("")}
+          </select>
+        </label>
+        <label>Term
+          <select id="fltTerm">
+            <option value="all">All</option>
+            ${terms.map(t => {
+              const owner = reviewHits.find(h => h.term === t);
+              const label = owner ? displayTerm(owner) : t;
+              return `<option value="${t}" ${reviewFilters.term === t ? "selected" : ""}>${label}</option>`;
+            }).join("")}
+          </select>
+        </label>
+        <label>Confidence
+          <select id="fltConfidence">
+            <option value="all">All</option>
+            <option value="available" ${reviewFilters.confidence === "available" ? "selected" : ""}>Available</option>
+            <option value="unavailable" ${reviewFilters.confidence === "unavailable" ? "selected" : ""}>Not available</option>
+          </select>
+        </label>
+        <label>State
+          <select id="fltState">
+            <option value="all">All</option>
+            <option value="included" ${reviewFilters.state === "included" ? "selected" : ""}>Included</option>
+            <option value="excluded" ${reviewFilters.state === "excluded" ? "selected" : ""}>Excluded</option>
+          </select>
+        </label>
+        <label>Sort
+          <select id="fltSort">
+            <option value="time" ${reviewFilters.sort === "time" ? "selected" : ""}>Time</option>
+            <option value="category" ${reviewFilters.sort === "category" ? "selected" : ""}>Category</option>
+            <option value="term" ${reviewFilters.sort === "term" ? "selected" : ""}>Term</option>
+            <option value="confidence" ${reviewFilters.sort === "confidence" ? "selected" : ""}>Confidence</option>
+          </select>
+        </label>
+        <button class="btn small ghost" id="fltDirBtn" title="Toggle sort direction">${reviewFilters.dir === "desc" ? "↓" : "↑"}</button>
+      </div>
+
+      <div class="bulk-bar ${reviewSelected.size ? "" : "is-empty"}">
+        <span>${reviewSelected.size} selected</span>
+        <button class="btn small" id="bulkIncludeBtn">Include</button>
+        <button class="btn small" id="bulkExcludeBtn">Exclude</button>
+      </div>
+
+      <div class="table-scroll">
+        <table class="hits">
+          <thead>
+            <tr>
+              <th><input type="checkbox" id="selectAllBox"></th>
+              <th>Time</th><th>Category</th><th>Term</th><th>Context</th><th>Conf.</th><th>State</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.length === 0
+              ? `<tr><td colspan="7" class="interval-empty">No hits match the current filters.</td></tr>`
+              : rows.map(h => {
+                  const status = reviewStatus(h.id);
+                  return `
+                    <tr class="${status === "excluded" ? "excluded" : ""}">
+                      <td><input type="checkbox" class="rowBox" data-hit="${h.id}" ${reviewSelected.has(h.id) ? "checked" : ""}></td>
+                      <td class="mono">${msToClock(h.startMs)}</td>
+                      <td>${categoryName(h.categoryId)}</td>
+                      <td class="term-cell">${displayTerm(h)}</td>
+                      <td class="context-cell">${h.before.join(" ")} <span class="term-cell">${displayTerm(h)}</span> ${h.after.join(" ")}</td>
+                      <td>${h.confidence == null ? `<span class="conf-chip na">n/a</span>` : `<span class="conf-chip">${Math.round(h.confidence * 100)}%</span>`}</td>
+                      <td>
+                        <span class="state-toggle">
+                          <button class="incl ${status === "included" ? "active" : ""}" data-hit="${h.id}" data-status="included" title="Include">✓</button>
+                          <button class="excl ${status === "excluded" ? "active" : ""}" data-hit="${h.id}" data-status="excluded" title="Exclude">✕</button>
+                        </span>
+                      </td>
+                    </tr>`;
+                }).join("")
+            }
+          </tbody>
+        </table>
+      </div>`;
+
+    const planPanel = `
+      <p class="tab-panel-note">
+        What will actually run when you click Render — merged, padded intervals with
+        provenance back to the hits that produced each one. Most people won't need to
+        check this before continuing.
+      </p>
+      <div class="interval-heading">
+        <p class="sketch-label">merged interval provenance</p>
+        <span class="interval-total">${summary.intervals.length} interval${summary.intervals.length === 1 ? "" : "s"} · ${formatDuration(summary.attenuatedMs)} total</span>
+      </div>
+      <div class="interval-list">
+        ${summary.intervals.length === 0
+          ? `<div class="interval-empty">Nothing included — the render plan is empty.</div>`
+          : summary.intervals.map(iv => {
+              const contribTerms = iv.hitIds.map(id => displayTerm(reviewHits.find(h => h.id === id)));
+              return `
+                <div class="interval-row">
+                  <span class="interval-time">${msToClock(iv.start)}–${msToClock(iv.end)}</span>
+                  <span class="interval-dur">${formatDuration(iv.end - iv.start)}</span>
+                  <span class="interval-prov">merged from <strong>${iv.hitIds.length}</strong> hit${iv.hitIds.length === 1 ? "" : "s"}: ${contribTerms.join(", ")}</span>
+                </div>`;
+            }).join("")
+        }
+      </div>`;
+
+    return `
+      <div class="stat-strip">
+        <div class="stat"><span class="stat-label">Total hits</span><span class="stat-value">${summary.total}</span></div>
+        <div class="stat"><span class="stat-label">Included</span><span class="stat-value included">${summary.included}</span></div>
+        <div class="stat"><span class="stat-label">Excluded</span><span class="stat-value excluded">${summary.excluded}</span></div>
+        <div class="stat"><span class="stat-label">Unique terms hit</span><span class="stat-value">${summary.uniqueTermsHit}</span></div>
+        <div class="stat"><span class="stat-label">Attenuated total</span><span class="stat-value">${formatDuration(summary.attenuatedMs)}</span></div>
+      </div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab ${tab === "hits" ? "active" : ""}" data-tab="hits" role="tab" aria-selected="${tab === "hits"}">Hits</button>
+        <button class="tab ${tab === "plan" ? "active" : ""}" data-tab="plan" role="tab" aria-selected="${tab === "plan"}">Render Plan</button>
+      </div>
+
+      ${tab === "hits" ? hitsPanel : planPanel}
+    `;
+  }
+
+  function renderReviewPanel() {
+    const root = document.getElementById("reviewRoot");
+    if (!root) return;
+    root.innerHTML = buildReviewRootHtml(reviewTab);
+
+    root.querySelectorAll(".tab").forEach(btn => {
+      btn.addEventListener("click", () => { reviewTab = btn.dataset.tab; renderReviewPanel(); });
+    });
+
+    if (reviewTab !== "hits") return; // nothing else below exists in the Render Plan tab
+
+    const rows = filteredSortedHits(); // same filtered set buildReviewRootHtml() just rendered
+
+    document.getElementById("fltCategory").addEventListener("change", e => { reviewFilters.category = e.target.value; renderReviewPanel(); });
+    document.getElementById("fltTerm").addEventListener("change", e => { reviewFilters.term = e.target.value; renderReviewPanel(); });
+    document.getElementById("fltConfidence").addEventListener("change", e => { reviewFilters.confidence = e.target.value; renderReviewPanel(); });
+    document.getElementById("fltState").addEventListener("change", e => { reviewFilters.state = e.target.value; renderReviewPanel(); });
+    document.getElementById("fltSort").addEventListener("change", e => { reviewFilters.sort = e.target.value; renderReviewPanel(); });
+    document.getElementById("fltDirBtn").addEventListener("click", () => { reviewFilters.dir = reviewFilters.dir === "desc" ? "asc" : "desc"; renderReviewPanel(); });
+
+    document.getElementById("selectAllBox").addEventListener("change", e => {
+      rows.forEach(h => e.target.checked ? reviewSelected.add(h.id) : reviewSelected.delete(h.id));
+      renderReviewPanel();
+    });
+
+    root.querySelectorAll(".rowBox").forEach(box => {
+      box.addEventListener("change", e => {
+        const id = e.target.dataset.hit;
+        if (e.target.checked) reviewSelected.add(id); else reviewSelected.delete(id);
+        renderReviewPanel();
+      });
+    });
+
+    root.querySelectorAll(".state-toggle button").forEach(btn => {
+      btn.addEventListener("click", () => {
+        setReviewStatus(btn.dataset.hit, btn.dataset.status);
+        renderReviewPanel();
+      });
+    });
+
+    // Bulk buttons are always present (just visibility:hidden, and so
+    // unclickable, while nothing is selected) — always wire them rather
+    // than conditionally, so there's no dependency on render order.
+    document.getElementById("bulkIncludeBtn").addEventListener("click", () => {
+      reviewSelected.forEach(id => setReviewStatus(id, "included"));
+      reviewSelected.clear();
+      renderReviewPanel();
+    });
+    document.getElementById("bulkExcludeBtn").addEventListener("click", () => {
+      reviewSelected.forEach(id => setReviewStatus(id, "excluded"));
+      reviewSelected.clear();
+      renderReviewPanel();
+    });
+  }
+
+  function renderPane() {
+    const s = steps[active];
+    const skippedNotice = s.id === "transcribe" && skippedSteps.has(2)
+      ? `<div class="sketch" style="border-style:solid;border-color:var(--success);">
+           <p class="sketch-label" style="color:var(--success);">skipped</p>
+           <p style="font-size:.85rem;color:var(--prose);margin:0;">
+             Satisfied by reusing a compatible saved transcript in the previous step —
+             nothing to transcribe, so this step is marked complete without running.
+           </p>
+         </div>`
+      : "";
+    const mainContent = (s.body || "") + (s.scenarios ? renderScenarioTabs(s) : "");
+    paneEl.innerHTML = `
+      <p class="step-eyebrow">${s.eyebrow}</p>
+      <h2 class="step-title">${s.title}</h2>
+      <p class="step-sub">${s.sub}</p>
+      ${skippedNotice || mainContent}
+    `;
+    stepTagEl.textContent = `STEP ${active + 1} / ${steps.length}`;
+    backBtn.disabled = active === 0;
+    nextBtn.textContent = active === steps.length - 1 ? "Done" : "Continue";
+    navHintEl.textContent = active < steps.length - 1
+      ? `Next: ${steps[active + 1].label}`
+      : "End of wizard.";
+
+    paneEl.querySelectorAll("[data-scenario-step]").forEach(btn => {
+      btn.addEventListener("click", () => {
+        activeScenario[btn.dataset.scenarioStep] = Number(btn.dataset.scenarioIndex);
+        renderPane();
+      });
+    });
+
+    const useExistingBtn = document.getElementById("useExistingBtn");
+    if (useExistingBtn) useExistingBtn.addEventListener("click", useExistingTranscript);
+    const reTranscribeBtn = document.getElementById("reTranscribeBtn");
+    if (reTranscribeBtn) reTranscribeBtn.addEventListener("click", reTranscribeAnyway);
+
+    if (s.id === "review") renderReviewPanel();
+  }
+
+  // The one behavior this wireframe demonstrates live, not just describes:
+  // reusing a compatible transcript skips Transcribe (index 2) entirely and
+  // jumps straight to Profile (index 3) — there is nothing to run.
+  function useExistingTranscript() {
+    skippedSteps.add(2);
+    furthest = Math.max(furthest, 3);
+    active = 3;
+    render();
+  }
+
+  function reTranscribeAnyway() {
+    skippedSteps.delete(2);
+    furthest = Math.max(furthest, 2);
+    active = 2;
+    render();
+  }
+
+  const designNotes = [
+    {
+      tag: "Scenario tabs",
+      html: "<strong>Tabbed, not stacked.</strong> Source and Transcript each show more than one possible real state (eligible/not; transcript-found/choose-model/offline) — tabs (reusing Review's existing <code>.tab</code> pattern) keep the pane's height from growing with every new edge case, and match production more honestly than stacking, since only one of these is ever actually true at once for a given source."
+    },
+    {
+      tag: "Step rail",
+      html: "<strong>Steps lock in order.</strong> A step unlocks only once its prerequisite completes; Back is always free, to revisit or edit any earlier step."
+    },
+    {
+      tag: "Close / Cancel",
+      html: "<strong>Cancel confirms when it matters.</strong> Closing the wizard mid-Transcribe or mid-Render prompts first, mirroring the confirm-before-close pattern <code>ModelManagerWindow</code> already uses."
+    },
+    {
+      tag: "Transcribe",
+      html: "<strong>Transcribe is durable.</strong> Progress is written through the existing SQLite Job Orchestrator (ADR-0005) on every committed chunk (real fields: <code>JobRecord.progress_message</code>/<code>.progress_fraction</code>, via <code>JobStore.update_progress()</code> — <code>transcription_orchestrator.run_transcription_job()</code> already calls this after every chunk it commits, so this screen has real data to bind to, not a value that needs inventing), so closing the wizard here and reopening later resumes rather than restarting. Start is its own explicit action (a new “ready to start” state, not in the original ADR-0010 sketch) — nothing about a compatible-model choice on the Transcript step should be read as consent to immediately start a long-running, resource-intensive job."
+    },
+    {
+      tag: "Chunking strategy — superseded, then re-decided with real data",
+      html: "<strong>Chapter-sized chunks now, not 30s/5s — pause-latency deliberately deprioritized.</strong> The 30s/5s default shown in this mockup until 2026-08-25 was itself a reasonable provisional call (see the struck-through reasoning it replaced, preserved in ADR-0001) — but investigating it surfaced that <code>run_whisper()</code> reloads its full model from disk on every chunk invocation, so a small pause-latency-driven chunk size multiplies that fixed cost nearly 2,000 times over a long book. The product owner's call: User-initiated pause is an edge case, not worth that cost — PRD D-16/§11.3/§15.3 are revised accordingly (first edits to <code>docs/PRD.md</code> itself since this fork's initial commit). Chunk boundaries now follow chapter markers by default (one chunk per chapter, a 45-minute ceiling for the rare oversized one, a 15-minute fallback for chapterless sources) — validated by actually running three real chapters from this book (17.4s, 18.2min, 28.8min) through <code>whisper-cli</code> as single calls: stable RTF, sublinear memory growth, clean accurate output throughout. Crash durability (a separate PRD D-17 concern) isn't deprioritized — it's just re-bounded to roughly one chapter's worth of lost work instead of one small chunk's, an explicitly accepted trade. Full rationale and the real numbers: ADR-0001's \"Chunking strategy\" section."
+    },
+    {
+      tag: "Transcribe — still open",
+      html: "<strong>One gap got easier, one is unchanged.</strong> (1) The “Chapter N / M” label still needs a real correlation helper that doesn't exist in code yet — <code>ChunkPlan</code> (chunking.py) carries no chapter reference, just <code>owned_start_ms</code>/<code>owned_end_ms</code> — but chapter-sized chunking (see above) means chunk index equals chapter index in the common case now, so this is closer to “label the chunk index directly” than the correlation-lookup problem it was against 30s chunks, where a chapter was ~39 chunks and the two numbers had nothing to do with each other. Still not built, just simpler to build. (2) “Est. remaining” still has no throughput data to compute it from without inventing an assumption — shown here as explicitly blank rather than a guess dressed up as a measurement."
+    },
+    {
+      tag: "Auto-skip",
+      html: "<strong>Reusing a transcript skips Transcribe, not just visits it.</strong> Try it: on the Transcript step, click “Use existing →” — the wizard jumps straight to Profile, and Transcribe's circle marks “»” (skipped) rather than “✓” (done). Back from Profile skips over it too, since there's nothing there to review."
+    },
+    {
+      tag: "Transcript — decided",
+      html: "<strong>Model download is inline, not a link-out.</strong> Reuses <code>ModelDownloadWorker</code> exactly as <code>ModelManagerWindow</code> already does (ADR-0009) — same progress-signal shape (message + fraction), same checksum-verified atomic staging underneath, just a second place it can be driven from. The one loose end this creates, not yet resolved: ADR-0009's 'one download at a time' guard is scoped to <code>ModelManagerWindow</code>'s own <code>_downloading_name</code> state, not shared — if both that window and the wizard are open at once, nothing today stops each from starting its own download of the same model file simultaneously. Needs a shared in-flight guard (e.g. a small module-level lock in <code>gui/filter/workers.py</code> both windows check) before real implementation, not deferred to be discovered by a race in testing."
+    },
+    {
+      tag: "Progress label",
+      html: "<strong>“Chapter” when it's true, “Section” when it isn't — intent unchanged, implementation still open.</strong> Chunking is chapter-<em>aware</em>, not chapter-equivalent (<code>chunking.py</code>): a chapter longer than the pause-latency budget gets subdivided, and a source with sparse/no chapter markers falls back to fixed-duration chunks entirely. The design intent is unchanged from the original shell review — chapter numbers only when a chapter maps to exactly one processing chunk, “Section X of Y” otherwise, so the label never claims chapter-level precision the source doesn't have — but see “Transcribe — open questions”: the correlation code that would actually decide which label applies doesn't exist yet, so the Running scenario shown here flags it rather than asserting it."
+    },
+    {
+      tag: "Profile",
+      html: "<strong>Selection here; authoring in its own editor, per ADR-0008/ADR-0016.</strong> “Manage Word Catalog…” still opens the already-shipped <code>CatalogWindow</code> (ADR-0008) for category/word CRUD, exactly as ADR-0010 decided. Profile CRUD — naming a profile, picking its <code>entry_ids</code>, setting its <code>AttenuationSettings</code> — turned out to already have a settled home: <code>catalog_window.py</code>'s own docstring says profile management \"belongs with the wizard's 'select profile' step, a later increment\", so “+ New Profile” opens a modal editor scoped to the wizard, not a new <code>CatalogWindow</code> pane (ADR-0016 is that later increment). Real per-profile counts shown here (categories touched, total words) are computed live from <code>entry_ids</code>, not stored fields. First-run is the realistic default, not an edge case: PRD §9.2 ships no starter catalog enabled, so a fresh install has zero profiles and Continue must stay blocked — there's nothing to freeze into a snapshot yet (PRD §9.4)."
+    },
+    {
+      tag: "Scan",
+      html: "<strong>Every scan-summary field is real, and the running state is deliberately simple.</strong> <code>scan.run_scan()</code>/<code>build_report()</code> already exist (G2/G3) — the snapshot name/revision, hit/term/category counts, and planned attenuated duration shown here are real <code>ScanReport</code> fields, not invented for this pass. What's genuinely open: <code>matcher.scan_transcript()</code> has no chunk boundary the way Transcribe's chunks do, and its own docstring already flags it as unbenchmarked against a real long transcript — so \"Running\" is sketched as a plain indeterminate busy state, not a job-orchestrator-backed pause/resume flow. Building that anyway, with no evidence it's slow enough to need it, would be the same over-engineering mistake the original 30s/5s pause-latency chunking default turned out to be (see the Transcribe/chunking notes above) — if a real benchmark someday says otherwise, that's a real re-scoping decision, not a small tweak. Advanced settings (padding, merge adjacency, gain floor) stay behind a disclosure and read-only — PRD §7.1 keeps the happy path unblocked by them, and they're authored on the profile (ADR-0016/0017), not re-configurable per scan. Re-scan is its own explicit action (PRD §9.4: a re-scan is always a new revision, never a silent copy of old decisions)."
+    },
+    {
+      tag: "Render",
+      html: "<strong>The most already-built backend of any step so far — and the one open question here was already answered before this pass started.</strong> <code>renderer.render()</code>/<code>validator.validate()</code> (ADR-0006/0007) are real, tested, benchmarked against an actual ~13.5-hour production audiobook: real determinate progress (four real stages via <code>render()</code>'s own <code>progress_callback</code>), a real measured render time (615s/10.25min for that one fixture), and a real, already-<em>decided</em> stance on durability — ADR-0007 itself: \"given the real 615s/10.25-minute total render time... full-restart-on-failure is a reasonable MVP position,\" matching PRD §11.4's mandatory-fallback tier. That's the opposite of Scan's situation (genuinely unresolved, deliberately left open) — here the answer already exists, so the wireframe cites it rather than re-litigating it. What's actually open instead: three small, concrete, not-yet-built pieces surfaced by grounding this screen in the real code — an output-path default-naming helper (the base app's own <code>_computed_output_path()</code> is shaped for a different flow and doesn't transfer), a reusable export of the base app's own bitrate-snap-to-source logic (real and correct, just private/inline in <code>window.py</code> today), and <code>ReviewStep</code> needing a public getter for its current plan before Render can actually be wired to it (the same \"nothing downstream consumes this yet\" spot every earlier step passed through). A validation failure is treated exactly like a render failure — Needs Attention, real issue text, file left on disk since Retry safely overwrites it via the same atomic staging already proven in <code>encode_and_mux()</code>."
+    },
+    {
+      tag: "Complete",
+      html: "<strong>A real factual correction, not just a grounding pass.</strong> The original sketch for this step (drafted before Render existed) showed three separate green checks with specific numbers — \"duration match Δ 0 ms,\" \"chapters 50/50,\" \"metadata &amp; cover preserved\" — as if each were individually confirmed. Now that Render is real, that turns out not to be achievable honestly: <code>validator.py</code>'s checks only ever produce a structured <code>ValidationIssue</code> when something <em>fails</em>; a passing <code>ValidationReport</code> has zero issues and no recorded per-check value to display. Corrected to one combined \"passed validation\" statement (with real <code>.warnings</code> listed when present) — the same \"don't show a guess dressed as data\" standard already applied to Transcribe's \"Est. remaining\" and Render's \"Est. render time.\" Three things flagged, not solved, for whenever this step is actually implemented: (1) <code>RenderStep</code> has no public getter yet for its own <code>RenderResult</code>/<code>ValidationReport</code>/report path — the same \"nothing downstream consumes this yet\" gap every previous step passed through before its successor existed. (2) <strong>Resolved</strong> — the shell's own footer already renders \"Done\" as its button label on the last step (<code>WizardWindow._render()</code>: <code>is_last ? \"Done\" : \"Continue\"</code>), but <code>_on_continue()</code> had no special case for it, so clicking it did nothing at all — now decided: Done closes the wizard window. No separate \"filter another book\" reset action is needed alongside it — every step's own re-entry guard (Source through Render) already handles \"go back to Source, pick a different file\" correctly on its own, so clicking the Source rail cell and choosing a new file already works as the real \"start another book\" path without the window ever closing. Formalized in this step's own implementation ADR when built, not here. (3) \"Open Folder\" has no precedent anywhere in this codebase (checked — no existing reveal-in-Finder/Explorer helper) — a real, small, first-time addition (<code>QDesktopServices.openUrl(QUrl.fromLocalFile(...))</code> against the output's parent folder), not a port of something that already exists."
+    },
+    {
+      tag: "Empty states",
+      html: "<strong>First-run states render inline</strong>, in the same shell, not as separate error screens — required by PRD §7.3 (shown here, on the Transcript step: no model installed yet)."
+    },
+    {
+      tag: "Masking",
+      html: "<strong>Masking is a real Catalog setting, not hardcoded.</strong> A User marks a whole category or one specific word as masked in the Word Catalog window (ADR-0011) — this demo's data mirrors that: the Slurs category is category-masked, and one Profanity word (“darn” on Hit h13) carries its own per-word mask despite its category being plain. The two compose by OR, same as <code>CatalogService.is_masked()</code>."
+    },
+    {
+      tag: "Source",
+      html: "<strong>Every field is real — implemented, not sketched.</strong> Source's eligibility panel mirrors <code>MediaManifest</code> (media_inspector.py) exactly — audio track, duration, chapters, metadata, cover art, storage estimate (<code>renderer.estimate_storage_bytes()</code>, ADR-0013), and compatible-saved-transcript lookup (<code>transcript.find_compatible_transcript()</code>, ADR-0013). Live-verified against the real app with real <code>ffprobe</code> inspection, not mocked."
+    }
+  ];
+
+  function renderNotes() {
+    notesEl.innerHTML = designNotes.map(n => `
+      <div class="note-row">
+        <span class="note-tag">${n.tag}</span>
+        <p>${n.html}</p>
+      </div>
+    `).join("");
+  }
+
+  function render() { renderRail(); renderPane(); }
+
+  // The frame's height comes from the tallest step's actual rendered
+  // content, measured directly — not a guessed pixel value — so every
+  // step shares one consistent window size and none of them needs an
+  // internal scrollbar. Measured off-screen at the pane's real width,
+  // since text wrapping (and therefore height) depends on it.
+  function measureTallestStepHeight() {
+    const probe = document.createElement("div");
+    probe.className = "pane-scroll";
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    probe.style.pointerEvents = "none";
+    probe.style.top = "0";
+    probe.style.left = "-9999px";
+    probe.style.minHeight = "0";
+    probe.style.width = paneEl.clientWidth + "px";
+    document.body.appendChild(probe);
+
+    let max = 0;
+    steps.forEach(s => {
+      // Review's real content is rendered dynamically (buildReviewRootHtml),
+      // not static like every other step's s.body — which is just an empty
+      // placeholder <div>. Measure both of its tabs directly so the probe
+      // sees what Review will actually render, not an empty container.
+      if (s.id === "review") {
+        max = Math.max(max, measureStaticHtml(probe, s, buildReviewRootHtml("hits")));
+        max = Math.max(max, measureStaticHtml(probe, s, buildReviewRootHtml("plan")));
+        return;
+      }
+      max = Math.max(max, measureStaticHtml(probe, s, s.body));
+    });
+
+    document.body.removeChild(probe);
+    return max;
+  }
+
+  function measureStaticHtml(probe, step, bodyHtml) {
+    probe.innerHTML = `
+      <p class="step-eyebrow">${step.eyebrow}</p>
+      <h2 class="step-title">${step.title}</h2>
+      <p class="step-sub">${step.sub}</p>
+      ${bodyHtml}
+    `;
+    return probe.scrollHeight;
+  }
+
+  function applyConsistentStepHeight() {
+    paneEl.style.minHeight = measureTallestStepHeight() + "px";
+  }
+
+  backBtn.addEventListener("click", () => {
+    if (active === 0) return;
+    do { active--; } while (active > 0 && skippedSteps.has(active));
+    render();
+  });
+  nextBtn.addEventListener("click", () => {
+    if (active < steps.length - 1) {
+      active++;
+      furthest = Math.max(furthest, active);
+      render();
+    }
+  });
+
+  render();
+  renderNotes();
+  applyConsistentStepHeight();
+
+  // Web fonts (IBM Plex) can swap in after first paint and change text
+  // metrics slightly — remeasure once they're actually loaded.
+  if (document.fonts && document.fonts.ready) {
+    document.fonts.ready.then(applyConsistentStepHeight);
+  }
+
+  // Column width affects text wrapping, so a resize can change the
+  // tallest step's height — remeasure, debounced.
+  let resizeTimer;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(applyConsistentStepHeight, 150);
+  });
+</script>

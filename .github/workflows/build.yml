@@ -1,0 +1,64 @@
+name: Build Windows
+
+# Produces a private Windows installer artifact (not a public GitHub Release).
+# Download from the Actions run → Artifacts → m4Bookmaker-windows-setup.zip.
+# Then upload the unzipped .exe to Payhip manually.
+
+on:
+  push:
+    tags:
+      - "v*"           # trigger on version tags: v0.1.0, v1.2.3, etc.
+  workflow_dispatch:   # allow manual runs from Actions tab
+
+jobs:
+  build-windows:
+    name: Build Windows (.exe installer)
+    runs-on: windows-latest
+    steps:
+      # NOTE: Use @v4 for checkout and @v5 for setup-python.
+      # actions/checkout@v6 and actions/setup-python@v6 do not exist and will
+      # cause the job to fail with a cryptic "Could not find" error.
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # Install from the fully pinned, hash-verified lockfile (reproducible
+          # release builds) instead of the floor-pinned requirements files.
+          # See requirements-build.lock header for the regen command.
+          pip install --require-hashes -r requirements-build.lock
+          # pip install -e . is required even though requirements are already
+          # installed: without it, pytest cannot import the m4bmaker package
+          # itself (only its dependencies are on sys.path). --no-deps is
+          # required to coexist with --require-hashes above (pip refuses to
+          # resolve additional, unhashed dependencies once --require-hashes
+          # has been used in the environment for this install set).
+          pip install --no-deps -e .
+
+      - name: Run tests
+        run: |
+          set QT_QPA_PLATFORM=offscreen
+          rem GUI tests require a real display; skip them in CI
+          python -m pytest tests/ --ignore=tests/gui -q --tb=short
+        shell: cmd
+
+      - name: Build .exe
+        run: pyinstaller -y m4bmaker-windows.spec
+
+      - name: Build installer
+        shell: cmd
+        run: |
+          choco install innosetup -y --no-progress
+          "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: m4Bookmaker-windows-setup
+          path: dist/m4Bookmaker-windows-setup.exe
+          retention-days: 30

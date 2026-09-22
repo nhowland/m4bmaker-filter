@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "m4bmaker-filter"
+version = "1.1.1"
+description = "Convert a directory of audio files into a single .m4b audiobook with chapters, cover art, and metadata — with offline offensive-language filtering (a fork of m4bmaker)"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+authors = [
+    { name = "sageframe-no-kaji" },
+]
+keywords = ["audiobook", "m4b", "ffmpeg", "chapters", "metadata", "converter", "filter"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: MacOS",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio :: Conversion",
+]
+dependencies = [
+    "mutagen>=1.47",
+    "natsort>=8.4",
+    "platformdirs>=4.0",
+]
+
+[project.optional-dependencies]
+gui = ["PySide6>=6.6"]
+
+[project.scripts]
+m4bmaker-filter = "m4bmaker.__main__:main"
+m4bmaker-filter-gui = "m4bmaker.gui.app:main"
+
+[project.urls]
+Homepage = "https://github.com/nhowland/m4bmaker-filter"
+Repository = "https://github.com/nhowland/m4bmaker-filter"
+
+[tool.setuptools.packages.find]
+include = ["m4bmaker*"]
+
+[tool.black]
+line-length = 88
+target-version = ["py311"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v"
+pythonpath = ["."]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if __name__ == .__main__.:",
+]

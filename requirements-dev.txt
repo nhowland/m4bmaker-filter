@@ -1,0 +1,22 @@
+# Development, linting, type-checking, and test dependencies
+-r requirements.txt
+
+# Testing
+pytest>=8.0
+pytest-cov>=5.0
+
+# Type checking
+mypy>=1.9
+# types-natsort: natsort ships its own inline stubs since 8.x; no separate package needed
+
+# Linting & formatting
+black>=24.0
+flake8>=7.0
+
+# Cover image resolution comparison (used in cover.py and tests)
+Pillow>=10.0
+
+# macOS .app bundle packaging
+pyinstaller>=6.0
+# Provides static ffmpeg/ffprobe binaries (arm64 + x86_64) used in m4bmaker.spec
+static-ffmpeg>=2.5
