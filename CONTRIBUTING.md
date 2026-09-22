@@ -19,8 +19,8 @@ your development environment, run tests and linters, and submit changes.
 
 ```bash
 # 1. Fork and clone
-git clone https://github.com/sageframe-no-kaji/m4bmaker.git
-cd m4bmaker
+git clone https://github.com/nhowland/m4bmaker-filter.git
+cd m4bmaker-filter
 
 # 2. Create a virtual environment
 python3 -m venv .venv
