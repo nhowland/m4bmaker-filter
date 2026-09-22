@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "m4bmaker-filter"
 version = "1.1.1"
-description = "Convert a directory of audio files into a single .m4b audiobook with chapters, cover art, and metadata — with offline offensive-language filtering (a fork of m4bmaker)"
+description = "Convert a directory of audio files into a single .m4b audiobook with chapters, cover art, and metadata — plus a fully offline language filter. A fork of m4Bookmaker (sageframe-no-kaji/m4bmaker)."
 readme = "README.md"
 license = "GPL-3.0-or-later"
 license-files = ["LICENSE"]
@@ -13,7 +13,7 @@ requires-python = ">=3.11"
 authors = [
     { name = "sageframe-no-kaji" },
 ]
-keywords = ["audiobook", "m4b", "ffmpeg", "chapters", "metadata", "converter", "filter"]
+keywords = ["audiobook", "m4b", "ffmpeg", "chapters", "metadata", "converter", "filter", "transcription", "offline"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Environment :: Console",
