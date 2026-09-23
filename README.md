@@ -90,6 +90,8 @@ Or with the optional GUI:
 pip install m4bmaker-filter[gui]
 ```
 
+> **Python 3.11 or newer is required.** On an older Python, pip won't tell you that — it just reports `No matching distribution found for m4bmaker-filter`, which reads like the package doesn't exist. Check with `python3 --version`; the default `python3` on macOS is often 3.9, so you may need to install a newer one (e.g. `brew install python@3.12`) and use `python3.12 -m pip install m4bmaker-filter`.
+
 Install ffmpeg if you don't have it:
 
 ```bash
