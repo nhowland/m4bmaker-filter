@@ -253,13 +253,21 @@ class TestProcessIsAlive:
         assert _process_is_alive(os.getpid()) is True
 
     def test_returns_false_when_process_lookup_error(self) -> None:
-        with patch("m4bmaker.utils.os.kill", side_effect=ProcessLookupError):
+        # Platform pinned: the function short-circuits to True on win32, so
+        # without this the test can't reach the POSIX branch on Windows.
+        with (
+            patch("m4bmaker.utils.sys.platform", "linux"),
+            patch("m4bmaker.utils.os.kill", side_effect=ProcessLookupError),
+        ):
             assert _process_is_alive(999999) is False
 
     def test_returns_true_when_permission_denied(self) -> None:
         # Exists, just not signalable by us -- treated as alive so its
         # directory is never touched.
-        with patch("m4bmaker.utils.os.kill", side_effect=PermissionError):
+        with (
+            patch("m4bmaker.utils.sys.platform", "linux"),
+            patch("m4bmaker.utils.os.kill", side_effect=PermissionError),
+        ):
             assert _process_is_alive(1) is True
 
     def test_always_true_on_windows_regardless_of_pid(self) -> None:
