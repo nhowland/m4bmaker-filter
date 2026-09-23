@@ -11,6 +11,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.1.post1] - 2026-09-23
+
+Documentation-only release of the `m4bmaker-filter` fork; no code changes since 1.1.1.
+A PyPI version's README and description are fixed at upload time, so the
+README improvements below needed a new version to appear on PyPI.
+
+### Changed
+
+- README: added a "Language filter: install whisper-cli" section. `pip` does not
+  install `whisper-cli`, which the language filter's transcription step needs.
+- README: added a note that Python 3.11+ is required, since pip on an older
+  Python reports `No matching distribution found` rather than a version error.
+
+---
+
 ## [1.1.1] - 2026-08-23
 
 ### Fixed
