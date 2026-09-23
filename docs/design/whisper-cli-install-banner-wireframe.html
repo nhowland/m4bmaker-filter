@@ -1,0 +1,357 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Whisper CLI Install Banner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --paper: #faf9f6;
+    --panel: #f1efe9;
+    --ink: #262a2e;
+    --prose: #4b5157;
+    --muted: #7d8790;
+    --line: #cfd4d9;
+    --line-strong: #a9b0b6;
+    --accent: #c15a35;
+    --accent-ink: #fdf6f2;
+    --accent-wash: #f7e6dd;
+    --success: #4f7a5c;
+    --success-bg: #e9f1eb;
+    --locked: #b7bcc1;
+    --locked-bg: #eceeef;
+    --shadow: 0 1px 2px rgba(38, 42, 46, 0.06), 0 8px 24px rgba(38, 42, 46, 0.08);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #1c1e21;
+      --panel: #232629;
+      --ink: #e3e2de;
+      --prose: #b7bbc0;
+      --muted: #868c92;
+      --line: #34383c;
+      --line-strong: #454a4f;
+      --accent: #d97a51;
+      --accent-ink: #241209;
+      --accent-wash: #33231b;
+      --success: #7cb389;
+      --success-bg: #1e2a22;
+      --locked: #5a5f64;
+      --locked-bg: #26292c;
+      --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 12px 28px rgba(0, 0, 0, 0.4);
+    }
+  }
+
+  :root[data-theme="dark"] {
+    --paper: #1c1e21;
+    --panel: #232629;
+    --ink: #e3e2de;
+    --prose: #b7bbc0;
+    --muted: #868c92;
+    --line: #34383c;
+    --line-strong: #454a4f;
+    --accent: #d97a51;
+    --accent-ink: #241209;
+    --accent-wash: #33231b;
+    --success: #7cb389;
+    --success-bg: #1e2a22;
+    --locked: #5a5f64;
+    --locked-bg: #26292c;
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.35), 0 12px 28px rgba(0, 0, 0, 0.4);
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+    padding: clamp(16px, 4vw, 48px);
+  }
+
+  code, .mono { font-family: "IBM Plex Mono", ui-monospace, monospace; }
+
+  .page { max-width: 1040px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+
+  .masthead { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+  .kicker { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.72rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin: 0 0 4px; }
+  h1 { font-size: 1.5rem; font-weight: 700; letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+  .note { font-size: 0.85rem; color: var(--muted); max-width: 62ch; margin: 6px 0 0; }
+
+  .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+  .btn {
+    font: inherit; font-size: 0.82rem; font-weight: 600;
+    padding: 8px 16px; border-radius: 6px;
+    border: 1px solid var(--line-strong); background: var(--panel); color: var(--ink); cursor: pointer;
+  }
+  .btn:focus-visible, .tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+  .btn.small { padding: 5px 11px; font-size: 0.78rem; }
+
+  /* scenario tabs */
+  .tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+  .tab {
+    font: inherit; font-size: 0.82rem; padding: 9px 14px; border: 1px solid transparent; border-bottom: none;
+    background: none; color: var(--muted); cursor: pointer; border-radius: 6px 6px 0 0;
+  }
+  .tab[aria-selected="true"] { background: var(--panel); border-color: var(--line); color: var(--ink); font-weight: 600; margin-bottom: -1px; }
+
+  .frame { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; }
+  .titlebar { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); background: var(--paper); }
+  .dots { display: flex; gap: 6px; }
+  .dots span { width: 10px; height: 10px; border-radius: 50%; background: var(--line-strong); opacity: 0.5; }
+  .titlebar .title { flex: 1; text-align: center; font-size: 0.8rem; color: var(--prose); font-weight: 500; }
+
+  /* stepper */
+  .rail { display: grid; grid-template-columns: repeat(7, 1fr); border-bottom: 1px solid var(--line); background: var(--paper); padding: 16px 16px 12px; }
+  .rail-item { display: flex; flex-direction: column; align-items: center; gap: 8px; color: var(--prose); }
+  .node { display: flex; align-items: center; width: 100%; height: 28px; }
+  .node .line { flex: 1; height: 2px; background: var(--line); }
+  .rail-item:first-child .line-before, .rail-item:last-child .line-after { background: transparent; }
+  .num { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.72rem; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; border: 2px solid var(--line-strong); background: var(--paper); color: var(--muted); flex-shrink: 0; }
+  .label { font-size: 0.72rem; text-align: center; white-space: nowrap; }
+  .rail-item.done .num { background: var(--success); border-color: var(--success); color: var(--accent-ink); }
+  .rail-item.done .line-after, .rail-item.done + .rail-item .line-before { background: var(--success); }
+  .rail-item.done .label { color: var(--ink); }
+  .rail-item.current .num { border-color: var(--accent); color: var(--accent); border-width: 3px; }
+  .rail-item.current .label { color: var(--accent); font-weight: 700; }
+  .rail-item.locked .num { color: var(--locked); border-color: var(--locked-bg); background: var(--locked-bg); }
+  .rail-item.locked .label { color: var(--locked); }
+
+  .pane { padding: 24px 28px 8px; min-height: 470px; }
+  .step-title { font-size: 1.2rem; font-weight: 600; margin: 0 0 4px; }
+  .step-sub { font-size: 0.85rem; color: var(--muted); margin: 0 0 18px; max-width: 62ch; }
+
+  /* the banner under design */
+  .banner {
+    border: 1px solid var(--accent);
+    background: var(--accent-wash);
+    border-radius: 8px;
+    padding: 14px 16px;
+    margin-bottom: 16px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .banner h3 { margin: 0; font-size: 0.95rem; font-weight: 600; color: var(--ink); }
+  .banner p { margin: 0; font-size: 0.84rem; color: var(--prose); line-height: 1.45; max-width: 70ch; }
+  .cmd-row { display: flex; gap: 8px; align-items: stretch; flex-wrap: wrap; }
+  .cmd {
+    flex: 1; min-width: 220px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.85rem;
+    background: var(--paper); border: 1px solid var(--line-strong); border-radius: 5px; padding: 8px 10px; color: var(--ink);
+    user-select: all;
+  }
+  .btn-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .status { font-size: 0.8rem; color: var(--muted); min-height: 1.2em; }
+  .status.bad { color: var(--accent); }
+  .untested { font-size: 0.8rem; color: var(--muted); }
+
+  .panel { border: 1px solid var(--line); border-radius: 8px; background: var(--paper); padding: 14px 16px; }
+  .panel h4 { margin: 0 0 10px; font-size: 0.95rem; font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 12px; padding: 7px 0; }
+  .row + .row { border-top: 1px solid var(--line); }
+  .grow { flex: 1; font-size: 0.86rem; }
+  .meta { font-size: 0.78rem; color: var(--muted); }
+  .chip { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 0.65rem; padding: 3px 8px; border-radius: 999px; border: 1px solid var(--line-strong); color: var(--muted); display: inline-flex; }
+  .chip.ok { border-color: var(--success); color: var(--success); background: var(--success-bg); }
+  .chip.warn { border-color: var(--accent); color: var(--accent); }
+  .manage { display: flex; justify-content: flex-end; margin-top: 10px; }
+
+  .found-panel { display: flex; flex-direction: column; gap: 12px; }
+
+  .footer { display: flex; justify-content: space-between; align-items: center; padding: 14px 28px; border-top: 1px solid var(--line); background: var(--paper); }
+  .footer .why { font-size: 0.78rem; color: var(--muted); flex: 1; text-align: right; padding-right: 12px; }
+
+  /* design notes */
+  .notes { border: 1px solid var(--line); border-radius: 10px; padding: 16px 20px; background: var(--panel); }
+  .notes h2 { margin: 0 0 8px; font-size: 1rem; }
+  .notes ul { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 7px; font-size: 0.85rem; color: var(--prose); line-height: 1.45; }
+  .notes .open { color: var(--accent); font-weight: 600; }
+
+  .sim { display: flex; align-items: center; gap: 6px; font-size: 0.8rem; color: var(--prose); }
+</style>
+</head>
+<body>
+<div class="page">
+
+  <header class="masthead">
+    <div>
+      <p class="kicker">ADR-0056 · wireframe</p>
+      <h1>Transcript step: whisper-cli install banner</h1>
+      <p class="note">Shown only in the &ldquo;choose a model&rdquo; panel, only when <code>find_whisper_cli()</code> returns nothing. Continue is disabled while it is missing. Try each tab; on the first two, use Re-check (tick &ldquo;Simulate installing it&rdquo; first to see it succeed).</p>
+    </div>
+    <div class="controls">
+      <label class="sim"><input type="checkbox" id="sim"> Simulate installing it</label>
+      <button class="btn small" id="theme" type="button">Toggle theme</button>
+    </div>
+  </header>
+
+  <div class="tabs" role="tablist" aria-label="Scenarios">
+    <button class="tab" role="tab" aria-selected="true"  data-s="mac"   type="button">macOS, missing</button>
+    <button class="tab" role="tab" aria-selected="false" data-s="other" type="button">Windows / Linux, missing</button>
+    <button class="tab" role="tab" aria-selected="false" data-s="ok"    type="button">Found (no banner)</button>
+    <button class="tab" role="tab" aria-selected="false" data-s="reuse" type="button">Saved transcript (no banner)</button>
+  </div>
+
+  <section class="frame" aria-label="Wizard preview">
+    <div class="titlebar">
+      <div class="dots"><span></span><span></span><span></span></div>
+      <div class="title">Filter Audiobook Language &mdash; Test Audiobook.m4b</div>
+      <div style="width:44px"></div>
+    </div>
+
+    <div class="rail" aria-hidden="true">
+      <div class="rail-item done"><div class="node"><i class="line line-before"></i><span class="num">&#10003;</span><i class="line line-after"></i></div><span class="label">Source</span></div>
+      <div class="rail-item current"><div class="node"><i class="line line-before"></i><span class="num">2</span><i class="line line-after"></i></div><span class="label">Transcript</span></div>
+      <div class="rail-item locked"><div class="node"><i class="line line-before"></i><span class="num">3</span><i class="line line-after"></i></div><span class="label">Transcribe</span></div>
+      <div class="rail-item locked"><div class="node"><i class="line line-before"></i><span class="num">4</span><i class="line line-after"></i></div><span class="label">Profile</span></div>
+      <div class="rail-item locked"><div class="node"><i class="line line-before"></i><span class="num">5</span><i class="line line-after"></i></div><span class="label">Scan</span></div>
+      <div class="rail-item locked"><div class="node"><i class="line line-before"></i><span class="num">6</span><i class="line line-after"></i></div><span class="label">Review</span></div>
+      <div class="rail-item locked"><div class="node"><i class="line line-before"></i><span class="num">7</span><i class="line line-after"></i></div><span class="label">Render</span></div>
+    </div>
+
+    <div class="pane" id="pane"></div>
+
+    <div class="footer">
+      <button class="btn" type="button" disabled>&larr; Back</button>
+      <span class="why" id="why"></span>
+      <button class="btn primary" type="button" id="continue">Continue &rarr;</button>
+    </div>
+  </section>
+
+  <section class="notes">
+    <h2>Design notes</h2>
+    <ul>
+      <li><strong>Placement.</strong> Above the model list, inside the choose panel only. It never appears in the &ldquo;saved transcript&rdquo; state, and never at wizard entry, because reusing a transcript never runs <code>whisper-cli</code>.</li>
+      <li><strong>One banner, one accent.</strong> Same accent hue the app already uses for warnings, with a soft wash rather than a red error treatment: this is a setup step, not a failure.</li>
+      <li><strong>Blocked Continue explains itself.</strong> The footer shows a short reason next to the disabled button, so the banner isn&rsquo;t the only clue.</li>
+      <li><strong>macOS shows a command; other platforms don&rsquo;t.</strong> Only the Homebrew route has been verified, so Windows and Linux get a releases-page link and a plain &ldquo;untested&rdquo; note instead of a guessed command.</li>
+      <li><strong>Re-check without restarting.</strong> A missed install shows &ldquo;Still not found&rdquo; in place; a hit removes the banner and enables Continue.</li>
+      <li><strong>Themes.</strong> Both light and dark are covered by the same tokens as the other wireframes; toggle above.</li>
+      <li class="open">Open (ADR-0056 question 3): whether the README should mention this banner once it exists. Not shown here; defaults to no README change until decided.</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+(function () {
+  var state = { scenario: "mac", found: false };
+  var pane = document.getElementById("pane");
+  var cont = document.getElementById("continue");
+  var why = document.getElementById("why");
+  var sim = document.getElementById("sim");
+  var RELEASES = "https://github.com/ggml-org/whisper.cpp/releases";
+
+  function modelPanel() {
+    return '' +
+      '<div class="panel">' +
+        '<h4>Choose a model</h4>' +
+        '<div class="row"><input type="radio" name="m" checked disabled aria-label="base.en">' +
+          '<span class="grow">base.en <span class="chip ok">&#10003; installed</span></span>' +
+          '<span class="meta">Recommended &middot; 141 MB</span></div>' +
+        '<div class="row"><input type="radio" name="m" disabled aria-label="small.en">' +
+          '<span class="grow">small.en <span class="chip">not installed</span></span>' +
+          '<span class="meta">Higher recognition effort &middot; 465 MB</span>' +
+          '<button class="btn small" type="button">Download</button></div>' +
+        '<div class="manage"><button class="btn small" type="button">Manage Transcription Models&hellip;</button></div>' +
+      '</div>';
+  }
+
+  function banner(kind) {
+    var step = kind === "mac"
+      ? '<div class="cmd-row"><div class="cmd" id="cmd">brew install whisper-cpp</div>' +
+        '<button class="btn small" type="button" id="copy">Copy</button></div>'
+      : '<div class="btn-row"><button class="btn small" type="button" id="open">Open releases page</button>' +
+        '<span class="untested">Not yet tested with this project on Windows or Linux. Put <code>whisper-cli</code> on your PATH after installing it.</span></div>';
+    return '' +
+      '<div class="banner" role="status">' +
+        '<h3>Transcription engine not installed</h3>' +
+        '<p>The language filter transcribes with whisper.cpp&rsquo;s <code>whisper-cli</code>, which pip doesn&rsquo;t install. Install it, then choose Re-check.</p>' +
+        step +
+        '<div class="btn-row"><button class="btn small" type="button" id="recheck">Re-check</button>' +
+        '<span class="status" id="status" aria-live="polite"></span></div>' +
+      '</div>';
+  }
+
+  function foundPanel() {
+    return '' +
+      '<div class="panel found-panel">' +
+        '<h4>&#10003; Compatible transcript found</h4>' +
+        '<div class="meta mono">whisper.cpp 1.9.2 &middot; base.en &middot; 13h 31m 33s</div>' +
+        '<div class="btn-row"><button class="btn" type="button">Use existing &rarr;</button>' +
+        '<button class="btn" type="button" id="again">Transcribe again instead</button></div>' +
+        '<p class="meta" style="margin:0">Reusing a saved transcript skips Transcribe, so <code>whisper-cli</code> is not needed on this path. If you choose &ldquo;Transcribe again&rdquo; and it is missing, the install banner appears then.</p>' +
+      '</div>';
+  }
+
+  function render() {
+    var s = state.scenario, html = "", missing = false;
+    html += '<h2 class="step-title">Choose Transcript Path</h2>' +
+            '<p class="step-sub">Reuse a saved transcript for this file, or choose a model to transcribe it locally.</p>';
+    if (s === "reuse") {
+      html += foundPanel();
+      cont.disabled = true;
+      why.textContent = "Choose “Use existing” or “Transcribe again instead” to continue.";
+    } else {
+      missing = (s === "mac" || s === "other") && !state.found;
+      if (missing) html += banner(s === "mac" ? "mac" : "other");
+      html += modelPanel();
+      cont.disabled = missing;
+      why.textContent = missing ? "Continue is disabled until whisper-cli is installed." : "";
+    }
+    pane.innerHTML = html;
+    wire();
+  }
+
+  function wire() {
+    var copy = document.getElementById("copy");
+    if (copy) copy.addEventListener("click", function () {
+      var txt = document.getElementById("cmd").textContent;
+      var done = function () { copy.textContent = "Copied"; setTimeout(function () { copy.textContent = "Copy"; }, 1400); };
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(done, done); else done();
+    });
+    var open = document.getElementById("open");
+    if (open) open.addEventListener("click", function () { window.open(RELEASES, "_blank", "noopener"); });
+    var re = document.getElementById("recheck");
+    if (re) re.addEventListener("click", function () {
+      if (sim.checked) { state.found = true; render(); return; }
+      var st = document.getElementById("status");
+      st.className = "status bad";
+      st.textContent = "Still not found. Checked PATH and the usual Homebrew locations.";
+    });
+    var again = document.getElementById("again");
+    if (again) again.addEventListener("click", function () { setScenario("mac"); });
+  }
+
+  function setScenario(s) {
+    // the "Found" tab is the macOS view after a successful check: the banner's absence is the point
+    state.scenario = s === "ok" ? "mac" : s;
+    state.found = s === "ok";
+    Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (t) {
+      t.setAttribute("aria-selected", t.getAttribute("data-s") === s ? "true" : "false");
+    });
+    render();
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (t) {
+    t.addEventListener("click", function () { setScenario(t.getAttribute("data-s")); });
+  });
+
+  document.getElementById("theme").addEventListener("click", function () {
+    var root = document.documentElement;
+    var dark = root.getAttribute("data-theme") === "dark" ||
+      (!root.getAttribute("data-theme") && window.matchMedia("(prefers-color-scheme: dark)").matches);
+    root.setAttribute("data-theme", dark ? "light" : "dark");
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
