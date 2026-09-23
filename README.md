@@ -105,6 +105,27 @@ sudo apt install ffmpeg
 winget install ffmpeg
 ```
 
+### Language filter: install whisper-cli
+
+Converting audio to M4B needs only ffmpeg. The [language filter](#language-filter) also needs **`whisper-cli`**, the command-line program from [whisper.cpp](https://github.com/ggml-org/whisper.cpp) (MIT-licensed), which does the offline transcription. `pip` does not install it, so install it separately and make sure it's on your `PATH`:
+
+```bash
+# macOS
+brew install whisper-cpp
+```
+
+On Linux and Windows, download a prebuilt binary from the [whisper.cpp releases](https://github.com/ggml-org/whisper.cpp/releases) if one is published for your platform, or build it from source following the whisper.cpp README, then put `whisper-cli` (`whisper-cli.exe` on Windows) somewhere on your `PATH`.
+
+Check that it works:
+
+```bash
+whisper-cli --help
+```
+
+The speech model itself (`base.en`, about 148 MB) is not part of `whisper-cli`. Download it once from inside the app via **Language Filter → Manage Transcription Models…**; it is checksum-verified and stored locally. That window also shows whether `whisper-cli` was found, and the Transcribe step tells you if it's missing.
+
+> Tested with whisper.cpp 1.9.x, installed via Homebrew on macOS. Other platforms and versions are untested with this fork.
+
 ### From source
 
 Requires Python 3.11+ and ffmpeg.
