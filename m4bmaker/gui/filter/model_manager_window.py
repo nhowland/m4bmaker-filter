@@ -54,7 +54,11 @@ from m4bmaker.filter.model_manager import (
     remove_model,
 )
 from m4bmaker.filter.storage import models_dir
-from m4bmaker.filter.transcript_engine import find_whisper_cli, get_whisper_version
+from m4bmaker.filter.transcript_engine import (
+    find_whisper_cli,
+    get_whisper_version,
+    whisper_missing_message,
+)
 
 from .workers import ModelDownloadWorker, download_coordinator
 
@@ -226,9 +230,7 @@ class ModelManagerWindow(QMainWindow):
     def _refresh_engine_label(self) -> None:
         cli = find_whisper_cli()
         if cli is None:
-            self._engine_label.setText(
-                "Engine: whisper.cpp not found (install whisper-cli to transcribe)."
-            )
+            self._engine_label.setText(f"Engine: {whisper_missing_message()}")
             return
         version = get_whisper_version(cli)
         self._engine_label.setText(

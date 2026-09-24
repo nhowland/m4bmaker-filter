@@ -1,9 +1,9 @@
 # ADR-0056: Guide the User to install `whisper-cli` before they reach Transcribe
 
-**Status:** Decision approved by the Contributor (2026-09-23), pending
-their review of the mockup,
+**Status:** Implemented (2026-09-23), not yet live-tested by the
+Contributor. Design settled via
 `docs/design/whisper-cli-install-banner-wireframe.html` (same wireframe-
-before-code discipline as ADR-0010/0052/0053/0055). Not implemented yet.
+before-code discipline as ADR-0010/0052/0053/0055).
 **Related PRD items:** §7.2 stage 2 (Transcript step: "load a compatible
 native transcript or choose local transcription model/settings"); §17.1
 rules 5 and 6 (no unapproved dependencies, no silent network behavior);
@@ -209,3 +209,32 @@ the disabled Continue with a short reason beside it in the footer, a
 detail added during the mockup: the banner shouldn't be the only
 explanation for a disabled button. Implementation follows only after the
 Contributor approves the mockup.
+
+## Implementation notes
+
+- `filter/transcript_engine.py`: `InstallHint`, `whisper_install_hint(
+  platform=None)`, `whisper_missing_message()`, `WHISPER_RELEASES_URL`. Only
+  darwin has a `command`; every other platform (including unknown ones) gets
+  the releases URL and the "not yet tested" note.
+- `TranscriptStep` re-evaluates `find_whisper_cli()` every time the choose
+  panel renders (`set_source`, "Transcribe again instead", model-manager
+  close, download finish) and on Re-check, caching the result in
+  `_whisper_missing` so `can_advance()` stays cheap. Re-check that still
+  finds nothing updates the banner's status line in place and does not
+  re-render.
+- The banner is `QFrame#whisperBanner` (styled in both the light and the dark
+  blocks of `gui/styles.py`); the macOS command is a read-only `QLineEdit`
+  so it's selectable as well as copyable.
+- The worker's backstop error and the Model Manager's engine label now use
+  `whisper_missing_message()`; the label reads "Engine: whisper-cli not
+  found. Install it with `brew install whisper-cpp`..." on macOS.
+- Tests: `tests/gui/filter/wizard/conftest.py` defaults every wizard test to
+  "whisper-cli installed" (autouse), so no wizard test depends on the
+  machine running the suite. A mutation check (removing the `can_advance()`
+  guard) makes four banner tests fail, as it should.
+- Test gotcha: after a re-render the old widgets are `deleteLater()`'d, so
+  `findChild` still sees them until the event loop runs; the banner tests
+  inspect the body layout instead.
+- Rendered offscreen with the real stylesheet in light and dark for both
+  platform variants and checked visually; that is a Qt `grab()`, not a live
+  macOS window, so the live-test items above still stand.

@@ -15,9 +15,21 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QRadioButton, QWidget
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QRadioButton,
+    QWidget,
+)
 
-from m4bmaker.filter.model_manager import KNOWN_MODELS, ModelDownloadCancelled
+from m4bmaker.filter.model_manager import (
+    KNOWN_MODELS,
+    ModelDownloadCancelled,
+    is_installed,
+)
 from m4bmaker.filter.models import AudioTrack, MediaManifest
 from m4bmaker.filter.transcript import (
     Transcript,
@@ -225,6 +237,168 @@ class TestSetSourceCompatibleTranscriptFound:
             step.set_source(_manifest())
         _find_button(step, "Transcribe again instead").click()
         assert step.can_advance() is True
+
+
+_CLI = "m4bmaker.gui.filter.wizard.transcript_step.find_whisper_cli"
+_FIND = "m4bmaker.gui.filter.wizard.transcript_step.find_compatible_transcript"
+_PLATFORM = "m4bmaker.filter.transcript_engine.sys.platform"
+
+
+def _banner(step: TranscriptStep) -> QFrame | None:
+    """Looks at the body layout, not findChild: a re-render hands the old
+    widgets to deleteLater(), so they stay Qt children until the event loop
+    runs even though they're no longer displayed."""
+    for i in range(step._body_layout.count()):
+        item = step._body_layout.itemAt(i)
+        widget = item.widget() if item is not None else None
+        if isinstance(widget, QFrame) and widget.objectName() == "whisperBanner":
+            return widget
+    return None
+
+
+def _choose_step(step: TranscriptStep, tmp_path: Path) -> None:
+    _install(_BASE_EN, tmp_path)
+    with patch(_FIND, return_value=None):
+        step.set_source(_manifest())
+
+
+class TestWhisperInstallBanner:
+    """ADR-0056: an inline banner in the choose panel, only while
+    whisper-cli is missing, with Continue blocked until it's found."""
+
+    def test_no_banner_when_whisper_is_found(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        _choose_step(step, tmp_path)
+        assert _banner(step) is None
+        assert step.can_advance() is True
+
+    def test_banner_shown_and_continue_blocked_when_missing(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        with patch(_CLI, return_value=None):
+            _choose_step(step, tmp_path)
+            assert _banner(step) is not None
+            assert step.can_advance() is False
+
+    def test_banner_sits_above_the_model_list(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        with patch(_CLI, return_value=None):
+            _choose_step(step, tmp_path)
+        assert step._body_layout.itemAt(0).widget().objectName() == "whisperBanner"
+        assert step._body_layout.itemAt(1).widget().findChild(QRadioButton)
+
+    def test_banner_explains_why_continue_is_disabled(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        with patch(_CLI, return_value=None):
+            _choose_step(step, tmp_path)
+        assert "Continue is disabled" in _all_text(_banner(step))
+
+    def test_no_banner_in_found_mode_even_when_missing(
+        self, step: TranscriptStep
+    ) -> None:
+        with patch(_CLI, return_value=None), patch(_FIND, return_value=_transcript()):
+            step.set_source(_manifest())
+        assert _banner(step) is None
+
+    def test_transcribe_again_from_found_mode_shows_banner(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        _install(_BASE_EN, tmp_path)
+        with patch(_CLI, return_value=None), patch(_FIND, return_value=_transcript()):
+            step.set_source(_manifest())
+            assert _banner(step) is None
+            _find_button(step, "Transcribe again instead").click()
+            assert _banner(step) is not None
+            assert step.can_advance() is False
+
+    def test_macos_banner_shows_command_and_copy(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        with patch(_CLI, return_value=None), patch(_PLATFORM, "darwin"):
+            _choose_step(step, tmp_path)
+        field = step.findChild(QLineEdit, "whisperCommand")
+        assert field is not None
+        assert field.text() == "brew install whisper-cpp"
+        assert field.isReadOnly()
+        _find_button(step, "Copy")
+        assert not [b for b in step.findChildren(QPushButton) if "Open" in b.text()]
+
+    def test_copy_puts_the_command_on_the_clipboard(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        with patch(_CLI, return_value=None), patch(_PLATFORM, "darwin"):
+            _choose_step(step, tmp_path)
+            QApplication.clipboard().setText("")
+            _find_button(step, "Copy").click()
+        assert QApplication.clipboard().text() == "brew install whisper-cpp"
+
+    @pytest.mark.parametrize("platform", ["win32", "linux"])
+    def test_other_platforms_show_releases_link_and_untested_note(
+        self, step: TranscriptStep, tmp_path: Path, platform: str
+    ) -> None:
+        with patch(_CLI, return_value=None), patch(_PLATFORM, platform):
+            _choose_step(step, tmp_path)
+        assert step.findChild(QLineEdit, "whisperCommand") is None
+        assert "not yet tested" in _all_text(_banner(step)).lower()
+        _find_button(step, "Open releases page")
+
+    def test_open_releases_opens_the_releases_url(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        with patch(_CLI, return_value=None), patch(_PLATFORM, "linux"):
+            _choose_step(step, tmp_path)
+            with patch(
+                "m4bmaker.gui.filter.wizard.transcript_step.QDesktopServices.openUrl"
+            ) as open_url:
+                _find_button(step, "Open releases page").click()
+        assert open_url.call_args.args[0].toString() == (
+            "https://github.com/ggml-org/whisper.cpp/releases"
+        )
+
+    def test_recheck_when_still_missing_says_so_and_keeps_blocking(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        with patch(_CLI, return_value=None):
+            _choose_step(step, tmp_path)
+            _find_button(step, "Re-check").click()
+            assert "Still not found" in _all_text(_banner(step))
+            assert _banner(step) is not None
+            assert step.can_advance() is False
+
+    def test_recheck_after_install_clears_banner_and_enables_continue(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        received: list[bool] = []
+        step.can_advance_changed.connect(received.append)
+        with patch(_CLI, return_value=None):
+            _choose_step(step, tmp_path)
+        with patch(_CLI, return_value="/opt/homebrew/bin/whisper-cli"):
+            _find_button(step, "Re-check").click()
+            assert _banner(step) is None
+            assert step.can_advance() is True
+        assert received[-1] is True
+
+    def test_returning_from_model_manager_rechecks_too(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        with patch(_CLI, return_value=None):
+            _choose_step(step, tmp_path)
+        with patch(_CLI, return_value="/opt/homebrew/bin/whisper-cli"):
+            step._on_model_manager_closed()
+            assert _banner(step) is None
+            assert step.can_advance() is True
+
+    def test_missing_whisper_alone_blocks_even_with_model_installed(
+        self, step: TranscriptStep, tmp_path: Path
+    ) -> None:
+        _install(_BASE_EN, tmp_path)
+        with patch(_CLI, return_value=None), patch(_FIND, return_value=None):
+            step.set_source(_manifest())
+            assert is_installed(_BASE_EN, tmp_path)
+            assert step.can_advance() is False
 
 
 class TestReenteringSetSource:

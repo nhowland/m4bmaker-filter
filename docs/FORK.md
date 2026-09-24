@@ -3050,3 +3050,43 @@ just the legend paragraph above it, added a tooltip explaining why
 ordinary words), and updated the legend to say the same. No behavior
 changed, only how honestly the feature represents itself. 3 new tests.
 Full suite: 2184 passed, 2 skipped; `black`/`flake8`/`mypy` clean.
+
+## whisper-cli install banner, built (ADR-0056, 2026-09-23)
+
+Found while preparing the PyPI release: `pip install m4bmaker-filter` doesn't
+install `whisper-cli`, so a fresh install worked all the way to Transcribe and
+only then failed ("whisper-cli not found"), after the source was picked and a
+148 MB model possibly downloaded. The README got an install section first
+(1.1.1.post1); this round moves the guidance into the app, at the step where the
+requirement actually exists.
+
+Design, decided with the Contributor via ADR-0056 and an interactive mockup:
+an inline banner in the Transcript step's "choose a model" panel, shown only
+when `find_whisper_cli()` returns nothing. macOS shows the one verified command
+(`brew install whisper-cpp`) with Copy; Windows/Linux show an "Open releases
+page" button and an honest "not yet tested" note rather than a guessed command;
+every platform gets a Re-check button, and **Continue is blocked** while it's
+missing. The block is safe because the banner and the transcription worker call
+the same `find_whisper_cli()`: it can only report "missing" where the worker
+would have failed anyway. It is deliberately absent in the "saved transcript"
+state (reuse never runs whisper-cli) and at wizard entry (the Word List and
+Profile editor don't need it). No auto-install, no network access, no bundling,
+no version check; those are recorded as out of scope in the ADR.
+
+One helper, `whisper_install_hint()`, feeds the banner, the Model Manager's engine
+label, and the worker's backstop error. 23 new tests; a mutation check confirmed
+the banner tests fail if the `can_advance()` guard is removed. Existing wizard
+tests now default to "whisper-cli installed" via a new `tests/gui/filter/wizard/
+conftest.py`, so none depends on the machine that runs the suite (they previously
+would have started failing on a machine without it). Rendered offscreen with the
+real stylesheet in light and dark for both variants; not yet live-tested.
+
+Also fixed in the same session: a leftover abbreviation of a real book title
+used as a source filename in five wizard test files was replaced with `test-audiobook.m4b`. It
+survived the earlier privacy scrub because it isn't the title itself; the
+old spelling remains in already-pushed history. Also noted: `flake8 m4bmaker`
+and `mypy m4bmaker` are not clean project-wide. The remaining findings are all in
+upstream's base app (`gui/window.py`, `gui/widgets.py`) and its tests, not in the
+filter code; the gates are clean on `m4bmaker/filter`, `m4bmaker/gui/filter`,
+and `m4bmaker/gui/styles.py`.
+

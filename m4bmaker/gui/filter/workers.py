@@ -34,7 +34,10 @@ from m4bmaker.filter.transcript import (
     TranscriptSource,
     find_compatible_transcript,
 )
-from m4bmaker.filter.transcript_engine import find_whisper_cli
+from m4bmaker.filter.transcript_engine import (
+    find_whisper_cli,
+    whisper_missing_message,
+)
 from m4bmaker.filter.transcription_orchestrator import (
     TranscriptionPaused,
     run_transcription_job,
@@ -302,10 +305,7 @@ class TranscribeWorker(QThread):
             return
         whisper_cli = find_whisper_cli()
         if whisper_cli is None:
-            self.error.emit(
-                "whisper-cli not found. Install whisper.cpp and make sure "
-                "it's on your PATH."
-            )
+            self.error.emit(whisper_missing_message())
             return
 
         store = JobStore(connect(self._db_path))

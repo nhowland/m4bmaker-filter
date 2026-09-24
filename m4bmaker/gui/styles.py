@@ -681,6 +681,20 @@ QPushButton#rescanGoBtn:hover {
     color: #faf8f4;
 }
 
+/* ── Transcript step: whisper-cli install banner (ADR-0056) ────────────── */
+QFrame#whisperBanner {
+    background-color: #f7e6dc;
+    border: 1px solid #e0b79c;
+    border-radius: 6px;
+}
+QLineEdit#whisperCommand {
+    background-color: #faf8f4;
+    border: 1px solid #e0b79c;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-family: Menlo, Consolas, monospace;
+}
+
 /* ── Review hit preview dock (ADR-0052) ──────────────────────────────── */
 QFrame#reviewPreviewDock {
     background-color: #ebe6dd;
@@ -1389,6 +1403,19 @@ QPushButton#rescanGoBtn {
 QPushButton#rescanGoBtn:hover {
     background-color: #5a4130;
     color: #f5f2ed;
+}
+
+QFrame#whisperBanner {
+    background-color: #3a2c22;
+    border: 1px solid #5a4130;
+    border-radius: 6px;
+}
+QLineEdit#whisperCommand {
+    background-color: #2a2622;
+    border: 1px solid #5a4130;
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-family: Menlo, Consolas, monospace;
 }
 
 /* ── Review hit preview dock (ADR-0052) ──────────────────────────────── */

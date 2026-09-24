@@ -29,6 +29,7 @@ import pytest
 
 from m4bmaker.filter.transcript import SegmentStatus, TranscriptSource
 from m4bmaker.filter.transcript_engine import (
+    WHISPER_RELEASES_URL,
     WhisperNotFoundError,
     WhisperTranscriptionError,
     dtw_model_name_for,
@@ -36,6 +37,8 @@ from m4bmaker.filter.transcript_engine import (
     get_whisper_version,
     run_whisper,
     transcribe_short_audio,
+    whisper_install_hint,
+    whisper_missing_message,
     whisper_result_to_segment,
 )
 
@@ -95,6 +98,44 @@ class TestFindWhisperCli:
     def test_returns_none_when_not_found(self) -> None:
         with patch("m4bmaker.filter.transcript_engine.find_binary", return_value=None):
             assert find_whisper_cli() is None
+
+
+class TestWhisperInstallHint:
+    """ADR-0056: one source of wording for the banner, the Model Manager
+    label, and the worker's backstop error."""
+
+    def test_macos_gets_the_verified_homebrew_command(self) -> None:
+        hint = whisper_install_hint("darwin")
+        assert hint.command == "brew install whisper-cpp"
+        assert hint.url == WHISPER_RELEASES_URL
+
+    @pytest.mark.parametrize("platform", ["win32", "linux", "freebsd14"])
+    def test_other_platforms_get_no_guessed_command(self, platform: str) -> None:
+        hint = whisper_install_hint(platform)
+        assert hint.command is None
+        assert hint.url == WHISPER_RELEASES_URL
+        assert "not yet tested" in hint.note.lower()
+
+    def test_defaults_to_the_running_platform(self) -> None:
+        with patch("m4bmaker.filter.transcript_engine.sys.platform", "darwin"):
+            assert whisper_install_hint().command == "brew install whisper-cpp"
+        with patch("m4bmaker.filter.transcript_engine.sys.platform", "win32"):
+            assert whisper_install_hint().command is None
+
+
+class TestWhisperMissingMessage:
+    def test_macos_message_names_the_command(self) -> None:
+        with patch("m4bmaker.filter.transcript_engine.sys.platform", "darwin"):
+            msg = whisper_missing_message()
+        assert msg.startswith("whisper-cli not found")
+        assert "brew install whisper-cpp" in msg
+
+    def test_other_platform_message_points_at_releases(self) -> None:
+        with patch("m4bmaker.filter.transcript_engine.sys.platform", "linux"):
+            msg = whisper_missing_message()
+        assert msg.startswith("whisper-cli not found")
+        assert WHISPER_RELEASES_URL in msg
+        assert "brew" not in msg
 
 
 class TestGetWhisperVersion:

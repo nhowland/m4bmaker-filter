@@ -41,6 +41,7 @@ from m4bmaker.filter.transcript import (
     TranscriptSource,
     TranscriptStatus,
 )
+from m4bmaker.filter.transcript_engine import whisper_missing_message
 from m4bmaker.filter.transcription_orchestrator import TranscriptionPaused
 from m4bmaker.filter.validator import ValidationReport
 from m4bmaker.gui.filter.workers import (
@@ -694,6 +695,7 @@ class TestTranscribeWorker:
         qapp.processEvents()
         assert len(errors) == 1
         assert "whisper-cli" in errors[0]
+        assert errors[0] == whisper_missing_message()
 
         store = JobStore(connect(tmp_path / "filter.db"))
         assert store.get_job("job-1") is None

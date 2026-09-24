@@ -114,6 +114,19 @@ class TestConstruction:
     def test_engine_label_when_whisper_not_found(self, win: ModelManagerWindow) -> None:
         assert "not found" in win._engine_label.text()
 
+    def test_engine_label_says_how_to_install_when_not_found(
+        self, tmp_path: Path
+    ) -> None:
+        with (
+            patch(
+                "m4bmaker.gui.filter.model_manager_window.find_whisper_cli",
+                return_value=None,
+            ),
+            patch("m4bmaker.filter.transcript_engine.sys.platform", "darwin"),
+        ):
+            window = ModelManagerWindow(dest_dir=tmp_path)
+        assert "brew install whisper-cpp" in window._engine_label.text()
+
     def test_timing_note_present_and_always_visible(
         self, win: ModelManagerWindow
     ) -> None:

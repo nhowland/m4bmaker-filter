@@ -24,12 +24,15 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QUrl, Signal
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMessageBox,
     QProgressBar,
     QPushButton,
@@ -43,6 +46,7 @@ from m4bmaker.filter.models import MediaManifest
 from m4bmaker.filter.settings import get as get_setting
 from m4bmaker.filter.storage import models_dir
 from m4bmaker.filter.transcript import Transcript, find_compatible_transcript
+from m4bmaker.filter.transcript_engine import find_whisper_cli, whisper_install_hint
 
 from ..model_manager_window import ModelManagerWindow
 from ..workers import ModelDownloadWorker, download_coordinator
@@ -103,6 +107,7 @@ class TranscriptStep(WizardStep):
         self._download_worker: ModelDownloadWorker | None = None
         self._downloading_spec: ModelSpec | None = None
         self._model_manager_window: ModelManagerWindow | None = None
+        self._whisper_missing = False
         self._build_ui()
         self._render_body()
 
@@ -128,6 +133,8 @@ class TranscriptStep(WizardStep):
         if self._manifest is None:
             return False
         if self._mode == _MODE_FOUND:
+            return False
+        if self._whisper_missing:
             return False
         return self._download_worker is None and is_installed(
             self._selected_model, self._dest_dir
@@ -195,6 +202,9 @@ class TranscriptStep(WizardStep):
         if self._mode == _MODE_FOUND:
             self._body_layout.addWidget(self._build_found_panel())
         else:
+            self._whisper_missing = find_whisper_cli() is None
+            if self._whisper_missing:
+                self._body_layout.addWidget(self._build_whisper_banner())
             self._body_layout.addWidget(self._build_choose_panel())
 
     # ── "found" panel ────────────────────────────────────────────────────
@@ -228,6 +238,75 @@ class TranscriptStep(WizardStep):
 
     def _on_transcribe_again(self) -> None:
         self._mode = _MODE_CHOOSE
+        self._render_body()
+        self.can_advance_changed.emit(self.can_advance())
+
+    # ── whisper-cli install banner (ADR-0056) ────────────────────────────
+
+    def _build_whisper_banner(self) -> QFrame:
+        hint = whisper_install_hint()
+        banner = QFrame()
+        banner.setObjectName("whisperBanner")
+        layout = QVBoxLayout(banner)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        heading = QLabel("Transcription engine not installed")
+        heading.setStyleSheet("font-weight: 600;")
+        layout.addWidget(heading)
+        layout.addWidget(
+            _info_label(
+                "The language filter transcribes with whisper.cpp's "
+                "whisper-cli, which pip doesn't install. Install it, then "
+                "choose Re-check."
+            )
+        )
+
+        if hint.command is not None:
+            cmd_row = QHBoxLayout()
+            self._whisper_command = QLineEdit(hint.command)
+            self._whisper_command.setObjectName("whisperCommand")
+            self._whisper_command.setReadOnly(True)
+            cmd_row.addWidget(self._whisper_command, stretch=1)
+            copy_btn = QPushButton("Copy")
+            copy_btn.clicked.connect(self._on_copy_whisper_command)
+            cmd_row.addWidget(copy_btn)
+            layout.addLayout(cmd_row)
+        else:
+            layout.addWidget(_info_label(hint.note))
+            open_row = QHBoxLayout()
+            open_btn = QPushButton("Open releases page")
+            open_btn.clicked.connect(self._on_open_whisper_releases)
+            open_row.addWidget(open_btn)
+            open_row.addStretch(1)
+            layout.addLayout(open_row)
+
+        recheck_row = QHBoxLayout()
+        recheck_btn = QPushButton("Re-check")
+        recheck_btn.clicked.connect(self._on_recheck_whisper)
+        recheck_row.addWidget(recheck_btn)
+        self._whisper_status = _info_label("")
+        recheck_row.addWidget(self._whisper_status, stretch=1)
+        layout.addLayout(recheck_row)
+
+        why = _info_label("Continue is disabled until whisper-cli is installed.")
+        layout.addWidget(why)
+        return banner
+
+    def _on_copy_whisper_command(self) -> None:
+        hint = whisper_install_hint()
+        if hint.command is not None:
+            QApplication.clipboard().setText(hint.command)
+
+    def _on_open_whisper_releases(self) -> None:
+        QDesktopServices.openUrl(QUrl(whisper_install_hint().url))
+
+    def _on_recheck_whisper(self) -> None:
+        if find_whisper_cli() is None:
+            self._whisper_status.setText(
+                "Still not found. Checked PATH and the usual Homebrew locations."
+            )
+            return
         self._render_body()
         self.can_advance_changed.emit(self.can_advance())
 

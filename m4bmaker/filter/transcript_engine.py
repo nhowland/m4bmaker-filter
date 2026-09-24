@@ -30,7 +30,9 @@ from __future__ import annotations
 
 import json
 import subprocess
+import sys
 import tempfile
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -75,6 +77,66 @@ _WHISPER_MAX_ATTEMPTS = 3
 def find_whisper_cli() -> str | None:
     """Return the path to the whisper-cli binary, or ``None`` if not found."""
     return find_binary(_BINARY_NAME)
+
+
+WHISPER_RELEASES_URL = "https://github.com/ggml-org/whisper.cpp/releases"
+
+
+@dataclass(frozen=True)
+class InstallHint:
+    """How to get ``whisper-cli`` on this platform (ADR-0056).
+
+    *command* is set only where an install command has actually been
+    verified (macOS via Homebrew); every other platform gets *url* and an
+    honest *note* instead of a guessed command.
+    """
+
+    command: str | None
+    url: str
+    note: str
+
+
+def whisper_install_hint(platform: str | None = None) -> InstallHint:
+    """Platform-specific guidance for installing ``whisper-cli``.
+
+    Single source of the wording shared by the Transcript step's banner,
+    the Model Manager's engine label, and the transcription worker's
+    backstop error, so the three can't drift (ADR-0056). *platform*
+    defaults to :data:`sys.platform`; it's a parameter so tests need no
+    GUI or patching.
+    """
+    plat = sys.platform if platform is None else platform
+    if plat == "darwin":
+        return InstallHint(
+            command="brew install whisper-cpp",
+            url=WHISPER_RELEASES_URL,
+            note="Installs whisper-cli through Homebrew.",
+        )
+    return InstallHint(
+        command=None,
+        url=WHISPER_RELEASES_URL,
+        note=(
+            "Not yet tested with this project on this platform. Download a "
+            "build from the whisper.cpp releases page, or build it from "
+            "source, and put whisper-cli on your PATH."
+        ),
+    )
+
+
+def whisper_missing_message() -> str:
+    """One-sentence "not found" text for surfaces that can't show a banner
+    (the worker's error, the Model Manager's label). Mentions the concrete
+    command where one is verified."""
+    hint = whisper_install_hint()
+    if hint.command is not None:
+        return (
+            "whisper-cli not found. Install it with "
+            f"`{hint.command}` and make sure it's on your PATH."
+        )
+    return (
+        "whisper-cli not found. Install whisper.cpp "
+        f"({hint.url}) and make sure whisper-cli is on your PATH."
+    )
 
 
 def get_whisper_version(whisper_cli: str | None = None) -> str | None:
