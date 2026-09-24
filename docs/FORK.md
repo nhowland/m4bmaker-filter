@@ -3084,8 +3084,9 @@ real stylesheet in light and dark for both variants.
 **Live test (2026-09-23, macOS):** with `whisper-cli` unlinked, the Contributor
 confirmed the banner appears above the model list with the Homebrew command, Copy,
 and Re-check, and that Continue is disabled with its explanation; layout matches the
-mockup. Not yet confirmed live: Re-check after relinking (automated tests only), the
-dark theme, and the Windows/Linux variant.
+mockup. Re-check after `brew link whisper-cpp` was also confirmed live (banner cleared and
+Continue enabled without restarting the app). Not yet confirmed live: the dark theme
+and the Windows/Linux variant.
 
 Also fixed in the same session: a leftover abbreviation of a real book title
 used as a source filename in five wizard test files was replaced with `test-audiobook.m4b`. It
