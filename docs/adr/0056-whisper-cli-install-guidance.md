@@ -1,7 +1,9 @@
 # ADR-0056: Guide the User to install `whisper-cli` before they reach Transcribe
 
-**Status:** Implemented (2026-09-23), not yet live-tested by the
-Contributor. Design settled via
+**Status:** Implemented (2026-09-23). Live-tested on macOS by the
+Contributor for the banner and the blocked Continue (see "Live test"
+below); the Re-check-after-install path and the Windows/Linux variant
+are not yet live-tested. Design settled via
 `docs/design/whisper-cli-install-banner-wireframe.html` (same wireframe-
 before-code discipline as ADR-0010/0052/0053/0055).
 **Related PRD items:** §7.2 stage 2 (Transcript step: "load a compatible
@@ -238,3 +240,18 @@ Contributor approves the mockup.
 - Rendered offscreen with the real stylesheet in light and dark for both
   platform variants and checked visually; that is a Qt `grab()`, not a live
   macOS window, so the live-test items above still stand.
+
+## Live test
+
+2026-09-23, macOS, run from source with `whisper-cli` unlinked
+(`brew unlink whisper-cpp`) so it was genuinely missing:
+
+- **Confirmed:** on the Transcript step's choose panel the banner appears above
+  the model list, shows `brew install whisper-cpp` with Copy and a Re-check
+  button, and Continue is disabled with the explanatory line. Layout matches the
+  mockup, light theme.
+- **Not yet confirmed live:** Re-check after `brew link whisper-cpp` clearing the
+  banner and enabling Continue without a restart (covered by automated tests only);
+  the dark theme; the Windows/Linux variant (releases-page link and untested
+  note), which has only been rendered offscreen, not run on those platforms.
+

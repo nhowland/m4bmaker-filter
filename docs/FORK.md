@@ -3079,7 +3079,13 @@ the banner tests fail if the `can_advance()` guard is removed. Existing wizard
 tests now default to "whisper-cli installed" via a new `tests/gui/filter/wizard/
 conftest.py`, so none depends on the machine that runs the suite (they previously
 would have started failing on a machine without it). Rendered offscreen with the
-real stylesheet in light and dark for both variants; not yet live-tested.
+real stylesheet in light and dark for both variants.
+
+**Live test (2026-09-23, macOS):** with `whisper-cli` unlinked, the Contributor
+confirmed the banner appears above the model list with the Homebrew command, Copy,
+and Re-check, and that Continue is disabled with its explanation; layout matches the
+mockup. Not yet confirmed live: Re-check after relinking (automated tests only), the
+dark theme, and the Windows/Linux variant.
 
 Also fixed in the same session: a leftover abbreviation of a real book title
 used as a source filename in five wizard test files was replaced with `test-audiobook.m4b`. It
