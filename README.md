@@ -122,7 +122,7 @@ Check that it works:
 whisper-cli --help
 ```
 
-The speech model itself (`base.en`, about 148 MB) is not part of `whisper-cli`. Download it once from inside the app via **Language Filter → Manage Transcription Models…**; it is checksum-verified and stored locally. That window also shows whether `whisper-cli` was found, and the Transcribe step tells you if it's missing.
+The speech model itself (`base.en`, about 148 MB) is not part of `whisper-cli`. Download it once from inside the app via **Language Filter → Manage Transcription Models…**; it is checksum-verified and stored locally. That window also shows whether `whisper-cli` was found. If it isn't, the Transcript step shows an install banner (with a Re-check button) and keeps Continue disabled until it's found, so you learn about it before choosing or downloading a model.
 
 > Tested with whisper.cpp 1.9.x, installed via Homebrew on macOS. Other platforms and versions are untested with this fork.
 

@@ -11,6 +11,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.1.2] - 2026-09-23
+
+Fork release of `m4bmaker-filter`. Adds in-app guidance for the language filter's
+one external requirement.
+
+### Added
+
+- **Missing `whisper-cli` is now caught at the Transcript step.** `pip` doesn't
+  install `whisper-cli`, so a fresh install used to work until Transcribe and
+  only then fail. When it isn't found, the Transcript step's model chooser shows
+  an install banner and keeps Continue disabled until it is. macOS shows the
+  verified Homebrew command (`brew install whisper-cpp`) with a Copy button;
+  Windows and Linux show an "Open releases page" button and a note that those
+  platforms are untested. A Re-check button picks up an install without
+  restarting the app. The banner isn't shown when reusing a saved transcript,
+  which doesn't need `whisper-cli`. The Model Manager's engine label and the
+  Transcribe error now carry the same install hint. (ADR-0056)
+
+### Changed
+
+- README: the whisper-cli section now describes the banner.
+
+### Fixed
+
+- A test assumed a POSIX process check on Windows and failed there; it now pins
+  the platform.
+
+---
+
 ## [1.1.1.post1] - 2026-09-23
 
 Documentation-only release of the `m4bmaker-filter` fork; no code changes since 1.1.1.
