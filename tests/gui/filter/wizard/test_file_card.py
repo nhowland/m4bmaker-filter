@@ -16,7 +16,7 @@ pytestmark = pytest.mark.usefixtures("qapp")
 
 
 def _manifest(
-    source_path: str = "/books/dcc.m4b",
+    source_path: str = "/books/test-audiobook.m4b",
     duration_ms: int = 48_693_108,
     bit_rate: int | None = 126_000,
     eligible: bool = True,
@@ -93,8 +93,8 @@ class TestPlaceholder:
 
 class TestContent:
     def test_filename_shown(self, card: FileCard) -> None:
-        card.set_manifest(_manifest(source_path="/books/dcc.m4b"), None)
-        assert card._name_label.toolTip() == "dcc.m4b"
+        card.set_manifest(_manifest(source_path="/books/test-audiobook.m4b"), None)
+        assert card._name_label.toolTip() == "test-audiobook.m4b"
 
     def test_duration_and_bitrate_shown(self, card: FileCard) -> None:
         card.set_manifest(_manifest(duration_ms=48_693_108, bit_rate=126_000), None)

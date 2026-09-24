@@ -39,7 +39,7 @@ def _manifest(
     fingerprint: str = "sha256:real",
     bit_rate: int | None = 126_000,
     codec_name: str | None = "aac",
-    source_path: str = "/books/dcc.m4b",
+    source_path: str = "/books/test-audiobook.m4b",
 ) -> MediaManifest:
     return MediaManifest(
         schema_version=1,
@@ -162,7 +162,7 @@ class TestSetInputsReady:
         step.set_inputs(_manifest(), _empty_plan())
         assert step._output_path is not None
         assert step._output_path.parent == Path("/books")
-        assert step._output_path.name == "dcc (filtered).m4b"
+        assert step._output_path.name == "test-audiobook (filtered).m4b"
 
 
 class TestBrowseOutput:
@@ -245,7 +245,7 @@ class TestStart:
     def test_worker_constructed_with_source_path_plan_and_chosen_bitrate(
         self, step: RenderStep
     ) -> None:
-        manifest = _manifest(source_path="/books/dcc.m4b")
+        manifest = _manifest(source_path="/books/test-audiobook.m4b")
         plan = _empty_plan()
         step.set_inputs(manifest, plan)
         step._bitrate_combo.setCurrentText("64k")
@@ -254,7 +254,7 @@ class TestStart:
         ) as mock_worker_cls:
             _find_button(step, "Start Render").click()
             call = mock_worker_cls.call_args
-        assert call.args[0] == Path("/books/dcc.m4b")
+        assert call.args[0] == Path("/books/test-audiobook.m4b")
         assert call.args[1] is manifest
         assert call.args[2] is plan
         assert call.args[4] == "64k"

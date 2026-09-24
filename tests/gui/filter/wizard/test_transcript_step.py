@@ -37,7 +37,7 @@ _SMALL_EN = KNOWN_MODELS[1]
 def _manifest(fingerprint: str = "sha256:real") -> MediaManifest:
     return MediaManifest(
         schema_version=1,
-        source_path="/books/dcc.m4b",
+        source_path="/books/test-audiobook.m4b",
         fingerprint=fingerprint,
         duration_ms=48_693_108,
         tracks=(
